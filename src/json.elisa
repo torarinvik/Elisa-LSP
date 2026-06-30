@@ -1,0 +1,193 @@
+# Minimal JSON value model + recursive-descent parser for the Elisa LSP.
+#
+# Enough of JSON to read LSP/JSON-RPC requests: objects, arrays, strings, numbers,
+# bools, null. String and number payloads are kept as raw source spans (`sview`) into
+# the message buffer — cheap, and unescaping is applied only where a value is actually
+# consumed (e.g. document text). Children are `darray` side-tables (docs/76); navigate
+# with `match` and the `get` accessor.
+module Json:
+    public:
+        # Hierarchy root so `Value` is a handle-based, store-backed packed enum whose
+        # Arr/Obj payloads can carry `darray` side-tables (docs/76).
+        enum Node layout(handle: u32):
+            pass
+
+
+        enum Value is Node:
+            Null
+            Bool(value: bool)
+            # Raw numeric source text (e.g. "7", "-3.5e2"); decoded on demand by as_i64.
+            Num(text: sview)
+            # Raw string content between the quotes (escapes NOT yet expanded).
+            Str(text: sview)
+            Arr(items: darray[Value])
+            Obj(fields: darray[Field])
+
+
+        struct Field:
+            key: sview
+            value: Value
+
+    private:
+        # Byte at `pos`, or 0 past the end.
+        def at(src: sview, pos: usize) -> u8:
+            if pos >= sview_len(src):
+                return 0
+            return sview_at(src, pos)
+
+
+        def skip_ws(src: sview, pos: mutable usize&) -> void:
+            while pos[0] < sview_len(src):
+                c: u8 = sview_at(src, pos[0])
+                if c == 32 or c == 9 or c == 10 or c == 13:
+                    pos[0] <- pos[0] + 1
+                else:
+                    return
+
+
+        # Parse a JSON string, returning the raw content span (between the quotes). The
+        # cursor is left just past the closing quote. Backslash escapes are skipped so an
+        # escaped quote does not end the string early.
+        def parse_string_span(src: sview, pos: mutable usize&) -> sview:
+            if at(src, pos[0]) != 34:
+                return sview("", 0, 0)
+            pos[0] <- pos[0] + 1
+            start: usize = pos[0]
+            while pos[0] < sview_len(src):
+                c: u8 = sview_at(src, pos[0])
+                if c == 92:
+                    pos[0] <- pos[0] + 2
+                elif c == 34:
+                    end: usize = pos[0]
+                    pos[0] <- pos[0] + 1
+                    return string_view_slice(src, start.i64(), end.i64())
+                else:
+                    pos[0] <- pos[0] + 1
+            return string_view_slice(src, start.i64(), sview_len(src).i64())
+
+
+        def parse_number_span(src: sview, pos: mutable usize&) -> sview:
+            start: usize = pos[0]
+            while pos[0] < sview_len(src):
+                c: u8 = sview_at(src, pos[0])
+                if (c >= 48 and c <= 57) or c == 45 or c == 43 or c == 46 or c == 101 or c == 69:
+                    pos[0] <- pos[0] + 1
+                else:
+                    break
+            return string_view_slice(src, start.i64(), pos[0].i64())
+
+
+        def parse_object(src: sview, pos: mutable usize&) -> Value:
+            can Memory.Allocate, Abort.Panic:
+                fields: mutable darray[Field] = []
+                pos[0] <- pos[0] + 1                 # consume `{`
+                skip_ws(src, pos)
+                if at(src, pos[0]) == 125:           # empty `}`
+                    pos[0] <- pos[0] + 1
+                    return (Value.Obj(fields))
+                while true:
+                    skip_ws(src, pos)
+                    k: sview = parse_string_span(src, pos)
+                    skip_ws(src, pos)
+                    if at(src, pos[0]) == 58:        # `:`
+                        pos[0] <- pos[0] + 1
+                    v: Value = parse_value(src, pos)
+                    fields.push(Field{key: k, value: v})
+                    skip_ws(src, pos)
+                    if at(src, pos[0]) == 44:        # `,`
+                        pos[0] <- pos[0] + 1
+                    else:
+                        pos[0] <- pos[0] + 1         # consume `}`
+                        break
+                return (Value.Obj(fields))
+
+
+        def parse_array(src: sview, pos: mutable usize&) -> Value:
+            can Memory.Allocate, Abort.Panic:
+                items: mutable darray[Value] = []
+                pos[0] <- pos[0] + 1                 # consume `[`
+                skip_ws(src, pos)
+                if at(src, pos[0]) == 93:            # empty `]`
+                    pos[0] <- pos[0] + 1
+                    return (Value.Arr(items))
+                while true:
+                    v: Value = parse_value(src, pos)
+                    items.push(v)
+                    skip_ws(src, pos)
+                    if at(src, pos[0]) == 44:        # `,`
+                        pos[0] <- pos[0] + 1
+                    else:
+                        pos[0] <- pos[0] + 1         # consume `]`
+                        break
+                return (Value.Arr(items))
+
+
+        def parse_value(src: sview, pos: mutable usize&) -> Value:
+            can Memory.Allocate, Abort.Panic:
+                skip_ws(src, pos)
+                c: u8 = at(src, pos[0])
+                if c == 123:                         # `{`
+                    return parse_object(src, pos)
+                if c == 91:                          # `[`
+                    return parse_array(src, pos)
+                if c == 34:                          # `"`
+                    return (Value.Str(parse_string_span(src, pos)))
+                if c == 116:                         # `true`
+                    pos[0] <- pos[0] + 4
+                    return (Value.Bool(true))
+                if c == 102:                         # `false`
+                    pos[0] <- pos[0] + 5
+                    return (Value.Bool(false))
+                if c == 110:                         # `null`
+                    pos[0] <- pos[0] + 4
+                    return (Value.Null)
+                return (Value.Num(parse_number_span(src, pos)))
+
+    public:
+        # Parse a complete JSON document, returning the root value.
+        def parse(src: sview) -> Value:
+            can Memory.Allocate, Abort.Panic:
+                pos: mutable usize = 0
+                return parse_value(src, pos)
+
+
+        # Look up a field by key in an object value; null if absent or not an object.
+        def get(v: Value, key: u8&) -> Value?:
+            can Memory.Allocate, Abort.Panic:
+                match v:
+                    Value.Obj(fields):
+                        for f in fields:
+                            if string_view_eq(f.key, key) == 1:
+                                return f.value
+                    _:
+                        pass
+                return null
+
+
+        # Decode a Num value as i64 (handles a leading `-`); 0 for non-numbers.
+        def as_i64(v: Value) -> i64:
+            match v:
+                Value.Num(text):
+                    n: mutable i64 = 0
+                    neg: mutable bool = false
+                    i: mutable usize = 0
+                    if sview_len(text) > 0 and sview_at(text, 0) == 45:
+                        neg <- true
+                        i <- 1
+                    while i < sview_len(text):
+                        d: u8 = sview_at(text, i)
+                        if d >= 48 and d <= 57:
+                            n <- n * 10 + (d.i64() - 48)
+                        i <- i + 1
+                    return (0 - n) if neg else n
+                _:
+                    return 0
+
+
+        # The raw string content of a Str value; empty for non-strings.
+        def as_str(v: Value) -> sview:
+            match v:
+                Value.Str(text):
+                    return text
+                _:
+                    return sview("", 0, 0)

@@ -1,0 +1,31 @@
+# JSON smoke: parse a JSON-RPC-shaped document and navigate it (object field lookup,
+# string compare, nested array indexing). Anchors the Json module.
+include "../../../Go projects/Elisa-core/compiler/runtime/elisacore_std/elisacore_runtime.elisa"
+include "../src/json.elisa"
+
+
+def json_probe(source: u8&, source_len: usize, id_out: mutable u64&, method_ok_out: mutable u8&, arr_count_out: mutable u64&, arr1_out: mutable u64&):
+    can Memory.Allocate, Abort.Panic:
+        src: sview = sview(source, 0, source_len.i64())
+        root: Json::Value = Json::parse(src)
+        id_out[0] <- 0
+        method_ok_out[0] <- 0
+        arr_count_out[0] <- 0
+        arr1_out[0] <- 0
+        if Json::get(root, "id") is idv:
+            id_out[0] <- Json::as_i64(idv).u64()
+        if Json::get(root, "method") is mv:
+            if string_view_eq(Json::as_str(mv), "initialize") == 1:
+                method_ok_out[0] <- 1
+        if Json::get(root, "params") is pv:
+            if Json::get(pv, "a") is av:
+                match av:
+                    Json::Value.Arr(items):
+                        arr_count_out[0] <- items.count.u64()
+                        if items.count >= 2:
+                            arr1_out[0] <- Json::as_i64(items[1]).u64()
+                    _:
+                        pass
+
+
+export func json_probe_export(source: u8&, source_len: usize, id_out: mutable u64&, method_ok_out: mutable u8&, arr_count_out: mutable u64&, arr1_out: mutable u64&) -> void = json_probe
