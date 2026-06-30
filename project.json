@@ -1,0 +1,12 @@
+{
+  "version": "0.1.0",
+  "include-dirs": ["src"],
+  "targets": {
+    "elisa-lsp": {
+      "entry": "src/main.elisa",
+      "emit": "obj",
+      "output": "build/elisa-lsp.o",
+      "opt": "O2"
+    }
+  }
+}

@@ -1,0 +1,221 @@
+# Elisa Language Server — transport + initialize handshake.
+#
+# Speaks LSP over stdio (JSON-RPC with Content-Length framing). This first slice does
+# the lifecycle handshake: `initialize` -> capabilities, `shutdown`/`exit`. Request
+# parsing here is a minimal byte-scan (find the method, echo the id verbatim); the next
+# slice replaces it with a real JSON value model and wires `textDocument/didOpen` +
+# `didChange` to the frontend checker for live diagnostics.
+include "../../../Go projects/Elisa-core/compiler/runtime/elisacore_std/elisacore_runtime.elisa"
+
+extern read(fd: int, buf: void&, count: usize) -> isize can[Console]
+
+
+# ---- stdio byte transport ---------------------------------------------------------
+
+# Read one byte from stdin; -1 at EOF.
+def read_byte() -> int can[Console, Memory.Allocate, Abort.Panic]:
+    b: mutable darray[u8] = [0]
+    n: isize = read(0, (&b[0]).cast[void&], 1) can Console
+    if n <= 0:
+        return -1
+    return b[0].int()
+
+
+# Read a header line (up to LF), stripping a trailing CR. Sets `eof` at end of stream.
+def read_line(eof: mutable bool&) -> darray[u8] can[Console, Memory.Allocate, Abort.Panic]:
+    out: mutable darray[u8] = []
+    while true:
+        c: int = read_byte()
+        if c < 0:
+            eof[0] <- true
+            return out
+        if c == 10:
+            return out
+        if c != 13:
+            out.push(c.u8())
+    return out
+
+
+# Append a C-string literal's bytes to a byte buffer.
+def push_str(buf: mutable darray[u8]&, lit: u8&) -> void can[Memory.Allocate, Abort.Panic]:
+    sv: sview = sview(lit, 0, -1)
+    i: mutable usize = 0
+    while i < sview_len(sv):
+        buf.push(sview_at(sv, i))
+        i <- i + 1
+
+
+# Append the decimal digits of `n` (>= 0) to a byte buffer.
+def push_int(buf: mutable darray[u8]&, n: i64) -> void can[Memory.Allocate, Abort.Panic]:
+    if n == 0:
+        buf.push(48)
+        return
+    digits: mutable darray[u8] = []
+    v: mutable i64 = n
+    while v > 0:
+        digits.push((48 + (v % 10)).u8())
+        v <- v / 10
+    i: mutable i64 = digits.count.i64() - 1
+    while i >= 0:
+        buf.push(digits[i.usize()])
+        i <- i - 1
+
+
+# Parse a `Content-Length: N` header line, or -1 if it isn't one.
+def content_length_of(line: darray[u8]) -> i64 can[Memory.Allocate, Abort.Panic]:
+    prefix: sview = sview("Content-Length:", 0, -1)
+    if line.count.i64() < prefix.len:
+        return -1
+    head: sview = sview(&line[0], 0, prefix.len)
+    if string_views_eq(head, prefix) == 0:
+        return -1
+    n: mutable i64 = 0
+    i: mutable usize = prefix.len.usize()
+    while i < line.count:
+        ch: u8 = line[i]
+        if ch >= 48 and ch <= 57:
+            n <- n * 10 + (ch.i64() - 48)
+        i <- i + 1
+    return n
+
+
+# Read one full LSP message body. Returns false at end of stream.
+def read_message(body: mutable darray[u8]&) -> bool can[Console, Memory.Allocate, Abort.Panic]:
+    content_length: mutable i64 = -1
+    while true:
+        eof: mutable bool = false
+        line: darray[u8] = read_line(eof)
+        if eof:
+            return false
+        if line.count == 0:
+            break
+        cl: i64 = content_length_of(line)
+        if cl >= 0:
+            content_length <- cl
+    if content_length < 0:
+        return false
+    i: mutable i64 = 0
+    while i < content_length:
+        c: int = read_byte()
+        if c < 0:
+            return false
+        body.push(c.u8())
+        i <- i + 1
+    return true
+
+
+# ---- minimal request inspection (placeholder until the JSON model lands) -----------
+
+# Index of the first occurrence of `needle` in `hay`, or -1.
+def find_sub(hay: sview, needle: sview) -> i64:
+    if needle.len <= 0 or hay.len < needle.len:
+        return -1
+    last: i64 = hay.len - needle.len
+    i: mutable i64 = 0
+    while i <= last:
+        matched: mutable bool = true
+        j: mutable i64 = 0
+        while j < needle.len:
+            if sview_at(hay, (i + j).usize()) != sview_at(needle, j.usize()):
+                matched <- false
+                j <- needle.len
+            else:
+                j <- j + 1
+        if matched:
+            return i
+        i <- i + 1
+    return -1
+
+
+# Extract the raw JSON token after `"id":` (number or quoted string), echoed verbatim
+# into the response. Defaults to `null` when absent (notifications have no id).
+def extract_id(body: sview) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+    out: mutable darray[u8] = []
+    key: sview = sview("\"id\":", 0, -1)
+    at: i64 = find_sub(body, key)
+    if at < 0:
+        push_str(out, "null")
+        return out
+    i: mutable i64 = at + key.len
+    # skip spaces
+    while i < body.len and sview_at(body, i.usize()) == 32:
+        i <- i + 1
+    if i < body.len and sview_at(body, i.usize()) == 34:
+        # quoted string id: capture through the closing quote
+        out.push(34)
+        i <- i + 1
+        while i < body.len and sview_at(body, i.usize()) != 34:
+            out.push(sview_at(body, i.usize()))
+            i <- i + 1
+        out.push(34)
+        return out
+    # numeric id: capture digits
+    while i < body.len:
+        ch: u8 = sview_at(body, i.usize())
+        if ch < 48 or ch > 57:
+            i <- body.len
+        else:
+            out.push(ch)
+            i <- i + 1
+    if out.count == 0:
+        push_str(out, "null")
+    return out
+
+
+# Whether the message's method equals `name`.
+def method_is(body: sview, name: u8&) -> bool can[Memory.Allocate, Abort.Panic]:
+    needle: mutable darray[u8] = []
+    push_str(needle, "\"method\":\"")
+    push_str(needle, name)
+    pat: sview = sview(&needle[0], 0, needle.count.i64())
+    return find_sub(body, pat) >= 0
+
+
+# ---- responses --------------------------------------------------------------------
+
+# Frame and write a body to stdout: `Content-Length: N\r\n\r\n<body>`.
+def send_message(body: darray[u8]) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    out: mutable darray[u8] = []
+    push_str(out, "Content-Length: ")
+    push_int(out, body.count.i64())
+    push_str(out, "\r\n\r\n")
+    i: mutable usize = 0
+    while i < body.count:
+        out.push(body[i])
+        i <- i + 1
+    _ = write(1, (&out[0]).cast[void&], out.count.usize()) can Console
+
+
+# `{"jsonrpc":"2.0","id":<id>,"result":<result>}`
+def send_result(id_raw: darray[u8], result: u8&) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    body: mutable darray[u8] = []
+    push_str(body, "{\"jsonrpc\":\"2.0\",\"id\":")
+    i: mutable usize = 0
+    while i < id_raw.count:
+        body.push(id_raw[i])
+        i <- i + 1
+    push_str(body, ",\"result\":")
+    push_str(body, result)
+    push_str(body, "}")
+    send_message(body)
+
+
+# ---- server loop ------------------------------------------------------------------
+
+def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
+    while true:
+        body: mutable darray[u8] = []
+        if not read_message(body):
+            return 0
+        if body.count == 0:
+            return 0
+        bsv: sview = sview(&body[0], 0, body.count.i64())
+        if method_is(bsv, "initialize"):
+            id_raw: darray[u8] = extract_id(bsv)
+            send_result(id_raw, "{\"capabilities\":{\"textDocumentSync\":1}}")
+        elif method_is(bsv, "shutdown"):
+            id_raw: darray[u8] = extract_id(bsv)
+            send_result(id_raw, "null")
+        elif method_is(bsv, "exit"):
+            return 0
+    return 0
