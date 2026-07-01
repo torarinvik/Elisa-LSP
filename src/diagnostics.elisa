@@ -5,16 +5,11 @@
 # notification body. Enabled end-to-end by the stage0 region-poly-in-module fix
 # (Elisa-core 65aa624e) plus the `Json` module (src/json.elisa).
 #
-# KNOWN BUG (open): with >=1 diagnostic, the final `send_message(body)` in
-# `publish_diagnostics` aborts with "assert failed" in elisacore_std/arena.elisa:156.
-# Isolated to: reproduces only when `body` is sent *after* `Semantic::check` has run
-# (heavy internal arena use) and `body` accumulates content across the per-diagnostic
-# loop — a 0-diagnostic body of the same shape sends fine, and a same-size literal body
-# sent immediately after `check_source` (before entering the loop) also sends fine. Also
-# reproduces with `diagnostic_json` writing through a threaded `mutable&` instead of
-# returning by value, so it isn't the by-value-return escape-analysis class of bug
-# (Elisa-core memory: region-by-value-builder-uaf) — narrower and not yet root-caused.
-# Needs a minimal repro in Elisa-core's own test suite before further fixing.
+# FIXED (Elisa-core 742c2b4b): >=1 diagnostic used to abort with "assert failed" in
+# elisacore_std/arena.elisa. Root cause was a stage0 backend bug — a caller's local darray
+# routed to its own parallel arena had its backing split when passed to a forwarded-param
+# grower (resolveRegionArenaArgs ignored darrayStackTag), so a later realloc straddled two
+# arenas. The >=1-diagnostic path is now covered by test/diagnostics_test.sh.
 include "../../Elisa-compiler/src/semantic/semantic.elisa"
 
 
