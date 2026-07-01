@@ -37,7 +37,41 @@ def check_source(owner: mutable darray[u8]&, text: sview) -> Semantic::SymbolTab
         return check_source_buf(&owner[0], sview_len(text))
 
 
-# LSP diagnostic severity: 1 = Error. Both current DiagnosticKind variants are errors.
+# Append one byte to a JSON string buffer, escaping the characters JSON forbids raw
+# (`"`, `\`, and the C0 control set). Frontend-owned message text is arbitrary, so it
+# must be escaped rather than concatenated raw.
+def json_escape_byte(buf: mutable darray[u8]&, b: u8) -> void can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        if b == 34:            # "
+            push_str(buf, "\\\"")
+        elif b == 92:          # \
+            push_str(buf, "\\\\")
+        elif b == 10:          # \n
+            push_str(buf, "\\n")
+        elif b == 13:          # \r
+            push_str(buf, "\\r")
+        elif b == 9:           # \t
+            push_str(buf, "\\t")
+        elif b < 32:           # other C0 controls -> \u00XX
+            push_str(buf, "\\u00")
+            buf.push(hex_digit((b.i64() >> 4) & 15))
+            buf.push(hex_digit(b.i64() & 15))
+        else:
+            buf.push(b)
+
+
+# ASCII hex digit for a nibble 0..15.
+def hex_digit(n: i64) -> u8:
+    return (48 + n).u8() if n < 10 else (87 + n).u8()
+
+
+# Render one diagnostic as an LSP `Diagnostic` JSON object. The message text and severity
+# come straight from the frontend (`Semantic::diagnostic_message` / `diagnostic_severity`) —
+# the LSP does NOT re-derive per-kind wording or severity, so the two stay in sync as the
+# frontend gains new `DiagnosticKind`s. The LSP only owns the JSON framing and the
+# source-position mapping (line is 1-based in the frontend, 0-based in LSP; column info is
+# not yet carried by the frontend, so the range spans the whole line for now).
+#
 # Builds and returns its own buffer (rather than appending through a `mutable&` param
 # threaded across calls) — appending through a long-lived shared ref across nested calls
 # was the trigger for a latent arena-growth bug; building locally and letting the caller
@@ -49,18 +83,14 @@ def diagnostic_json(d: Semantic::Diagnostic) -> darray[u8] can[Memory.Allocate, 
         push_int(buf, (d.line.i64() - 1) if d.line > 0 else 0)
         push_str(buf, ",\"character\":0},\"end\":{\"line\":")
         push_int(buf, (d.line.i64() - 1) if d.line > 0 else 0)
-        push_str(buf, ",\"character\":999}},\"severity\":1,\"message\":\"")
-        match d.kind:
-            Semantic::DiagnosticKind.UndefinedName:
-                push_str(buf, "undefined name '")
-                push_sview(buf, d.name)
-                push_str(buf, "'")
-            Semantic::DiagnosticKind.DuplicateDecl:
-                push_str(buf, "duplicate declaration '")
-                push_sview(buf, d.name)
-                push_str(buf, "'")
-            _:
-                push_str(buf, "semantic error")
+        push_str(buf, ",\"character\":999}},\"severity\":")
+        push_int(buf, Semantic::diagnostic_severity(d).i64())
+        push_str(buf, ",\"message\":\"")
+        message: darray[u8] = Semantic::diagnostic_message(d)
+        k: mutable usize = 0
+        while k < message.count:
+            json_escape_byte(buf, message[k])
+            k <- k + 1
         push_str(buf, "\"}")
         return buf
 
