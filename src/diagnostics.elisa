@@ -78,10 +78,11 @@ def hex_digit(n: i64) -> u8:
 # source-position mapping (line is 1-based in the frontend, 0-based in LSP; column info is
 # not yet carried by the frontend, so the range spans the whole line for now).
 #
-# Builds and returns its own buffer (rather than appending through a `mutable&` param
-# threaded across calls) — appending through a long-lived shared ref across nested calls
-# was the trigger for a latent arena-growth bug; building locally and letting the caller
-# copy the finished bytes sidesteps it.
+# Builds and returns its own buffer; the caller appends it with `body.extend(...)`. (An
+# earlier arena-growth bug forced an element-wise copy here — a stack-tagged darray grown
+# through a by-reference helper had its backing split across the base and its parallel
+# stack. Fixed in Elisa-core: resolveRegionArenaArgs now peels the `&` a `mutable darray&`
+# argument is wrapped in, so the helper grows into the darray's own stack.)
 def diagnostic_json(d: Semantic::Diagnostic) -> darray[u8]:
     can Memory.Allocate, Abort.Panic:
         line0: i64 = (d.line.i64() - 1) if d.line > 0 else 0
@@ -110,7 +111,6 @@ def publish_diagnostics(uri: sview, table: Semantic::SymbolTable) -> void:
             if index > 0:
                 body.push_str(",")
             entry: darray[u8] = diagnostic_json(diagnostic)
-            for b in entry:
-                body.push(b)
+            body.extend(entry)
         body.push_str("]}}")
         send_message(body)
