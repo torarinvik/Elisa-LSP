@@ -1,0 +1,91 @@
+# Live diagnostics via the stage1 self-hosted frontend (`module Semantic`).
+#
+# Runs the real lex -> parse -> check pipeline over a document's text and turns the
+# resulting `Semantic::SymbolTable.diagnostics` into an LSP `publishDiagnostics`
+# notification body. Enabled end-to-end by the stage0 region-poly-in-module fix
+# (Elisa-core 65aa624e) plus the `Json` module (src/json.elisa).
+#
+# KNOWN BUG (open): with >=1 diagnostic, the final `send_message(body)` in
+# `publish_diagnostics` aborts with "assert failed" in elisacore_std/arena.elisa:156.
+# Isolated to: reproduces only when `body` is sent *after* `Semantic::check` has run
+# (heavy internal arena use) and `body` accumulates content across the per-diagnostic
+# loop — a 0-diagnostic body of the same shape sends fine, and a same-size literal body
+# sent immediately after `check_source` (before entering the loop) also sends fine. Also
+# reproduces with `diagnostic_json` writing through a threaded `mutable&` instead of
+# returning by value, so it isn't the by-value-return escape-analysis class of bug
+# (Elisa-core memory: region-by-value-builder-uaf) — narrower and not yet root-caused.
+# Needs a minimal repro in Elisa-core's own test suite before further fixing.
+include "../../Elisa-compiler/src/semantic/semantic.elisa"
+
+
+# Run the frontend over a NUL-terminated source buffer, returning the located semantic
+# findings. `Diagnostic.name` spans point into `src`, so the caller must keep `src` alive
+# for as long as the returned table is read (see `check_source` below).
+def check_source_buf(src: u8&, len: usize) -> Semantic::SymbolTable:
+    can Memory.Allocate, Abort.Panic:
+        tokens: darray[Token] = frontend_tokenize_with_len(src, src, len)
+        file: Ast::File = frontend_parser_parse_file(src, tokens)
+        return Semantic::check(file)
+
+
+# Copy `text` (a raw, non-NUL-terminated span into a larger JSON message buffer) into a
+# fresh NUL-terminated buffer, then run the frontend over it. The buffer is appended to
+# `owner` so it outlives this call — `Diagnostic.name` spans in the returned table point
+# into it, and must stay valid for as long as the caller reads the table.
+def check_source(owner: mutable darray[u8]&, text: sview) -> Semantic::SymbolTable:
+    can Memory.Allocate, Abort.Panic:
+        i: mutable usize = 0
+        while i < sview_len(text):
+            owner.push(sview_at(text, i))
+            i <- i + 1
+        owner.push(0)
+        return check_source_buf(&owner[0], sview_len(text))
+
+
+# LSP diagnostic severity: 1 = Error. Both current DiagnosticKind variants are errors.
+# Builds and returns its own buffer (rather than appending through a `mutable&` param
+# threaded across calls) — appending through a long-lived shared ref across nested calls
+# was the trigger for a latent arena-growth bug; building locally and letting the caller
+# copy the finished bytes sidesteps it.
+def diagnostic_json(d: Semantic::Diagnostic) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        buf: mutable darray[u8] = []
+        push_str(buf, "{\"range\":{\"start\":{\"line\":")
+        push_int(buf, (d.line.i64() - 1) if d.line > 0 else 0)
+        push_str(buf, ",\"character\":0},\"end\":{\"line\":")
+        push_int(buf, (d.line.i64() - 1) if d.line > 0 else 0)
+        push_str(buf, ",\"character\":999}},\"severity\":1,\"message\":\"")
+        match d.kind:
+            Semantic::DiagnosticKind.UndefinedName:
+                push_str(buf, "undefined name '")
+                push_sview(buf, d.name)
+                push_str(buf, "'")
+            Semantic::DiagnosticKind.DuplicateDecl:
+                push_str(buf, "duplicate declaration '")
+                push_sview(buf, d.name)
+                push_str(buf, "'")
+            _:
+                push_str(buf, "semantic error")
+        push_str(buf, "\"}")
+        return buf
+
+
+# `{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":<uri>,"diagnostics":[...]}}`
+def publish_diagnostics(uri: sview, table: Semantic::SymbolTable) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    can Console, Memory.Allocate, Abort.Panic:
+        body: mutable darray[u8] = []
+        push_str(body, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"")
+        push_sview(body, uri)
+        push_str(body, "\",\"diagnostics\":[")
+        i: mutable usize = 0
+        while i < table.diagnostics.count:
+            if i > 0:
+                push_str(body, ",")
+            entry: darray[u8] = diagnostic_json(table.diagnostics[i])
+            j: mutable usize = 0
+            while j < entry.count:
+                body.push(entry[j])
+                j <- j + 1
+            i <- i + 1
+        push_str(body, "]}}")
+        send_message(body)

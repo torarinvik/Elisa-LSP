@@ -1,9 +1,12 @@
-# Elisa Language Server — transport + initialize handshake.
+# Elisa Language Server — transport + initialize handshake + live diagnostics.
 #
 # Speaks LSP over stdio (JSON-RPC with Content-Length framing). Requests are parsed with
-# the `Json` module (module Json, src/json.elisa) rather than a byte-scan. Next slice:
-# wire `textDocument/didOpen` + `didChange` to the frontend checker for live diagnostics.
-include "../../../Go projects/Elisa-core/compiler/runtime/elisacore_std/elisacore_runtime.elisa"
+# the `Json` module (module Json, src/json.elisa). `textDocument/didOpen` and `didChange`
+# run the real stage1 frontend (`Semantic::check`, src/diagnostics.elisa) and publish
+# findings back as `textDocument/publishDiagnostics`.
+# Runtime is pulled in transitively via diagnostics.elisa -> Elisa-compiler's parser,
+# which carries its own copy of elisacore_std (a second copy would duplicate-declare).
+include "diagnostics.elisa"
 include "json.elisa"
 
 extern read(fd: int, buf: void&, count: usize) -> isize can[Console]
@@ -146,6 +149,48 @@ def extract_id(root: Json::Value) -> darray[u8] can[Memory.Allocate, Abort.Panic
     return out
 
 
+# ---- diagnostics: textDocument/didOpen + didChange ---------------------------------
+
+# `params.textDocument.uri`, or empty if malformed.
+def request_uri(root: Json::Value) -> sview can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        if Json::get(root, "params") is params:
+            if Json::get(params, "textDocument") is td:
+                if Json::get(td, "uri") is u:
+                    return Json::as_str(u)
+        return sview("", 0, 0)
+
+
+# The document's full text: `params.textDocument.text` (didOpen) or
+# `params.contentChanges[0].text` (didChange, full-document sync). Empty if malformed.
+def request_text(root: Json::Value) -> sview can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        if Json::get(root, "params") is params:
+            if Json::get(params, "textDocument") is td:
+                if Json::get(td, "text") is t:
+                    return Json::as_str(t)
+            if Json::get(params, "contentChanges") is changes:
+                match changes:
+                    Json::Value.Arr(items):
+                        if items.count > 0:
+                            if Json::get(items[0], "text") is t:
+                                return Json::as_str(t)
+                    _:
+                        pass
+        return sview("", 0, 0)
+
+
+# Run the frontend over the document and publish its findings.
+def check_and_publish(root: Json::Value) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    uri: sview = request_uri(root)
+    text: sview = request_text(root)
+    # Owns the NUL-terminated source copy that `table.diagnostics[i].name` spans point
+    # into — must outlive the `publish_diagnostics` call below.
+    src_owner: mutable darray[u8] = []
+    table: Semantic::SymbolTable = check_source(src_owner, text)
+    publish_diagnostics(uri, table)
+
+
 # ---- responses --------------------------------------------------------------------
 
 # Frame and write a body to stdout: `Content-Length: N\r\n\r\n<body>`.
@@ -194,4 +239,6 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
             send_result(id_raw, "null")
         elif method_is(root, "exit"):
             return 0
+        elif method_is(root, "textDocument/didOpen") or method_is(root, "textDocument/didChange"):
+            check_and_publish(root)
     return 0
