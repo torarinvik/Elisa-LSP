@@ -40,11 +40,8 @@ def read_line(eof: mutable bool&) -> darray[u8] can[Console, Memory.Allocate, Ab
 
 # Append a C-string literal's bytes to a byte buffer.
 def push_str(buf: mutable darray[u8]&, lit: u8&) -> void can[Memory.Allocate, Abort.Panic]:
-    sv: sview = sview(lit, 0, -1)
-    i: mutable usize = 0
-    while i < sview_len(sv):
-        buf.push(sview_at(sv, i))
-        i <- i + 1
+    for b in sview(lit, 0, -1):
+        buf.push(b)
 
 
 # Append the decimal digits of `n` (>= 0) to a byte buffer.
@@ -110,10 +107,8 @@ def read_message(body: mutable darray[u8]&) -> bool can[Console, Memory.Allocate
 
 # Append a source span's raw bytes to a byte buffer.
 def push_sview(buf: mutable darray[u8]&, sv: sview) -> void can[Memory.Allocate, Abort.Panic]:
-    i: mutable usize = 0
-    while i < sview_len(sv):
-        buf.push(sview_at(sv, i))
-        i <- i + 1
+    for b in sv:
+        buf.push(b)
 
 
 # The message's `"method"` field as a view, or empty if absent/non-string.
@@ -199,10 +194,7 @@ def send_message(body: darray[u8]) -> void can[Console, Memory.Allocate, Abort.P
     push_str(out, "Content-Length: ")
     push_int(out, body.count.i64())
     push_str(out, "\r\n\r\n")
-    i: mutable usize = 0
-    while i < body.count:
-        out.push(body[i])
-        i <- i + 1
+    out.extend(body)
     _ = write(1, (&out[0]).cast[void&], out.count.usize()) can Console
 
 
@@ -210,10 +202,7 @@ def send_message(body: darray[u8]) -> void can[Console, Memory.Allocate, Abort.P
 def send_result(id_raw: darray[u8], result: u8&) -> void can[Console, Memory.Allocate, Abort.Panic]:
     body: mutable darray[u8] = []
     push_str(body, "{\"jsonrpc\":\"2.0\",\"id\":")
-    i: mutable usize = 0
-    while i < id_raw.count:
-        body.push(id_raw[i])
-        i <- i + 1
+    body.extend(id_raw)
     push_str(body, ",\"result\":")
     push_str(body, result)
     push_str(body, "}")
