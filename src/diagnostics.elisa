@@ -46,24 +46,24 @@ def check_source(owner: mutable darray[u8]&, text: sview) -> Semantic::SymbolTab
 # Append one byte to a JSON string buffer, escaping the characters JSON forbids raw
 # (`"`, `\`, and the C0 control set). Frontend-owned message text is arbitrary, so it
 # must be escaped rather than concatenated raw.
-def json_escape_byte(buf: mutable darray[u8]&, b: u8) -> void can[Memory.Allocate, Abort.Panic]:
+def json_escape_byte(buffer: mutable darray[u8]&, b: u8) -> void:
     can Memory.Allocate, Abort.Panic:
         if b == 34:            # "
-            push_str(buf, "\\\"")
+            buffer.push_str("\\\"")
         elif b == 92:          # \
-            push_str(buf, "\\\\")
+            buffer.push_str("\\\\")
         elif b == 10:          # \n
-            push_str(buf, "\\n")
+            buffer.push_str("\\n")
         elif b == 13:          # \r
-            push_str(buf, "\\r")
+            buffer.push_str("\\r")
         elif b == 9:           # \t
-            push_str(buf, "\\t")
+            buffer.push_str("\\t")
         elif b < 32:           # other C0 controls -> \u00XX
-            push_str(buf, "\\u00")
-            buf.push(hex_digit((b.i64() >> 4) & 15))
-            buf.push(hex_digit(b.i64() & 15))
+            buffer.push_str("\\u00")
+            buffer.push(hex_digit((b.i64() >> 4) & 15))
+            buffer.push(hex_digit(b.i64() & 15))
         else:
-            buf.push(b)
+            buffer.push(b)
 
 
 # ASCII hex digit for a nibble 0..15.
@@ -82,41 +82,35 @@ def hex_digit(n: i64) -> u8:
 # threaded across calls) — appending through a long-lived shared ref across nested calls
 # was the trigger for a latent arena-growth bug; building locally and letting the caller
 # copy the finished bytes sidesteps it.
-def diagnostic_json(d: Semantic::Diagnostic) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+def diagnostic_json(d: Semantic::Diagnostic) -> darray[u8]:
     can Memory.Allocate, Abort.Panic:
-        buf: mutable darray[u8] = []
-        push_str(buf, "{\"range\":{\"start\":{\"line\":")
-        push_int(buf, (d.line.i64() - 1) if d.line > 0 else 0)
-        push_str(buf, ",\"character\":0},\"end\":{\"line\":")
-        push_int(buf, (d.line.i64() - 1) if d.line > 0 else 0)
-        push_str(buf, ",\"character\":999}},\"severity\":")
-        push_int(buf, Semantic::diagnostic_severity(d).i64())
-        push_str(buf, ",\"message\":\"")
-        message: darray[u8] = Semantic::diagnostic_message(d)
-        k: mutable usize = 0
-        while k < message.count:
-            json_escape_byte(buf, message[k])
-            k <- k + 1
-        push_str(buf, "\"}")
-        return buf
+        line0: i64 = (d.line.i64() - 1) if d.line > 0 else 0
+        buffer: mutable darray[u8] = []
+        buffer.push_str("{\"range\":{\"start\":{\"line\":")
+        buffer.push_int(line0)
+        buffer.push_str(",\"character\":0},\"end\":{\"line\":")
+        buffer.push_int(line0)
+        buffer.push_str(",\"character\":999}},\"severity\":")
+        buffer.push_int(Semantic::diagnostic_severity(d).i64())
+        buffer.push_str(",\"message\":\"")
+        for b in Semantic::diagnostic_message(d):
+            json_escape_byte(buffer, b)
+        buffer.push_str("\"}")
+        return buffer
 
 
 # `{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":<uri>,"diagnostics":[...]}}`
-def publish_diagnostics(uri: sview, table: Semantic::SymbolTable) -> void can[Console, Memory.Allocate, Abort.Panic]:
+def publish_diagnostics(uri: sview, table: Semantic::SymbolTable) -> void:
     can Console, Memory.Allocate, Abort.Panic:
         body: mutable darray[u8] = []
-        push_str(body, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"")
-        push_sview(body, uri)
-        push_str(body, "\",\"diagnostics\":[")
-        i: mutable usize = 0
-        while i < table.diagnostics.count:
-            if i > 0:
-                push_str(body, ",")
-            entry: darray[u8] = diagnostic_json(table.diagnostics[i])
-            j: mutable usize = 0
-            while j < entry.count:
-                body.push(entry[j])
-                j <- j + 1
-            i <- i + 1
-        push_str(body, "]}}")
+        body.push_str("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"")
+        body.push_sview(uri)
+        body.push_str("\",\"diagnostics\":[")
+        for index, diagnostic in table.diagnostics.enumerate():
+            if index > 0:
+                body.push_str(",")
+            entry: darray[u8] = diagnostic_json(diagnostic)
+            for b in entry:
+                body.push(b)
+        body.push_str("]}}")
         send_message(body)
