@@ -5,6 +5,12 @@
 # notification body. Enabled end-to-end by the stage0 region-poly-in-module fix
 # (Elisa-core 65aa624e) plus the `Json` module (src/json.elisa).
 #
+# The diagnostic stream is entirely the frontend's: `Semantic::check` folds the parser's
+# syntax findings (`Ast::File.errors`) in alongside the checker's semantic findings, and
+# per-diagnostic wording + severity come from `Semantic::diagnostic_message` /
+# `diagnostic_severity`. The LSP re-derives none of that — it only frames the JSON and
+# maps source positions.
+#
 # FIXED (Elisa-core 742c2b4b): >=1 diagnostic used to abort with "assert failed" in
 # elisacore_std/arena.elisa. Root cause was a stage0 backend bug — a caller's local darray
 # routed to its own parallel arena had its backing split when passed to a forwarded-param
