@@ -9,6 +9,11 @@
 include "diagnostics.elisa"
 include "json.elisa"
 
+# Byte-buffer builders (push_str/push_int/push_sview) come from the frontend's `module Bytes`
+# (Elisa-compiler src/bytes.elisa), pulled in transitively via diagnostics.elisa. `using`
+# makes them callable unqualified and as UFCS methods.
+using Bytes
+
 extern read(fd: int, buf: void&, count: usize) -> isize can[Console]
 
 
@@ -36,28 +41,6 @@ def read_line(eof: mutable bool&) -> darray[u8] can[Console, Memory.Allocate, Ab
         if c != 13:
             out.push(c.u8())
     return out
-
-
-# Append a C-string literal's bytes to a byte buffer.
-def push_str(buf: mutable darray[u8]&, lit: u8&) -> void can[Memory.Allocate, Abort.Panic]:
-    for b in sview(lit, 0, -1):
-        buf.push(b)
-
-
-# Append the decimal digits of `n` (>= 0) to a byte buffer.
-def push_int(buf: mutable darray[u8]&, n: i64) -> void can[Memory.Allocate, Abort.Panic]:
-    if n == 0:
-        buf.push(48)
-        return
-    digits: mutable darray[u8] = []
-    v: mutable i64 = n
-    while v > 0:
-        digits.push((48 + (v % 10)).u8())
-        v <- v / 10
-    i: mutable i64 = digits.count.i64() - 1
-    while i >= 0:
-        buf.push(digits[i.usize()])
-        i <- i - 1
 
 
 # Parse a `Content-Length: N` header line, or -1 if it isn't one.
@@ -104,12 +87,6 @@ def read_message(body: mutable darray[u8]&) -> bool can[Console, Memory.Allocate
 
 
 # ---- request inspection (Json module) ----------------------------------------------
-
-# Append a source span's raw bytes to a byte buffer.
-def push_sview(buf: mutable darray[u8]&, sv: sview) -> void can[Memory.Allocate, Abort.Panic]:
-    for b in sv:
-        buf.push(b)
-
 
 # The message's `"method"` field as a view, or empty if absent/non-string.
 def request_method(root: Json::Value) -> sview can[Memory.Allocate, Abort.Panic]:

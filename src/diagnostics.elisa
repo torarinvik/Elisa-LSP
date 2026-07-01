@@ -18,6 +18,10 @@
 # arenas. The >=1-diagnostic path is now covered by test/diagnostics_test.sh.
 include "../../Elisa-compiler/src/semantic/semantic.elisa"
 
+# push_str/push_int/push_sview come from the frontend's `module Bytes` (src/bytes.elisa),
+# pulled in via the include above; `using` makes them callable as UFCS methods here.
+using Bytes
+
 
 # Run the frontend over a NUL-terminated source buffer, returning the located semantic
 # findings. `Diagnostic.name` spans point into `src`, so the caller must keep `src` alive
