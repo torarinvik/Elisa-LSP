@@ -60,9 +60,17 @@ operator families sit at low chroma so they read as connective tissue while
 hue still encodes meaning — assign near bindings-green, logical near effects-
 violet, arithmetic warm like the value literals, comparison/bitwise cool.
 Identifier bindings (params/locals/fields → bind.local, `.field` → bind.field)
-and effect dotted names after `can`/`trusted` are now emitted lexically as
-best-effort guesses; the future [S] symbol-table pass refines them.
+and effect dotted names after `can`/`trusted` are emitted lexically. The **[S]
+layer** then refines bare references against the real symbol table (parse +
+collect): a name declared as a Struct/Enum/Alias → type.user, Func/Extern →
+fn.use, Const → bind.global, Module → meta.module — so even a lowercase type or
+a function passed as a value colors correctly.
 
-Remaining gap: **comments** (index 40 is reserved, but the frontend lexer
-discards comments so they never reach the classifier — needs a comment token
-kind in the lexer, or a client-side/standalone comment scan in the LSP).
+**Comments** (index 40) are now emitted: the frontend lexer collects comment
+spans in a side channel (frontend_tokenize_comments_with_len) and the LSP merges
+them into the token stream by position.
+
+Remaining refinement: the [S] layer is name-based (top-level declarations), not
+per-occurrence — it cannot yet distinguish a param from a local from a field, or
+a local that shadows a global. That needs the resolver to record per-occurrence
+resolutions (a larger change).

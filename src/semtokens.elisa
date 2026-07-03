@@ -134,10 +134,31 @@ def semtok_ident_class(text: sview) -> i64 can[Memory.Allocate, Abort.Panic]:
         return -1
 
 
-# Classify one token; -1 = no token emitted (IDE default styling).
-# `prev`/`next` are the neighboring token kinds (Eof when out of range) for
-# the two lexical [S]-approximations that work: `def NAME` and `NAME(`.
-def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: Lexer::TokenKind, in_effect: bool) -> i64 can[Memory.Allocate, Abort.Panic]:
+# [S] layer: map a name to the token type implied by its top-level declaration
+# (Struct/Enum/Alias→type.user, Func/Extern→fn.use, Const→global, Module→module,
+# Law→decl). Linear scan of the symbol table (per-file scale). -1 = no match.
+def symbol_ttype(table: Semantic::SymbolTable&, name: sview) -> i64:
+    for sym in table.symbols:
+        if string_views_eq(sym.name, name) != 0:
+            k: Semantic::SymbolKind = sym.kind
+            if k == Semantic::SymbolKind.Func or k == Semantic::SymbolKind.Extern:
+                return ST_FN_USE
+            if k == Semantic::SymbolKind.Struct or k == Semantic::SymbolKind.Enum or k == Semantic::SymbolKind.Alias:
+                return ST_TYPE_USER
+            if k == Semantic::SymbolKind.Const:
+                return ST_BIND_GLOBAL
+            if k == Semantic::SymbolKind.Module or k == Semantic::SymbolKind.Import:
+                return ST_META_MODULE
+            if k == Semantic::SymbolKind.Law:
+                return ST_DECL_SKELETON
+            return -1
+    return -1
+
+
+# Classify one token; -1 = no token emitted (IDE default styling). `prev`/`next`
+# are the neighboring token kinds; `table` is the real symbol table so bare
+# references take their declared kind ([S] layer) rather than a lexical guess.
+def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: Lexer::TokenKind, in_effect: bool, table: Semantic::SymbolTable&) -> i64 can[Memory.Allocate, Abort.Panic]:
     can Memory.Allocate, Abort.Panic:
         kind: Lexer::TokenKind = tok.kind
         if kind == Lexer::TokenKind.Ident:
@@ -154,22 +175,32 @@ def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: L
             # names an effect (Memory.Allocate, Console, …) — tint the family.
             if in_effect:
                 return ST_EFFECT_NAME
-            # `NAME(` — call position (def handled above).
-            if next == Lexer::TokenKind.LParen:
-                return ST_FN_USE
             # Decorator name right after `@` (the At token colors too).
             if prev == Lexer::TokenKind.At:
                 return ST_META_DECORATOR
-            # `.field` member access (a trailing `(` was caught above as a call).
+            # Member access is always a field or method — decided before the
+            # symbol table, so a `.field` sharing a top-level name isn't mistaken
+            # for that declaration.
             if prev == Lexer::TokenKind.Dot:
+                if next == Lexer::TokenKind.LParen:
+                    return ST_FN_USE
                 return ST_BIND_FIELD
-            # PascalCase → a user-type reference (Point, Self, …). A lexical
-            # guess; the future [S] pass corrects capitalized value bindings.
+            # [S] layer: a bare reference matching a real top-level declaration
+            # takes that declaration's kind (so `Point(...)` is a type, a bare
+            # function value is fn.use, a const is a global, …).
+            by_symbol: i64 = symbol_ttype(table, text)
+            if by_symbol >= 0:
+                return by_symbol
+            # Unknown name in call position — best-effort function use.
+            if next == Lexer::TokenKind.LParen:
+                return ST_FN_USE
+            # PascalCase → a user-type reference (Point, Self, …). Lexical guess
+            # for names with no top-level declaration in this file.
             first: u8 = src[tok.start.usize()]
             if first >= 65 and first <= 90:
                 return ST_TYPE_USER
-            # Otherwise it is a value binding (param / local / field name). This
-            # is the [L]-layer default so no identifier stays uncolored.
+            # Otherwise it is a value binding (param / local / field name). The
+            # default so no identifier stays uncolored.
             return ST_BIND_LOCAL
         if kind == Lexer::TokenKind.IntLit or kind == Lexer::TokenKind.HexLit:
             return ST_LIT_INT
@@ -258,7 +289,7 @@ struct SemTok:
 
 # Classify the main token stream into absolute-position entries, tracking the
 # `can[…]` / `trusted …` effect-list context so effect names colour correctly.
-def semtok_main_entries(src: u8&, src_len: usize) -> darray[SemTok]:
+def semtok_main_entries(src: u8&, src_len: usize, table: Semantic::SymbolTable&) -> darray[SemTok]:
     can Memory.Allocate, Abort.Panic:
         tokens: darray[Lexer::Token] = frontend_tokenize_with_len(src, src, src_len)
         entries: mutable darray[SemTok] = []
@@ -280,7 +311,7 @@ def semtok_main_entries(src: u8&, src_len: usize) -> darray[SemTok]:
             in_effect: mutable bool = effect_depth >= 0 or block_effect
             if grant_pending and tok.kind != Lexer::TokenKind.LBracket:
                 in_effect <- true            # first effect ident of a block form
-            ttype: i64 = semtok_classify(tok, src, prev_kind, next_kind, in_effect)
+            ttype: i64 = semtok_classify(tok, src, prev_kind, next_kind, in_effect, table)
             emit_len: i64 = semtok_display_length(tok, src, src_len)
             if ttype >= 0 and emit_len > 0:
                 entries.push(SemTok{line: tok.line.i64() - 1, col: tok.column.i64() - 1, length: emit_len, ttype: ttype})
@@ -328,7 +359,10 @@ def semtok_comment_entries(src: u8&, src_len: usize) -> darray[SemTok]:
 # — a linear merge, no sort — before delta-encoding.
 def semtok_data_body(src: u8&, src_len: usize) -> darray[u8]:
     can Memory.Allocate, Abort.Panic:
-        entries: darray[SemTok] = semtok_main_entries(src, src_len)
+        # The real symbol table (parse + collect) drives the [S] layer: bare
+        # identifiers take their declared kind. Borrows `src`, which outlives it.
+        table: Semantic::SymbolTable = check_source_buf(src, src_len)
+        entries: darray[SemTok] = semtok_main_entries(src, src_len, table)
         comments: darray[SemTok] = semtok_comment_entries(src, src_len)
         body: mutable darray[u8] = []
         push_str(body, "{\"data\":[")
