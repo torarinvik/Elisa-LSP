@@ -1,0 +1,264 @@
+# Semantic tokens (lexical layer): full-file token classification served from
+# the REAL frontend lexer — the same single source of truth as diagnostics.
+#
+# Token types follow docs/highlight-taxonomy.md: the legend order below is the
+# wire index and MUST stay in lockstep with the client palette (the JetBrains
+# plugin maps these names to the OKLCH-derived colors in the same doc).
+# This layer classifies what the token stream alone can know ([L] leaves);
+# the [S] leaves (binding kinds, user types, def/use from the symbol table)
+# arrive in a later pass and will override these client-side.
+
+# Legend index constants (wire protocol — order is meaning).
+const ST_TYPE_INT_SIGNED: i64 = 0
+const ST_TYPE_INT_UNSIGNED: i64 = 1
+const ST_TYPE_FLOAT: i64 = 2
+const ST_TYPE_SCALAR: i64 = 3
+const ST_TYPE_STRING: i64 = 4
+const ST_TYPE_CONTAINER: i64 = 5
+const ST_TYPE_USER: i64 = 6
+const ST_TYPE_VOID: i64 = 7
+const ST_LIT_INT: i64 = 8
+const ST_LIT_FLOAT: i64 = 9
+const ST_LIT_CHAR: i64 = 10
+const ST_LIT_STRING: i64 = 11
+const ST_LIT_VALUE: i64 = 12
+const ST_FN_DEF: i64 = 13
+const ST_FN_USE: i64 = 14
+const ST_FN_LAMBDA: i64 = 15
+const ST_BIND_PARAM: i64 = 16
+const ST_BIND_LOCAL: i64 = 17
+const ST_BIND_FIELD: i64 = 18
+const ST_BIND_GLOBAL: i64 = 19
+const ST_BIND_DISCARD: i64 = 20
+const ST_EFFECT_GRANT: i64 = 21
+const ST_EFFECT_NAME: i64 = 22
+const ST_EFFECT_UNSAFE: i64 = 23
+const ST_EFFECT_ERROR: i64 = 24
+const ST_MEM_REGION: i64 = 25
+const ST_MEM_QUALIFIER: i64 = 26
+const ST_FLOW_BRANCH: i64 = 27
+const ST_FLOW_ERROR: i64 = 28
+const ST_FLOW_CONCURRENT: i64 = 29
+const ST_DECL_SKELETON: i64 = 30
+const ST_CONTRACT_CLAUSE: i64 = 31
+const ST_CONTRACT_QUANTIFIER: i64 = 32
+const ST_CONTRACT_GHOST: i64 = 33
+const ST_OP_MUTATION: i64 = 34
+const ST_OP_LAMBDA: i64 = 35
+const ST_OP_RANGE: i64 = 36
+const ST_META_DECORATOR: i64 = 37
+const ST_META_DIRECTIVE: i64 = 38
+const ST_META_MODULE: i64 = 39
+
+# The legend, embedded in the initialize capabilities. Names mirror the
+# taxonomy leaves; the client palette keys off these exact strings.
+def semtok_legend_json() -> u8&:
+    return "[\"elisa.type.int.signed\",\"elisa.type.int.unsigned\",\"elisa.type.float\",\"elisa.type.scalar\",\"elisa.type.string\",\"elisa.type.container\",\"elisa.type.user\",\"elisa.type.void\",\"elisa.lit.int\",\"elisa.lit.float\",\"elisa.lit.char\",\"elisa.lit.string\",\"elisa.lit.value\",\"elisa.fn.def\",\"elisa.fn.use\",\"elisa.fn.lambda\",\"elisa.bind.param\",\"elisa.bind.local\",\"elisa.bind.field\",\"elisa.bind.global\",\"elisa.bind.discard\",\"elisa.effect.grant\",\"elisa.effect.name\",\"elisa.effect.unsafe\",\"elisa.effect.error\",\"elisa.mem.region\",\"elisa.mem.qualifier\",\"elisa.flow.branch\",\"elisa.flow.error\",\"elisa.flow.concurrent\",\"elisa.decl.skeleton\",\"elisa.contract.clause\",\"elisa.contract.quantifier\",\"elisa.contract.ghost\",\"elisa.op.mutation\",\"elisa.op.lambda\",\"elisa.op.range\",\"elisa.meta.decorator\",\"elisa.meta.directive\",\"elisa.meta.module\"]"
+
+
+# Classify a contextual identifier by its text ([L] approximation: text match
+# without scope info — a local named `can` will tint violet; acceptable for
+# the lexical layer, corrected later by the [S] pass).
+def semtok_ident_class(text: sview) -> i64 can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        # 1. Types
+        if text == "int" or text == "i8" or text == "i16" or text == "i32" or text == "i64" or text == "isize":
+            return ST_TYPE_INT_SIGNED
+        if text == "u8" or text == "u16" or text == "u32" or text == "u64" or text == "usize" or text == "uintptr":
+            return ST_TYPE_INT_UNSIGNED
+        if text == "f32" or text == "f64":
+            return ST_TYPE_FLOAT
+        if text == "bool" or text == "char":
+            return ST_TYPE_SCALAR
+        if text == "cstr" or text == "dstr" or text == "sview":
+            return ST_TYPE_STRING
+        if text == "darray" or text == "dict" or text == "set" or text == "view" or text == "array" or text == "id":
+            return ST_TYPE_CONTAINER
+        if text == "void":
+            return ST_TYPE_VOID
+        if text == "Arena" or text == "Self":
+            return ST_TYPE_USER
+        # 5. Effects & permissions
+        if text == "can" or text == "uses":
+            return ST_EFFECT_GRANT
+        if text == "trusted":
+            return ST_EFFECT_UNSAFE
+        if text == "Unsafe":
+            return ST_EFFECT_UNSAFE
+        if text == "raises":
+            return ST_EFFECT_ERROR
+        # 6. Memory & regions
+        if text == "region" or text == "destroy" or text == "perm" or text == "owner":
+            return ST_MEM_REGION
+        if text == "move":
+            return ST_MEM_QUALIFIER
+        # 7. Control flow (contextual)
+        if text == "for" or text == "defer" or text == "guard" or text == "do" or text == "get":
+            return ST_FLOW_BRANCH
+        if text == "parallel" or text == "nursery" or text == "pool" or text == "submit" or text == "await" or text == "wait" or text == "lock" or text == "spawn_daemon":
+            return ST_FLOW_CONCURRENT
+        # 8. Declaration skeleton (contextual)
+        if text == "module" or text == "extend" or text == "using" or text == "include" or text == "public" or text == "private":
+            return ST_DECL_SKELETON
+        if text == "type" or text == "alias" or text == "law" or text == "permission" or text == "effect" or text == "protocol" or text == "impl":
+            return ST_DECL_SKELETON
+        if text == "affine" or text == "linear" or text == "layout" or text == "common" or text == "of" or text == "at":
+            return ST_DECL_SKELETON
+        # 9. Contracts
+        if text == "requires" or text == "ensure" or text == "ensures" or text == "invariant" or text == "decreases" or text == "changes" or text == "preserves" or text == "fulfills":
+            return ST_CONTRACT_CLAUSE
+        if text == "forall" or text == "exists" or text == "where":
+            return ST_CONTRACT_QUANTIFIER
+        if text == "ghost" or text == "lemma":
+            return ST_CONTRACT_GHOST
+        # 3. Lambda heads
+        if text == "fn" or text == "λ" or text == "Λ" or text == "ƛ":
+            return ST_FN_LAMBDA
+        # 11. Directives
+        if text == "generate" or text == "emit":
+            return ST_META_DIRECTIVE
+        # 4g. Discard
+        if text == "_":
+            return ST_BIND_DISCARD
+        return -1
+
+
+# Classify one token; -1 = no token emitted (IDE default styling).
+# `prev`/`next` are the neighboring token kinds (Eof when out of range) for
+# the two lexical [S]-approximations that work: `def NAME` and `NAME(`.
+def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: Lexer::TokenKind) -> i64 can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        kind: Lexer::TokenKind = tok.kind
+        if kind == Lexer::TokenKind.Ident:
+            # `def NAME` — function definition name (reliable lexically).
+            if prev == Lexer::TokenKind.Def:
+                return ST_FN_DEF
+            text: sview = Lexer::text_or_empty(tok, src)
+            by_text: i64 = semtok_ident_class(text)
+            if by_text >= 0:
+                return by_text
+            # `NAME(` — call position (def handled above).
+            if next == Lexer::TokenKind.LParen:
+                return ST_FN_USE
+            # Decorator name right after `@` (the At token colors too).
+            if prev == Lexer::TokenKind.At:
+                return ST_META_DECORATOR
+            return -1
+        if kind == Lexer::TokenKind.IntLit or kind == Lexer::TokenKind.HexLit:
+            return ST_LIT_INT
+        if kind == Lexer::TokenKind.FloatLit:
+            return ST_LIT_FLOAT
+        if kind == Lexer::TokenKind.CharLit:
+            return ST_LIT_CHAR
+        if kind == Lexer::TokenKind.StringLit:
+            return ST_LIT_STRING
+        if kind == Lexer::TokenKind.True or kind == Lexer::TokenKind.False or kind == Lexer::TokenKind.Null or kind == Lexer::TokenKind.Zeroed:
+            return ST_LIT_VALUE
+        if kind == Lexer::TokenKind.If or kind == Lexer::TokenKind.Elif or kind == Lexer::TokenKind.Else or kind == Lexer::TokenKind.While or kind == Lexer::TokenKind.Break or kind == Lexer::TokenKind.Continue or kind == Lexer::TokenKind.Return or kind == Lexer::TokenKind.Pass or kind == Lexer::TokenKind.Match:
+            return ST_FLOW_BRANCH
+        if kind == Lexer::TokenKind.Try or kind == Lexer::TokenKind.Catch or kind == Lexer::TokenKind.Raise or kind == Lexer::TokenKind.Panic or kind == Lexer::TokenKind.Error:
+            return ST_FLOW_ERROR
+        if kind == Lexer::TokenKind.Def or kind == Lexer::TokenKind.Struct or kind == Lexer::TokenKind.Enum or kind == Lexer::TokenKind.Const or kind == Lexer::TokenKind.Global or kind == Lexer::TokenKind.Extern or kind == Lexer::TokenKind.Export or kind == Lexer::TokenKind.Packed or kind == Lexer::TokenKind.Repr or kind == Lexer::TokenKind.Is or kind == Lexer::TokenKind.With:
+            return ST_DECL_SKELETON
+        if kind == Lexer::TokenKind.Sizeof or kind == Lexer::TokenKind.Alignof or kind == Lexer::TokenKind.Offsetof:
+            return ST_DECL_SKELETON
+        if kind == Lexer::TokenKind.Static:
+            return ST_META_DIRECTIVE
+        if kind == Lexer::TokenKind.Region or kind == Lexer::TokenKind.New:
+            return ST_MEM_REGION
+        if kind == Lexer::TokenKind.Heap or kind == Lexer::TokenKind.Stack or kind == Lexer::TokenKind.Tail:
+            return ST_MEM_QUALIFIER
+        if kind == Lexer::TokenKind.Mutable or kind == Lexer::TokenKind.LArrow:
+            return ST_OP_MUTATION
+        if kind == Lexer::TokenKind.FatArrow:
+            return ST_OP_LAMBDA
+        if kind == Lexer::TokenKind.Range or kind == Lexer::TokenKind.RangeLt or kind == Lexer::TokenKind.RangeGt or kind == Lexer::TokenKind.RangeLe:
+            return ST_OP_RANGE
+        if kind == Lexer::TokenKind.At:
+            return ST_META_DECORATOR
+        return -1
+
+
+# Tokenize `src` and build the LSP delta-encoded `{"data":[...]}` payload.
+# Mirrors check_source_buf's shape: the region-polymorphic tokenize call lives
+# behind a plain `u8& + len` boundary (calling it directly on a value derived
+# from a darray param trips a stage0 "__auto_N during LLVM lowering" bug).
+def semtok_data_body(src: u8&, src_len: usize) -> darray[u8]:
+    can Memory.Allocate, Abort.Panic:
+        tokens: darray[Lexer::Token] = frontend_tokenize_with_len(src, src, src_len)
+        body: mutable darray[u8] = []
+        push_str(body, "{\"data\":[")
+        prev_line: mutable i64 = 0
+        prev_col: mutable i64 = 0
+        first: mutable bool = true
+        i: mutable usize = 0
+        while i < tokens.count:
+            tok: Lexer::Token = tokens[i]
+            prev_kind: mutable Lexer::TokenKind = Lexer::TokenKind.Eof
+            if i > 0:
+                prev_kind <- tokens[i - 1].kind
+            next_kind: mutable Lexer::TokenKind = Lexer::TokenKind.Eof
+            if i + 1 < tokens.count:
+                next_kind <- tokens[i + 1].kind
+            ttype: i64 = semtok_classify(tok, src, prev_kind, next_kind)
+            if ttype >= 0 and tok.length > 0:
+                line: i64 = tok.line.i64() - 1        # lexer is 1-based; LSP wants 0-based
+                col: i64 = tok.column.i64() - 1
+                dl: i64 = line - prev_line
+                dc: mutable i64 = col
+                if dl == 0:
+                    dc <- col - prev_col
+                if not first:
+                    body.push(44)
+                push_int(body, dl)
+                body.push(44)
+                push_int(body, dc)
+                body.push(44)
+                push_int(body, tok.length.i64())
+                body.push(44)
+                push_int(body, ttype)
+                push_str(body, ",0")
+                first <- false
+                prev_line <- line
+                prev_col <- col
+            i <- i + 1
+        push_str(body, "]}")
+        return body
+
+
+# Handle `textDocument/semanticTokens/full`: tokenize the cached document and
+# emit the LSP delta-encoded data array. Unknown/uncached uri -> empty data.
+def handle_semantic_tokens(root: Json::Value, doc_uri: darray[u8], doc_text: darray[u8]) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    id_raw: darray[u8] = extract_id(root)
+    uri: sview = request_uri(root)
+    if doc_uri.count == 0 or doc_text.count == 0:
+        send_result(id_raw, "{\"data\":[]}")
+        return
+    cached: sview = sview(&doc_uri[0], 0, doc_uri.count.i64())
+    if string_views_eq(uri, cached) == 0:
+        send_result(id_raw, "{\"data\":[]}")
+        return
+    semtok_respond(id_raw, doc_text)
+
+
+# Region-poly call site isolated in a return-free helper: combining the
+# darray-returning builder with the validation early-returns above trips a
+# stage0 "__auto_N during LLVM lowering" bug (auto-region adoption vs branch
+# structure — same family as task_00a7fdf3).
+def semtok_respond(id_raw: darray[u8], doc_text: darray[u8]) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    local_src: mutable darray[u8] = []
+    for b in doc_text:
+        local_src.push(b)
+    body: darray[u8] = semtok_data_body(&local_src[0], local_src.count - 1)
+    send_result_body(id_raw, body)
+
+
+# `send_result` variant whose result payload is an owned buffer.
+def send_result_body(id_raw: darray[u8], result: darray[u8]) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    body: mutable darray[u8] = []
+    push_str(body, "{\"jsonrpc\":\"2.0\",\"id\":")
+    body.extend(id_raw)
+    push_str(body, ",\"result\":")
+    body.extend(result)
+    push_str(body, "}")
+    send_message(body)

@@ -8,6 +8,7 @@
 # which carries its own copy of elisacore_std (a second copy would duplicate-declare).
 include "diagnostics.elisa"
 include "json.elisa"
+include "semtokens.elisa"
 
 # Byte-buffer builders (push_str/push_int/push_sview) come from the frontend's `module Bytes`
 # (Elisa-compiler src/bytes.elisa), pulled in transitively via diagnostics.elisa. `using`
@@ -154,18 +155,23 @@ def request_text_value(root: Json::Value) -> Json::Value? can[Memory.Allocate, A
         return null
 
 
-# Run the frontend over the document and publish its findings.
-def check_and_publish(root: Json::Value) -> void can[Console, Memory.Allocate, Abort.Panic]:
+# Run the frontend over the document and publish its findings. The decoded
+# text and its uri are stored into the SESSION document cache (owned by the
+# main loop) so later `semanticTokens/full` requests — which carry only the
+# uri — can re-tokenize the current content.
+def check_and_publish(root: Json::Value, doc_uri: mutable darray[u8]&, doc_text: mutable darray[u8]&) -> void can[Console, Memory.Allocate, Abort.Panic]:
     uri: sview = request_uri(root)
-    # Owns the DECODED, NUL-terminated source (JSON escapes expanded) that
-    # `table.diagnostics[i].name` spans point into — must outlive the
-    # `publish_diagnostics` call below.
-    src_owner: mutable darray[u8] = []
+    doc_uri.truncate(0)
+    for i in 0..<uri.len.usize():
+        doc_uri.push(sview_at(uri, i))
+    # The DECODED, NUL-terminated source (JSON escapes expanded) that
+    # `table.diagnostics[i].name` spans point into — session-lived.
+    doc_text.truncate(0)
     if request_text_value(root) is tv:
-        Json::decode_into(tv, src_owner)
-    src_len: usize = src_owner.count
-    src_owner.push(0)
-    table: Semantic::SymbolTable = check_source_buf(&src_owner[0], src_len)
+        Json::decode_into(tv, doc_text)
+    src_len: usize = doc_text.count
+    doc_text.push(0)
+    table: Semantic::SymbolTable = check_source_buf(&doc_text[0], src_len)
     publish_diagnostics(uri, table)
 
 
@@ -195,6 +201,10 @@ def send_result(id_raw: darray[u8], result: u8&) -> void can[Console, Memory.All
 # ---- server loop ------------------------------------------------------------------
 
 def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
+    # Session document cache (single most-recent document): uri bytes + the
+    # decoded NUL-terminated text. Owned here so it outlives every request.
+    doc_uri: mutable darray[u8] = []
+    doc_text: mutable darray[u8] = []
     while true:
         body: mutable darray[u8] = []
         if not read_message(body):
@@ -205,12 +215,18 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
         root: Json::Value = Json::parse(bsv)
         if method_is(root, "initialize"):
             id_raw: darray[u8] = extract_id(root)
-            send_result(id_raw, "{\"capabilities\":{\"textDocumentSync\":1}}")
+            caps: mutable darray[u8] = []
+            push_str(caps, "{\"capabilities\":{\"textDocumentSync\":1,\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":")
+            push_str(caps, semtok_legend_json())
+            push_str(caps, ",\"tokenModifiers\":[]},\"full\":true}}}")
+            send_result_body(id_raw, caps)
         elif method_is(root, "shutdown"):
             id_raw: darray[u8] = extract_id(root)
             send_result(id_raw, "null")
         elif method_is(root, "exit"):
             return 0
         elif method_is(root, "textDocument/didOpen") or method_is(root, "textDocument/didChange"):
-            check_and_publish(root)
+            check_and_publish(root, doc_uri, doc_text)
+        elif method_is(root, "textDocument/semanticTokens/full"):
+            handle_semantic_tokens(root, doc_uri, doc_text)
     return 0
