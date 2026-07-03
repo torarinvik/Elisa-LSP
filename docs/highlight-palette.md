@@ -70,7 +70,11 @@ a function passed as a value colors correctly.
 spans in a side channel (frontend_tokenize_comments_with_len) and the LSP merges
 them into the token stream by position.
 
-Remaining refinement: the [S] layer is name-based (top-level declarations), not
-per-occurrence — it cannot yet distinguish a param from a local from a field, or
-a local that shadows a global. That needs the resolver to record per-occurrence
-resolutions (a larger change).
+The [S] layer is now **per-occurrence** for bindings: the resolver logs every
+param/local reference and declaration (Semantic::occurrence_kind), so bind.param
+and bind.local are exact and a local that shadows a top-level name wins over the
+global classification. Globals (Func/Struct/Const/…) remain name-based from the
+symbol table. Lookup is keyed by (line, name) — the AST keeps only line per
+identifier — so the only residual imprecision is two *different* resolutions of
+one name on one *single* line (vanishingly rare; fields are handled separately
+via `.`).
