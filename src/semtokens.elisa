@@ -248,25 +248,26 @@ def semtok_display_length(tok: Lexer::Token, src: u8&, src_len: usize) -> i64:
     return base
 
 
-# Tokenize `src` and build the LSP delta-encoded `{"data":[...]}` payload.
-# Mirrors check_source_buf's shape: the region-polymorphic tokenize call lives
-# behind a plain `u8& + len` boundary (calling it directly on a value derived
-# from a darray param trips a stage0 "__auto_N during LLVM lowering" bug).
-def semtok_data_body(src: u8&, src_len: usize) -> darray[u8]:
+# One classified span, in absolute 0-based coordinates (pre delta-encoding).
+struct SemTok:
+    line: i64
+    col: i64
+    length: i64
+    ttype: i64
+
+
+# Classify the main token stream into absolute-position entries, tracking the
+# `can[…]` / `trusted …` effect-list context so effect names colour correctly.
+def semtok_main_entries(src: u8&, src_len: usize) -> darray[SemTok]:
     can Memory.Allocate, Abort.Panic:
         tokens: darray[Lexer::Token] = frontend_tokenize_with_len(src, src, src_len)
-        body: mutable darray[u8] = []
-        push_str(body, "{\"data\":[")
-        prev_line: mutable i64 = 0
-        prev_col: mutable i64 = 0
-        first: mutable bool = true
-        # Effect-list context, so identifiers inside `can[…]` / `trusted …` /
-        # `uses[…]` colour as effect names. Two shapes: bracketed (closes on the
-        # matching `]`) and block (`can X, Y:`, closes on `:` or newline).
+        entries: mutable darray[SemTok] = []
+        # Effect-list context: bracketed (closes on the matching `]`) or block
+        # (`can X, Y:`, closes on `:` / newline).
         bracket_depth: mutable i64 = 0
-        effect_depth: mutable i64 = -1        # >=0 => inside a bracketed effect list
-        block_effect: mutable bool = false    # inside a block-form effect list
-        grant_pending: mutable bool = false   # previous token was can/uses/trusted
+        effect_depth: mutable i64 = -1
+        block_effect: mutable bool = false
+        grant_pending: mutable bool = false
         i: mutable usize = 0
         while i < tokens.count:
             tok: Lexer::Token = tokens[i]
@@ -282,25 +283,7 @@ def semtok_data_body(src: u8&, src_len: usize) -> darray[u8]:
             ttype: i64 = semtok_classify(tok, src, prev_kind, next_kind, in_effect)
             emit_len: i64 = semtok_display_length(tok, src, src_len)
             if ttype >= 0 and emit_len > 0:
-                line: i64 = tok.line.i64() - 1        # lexer is 1-based; LSP wants 0-based
-                col: i64 = tok.column.i64() - 1
-                dl: i64 = line - prev_line
-                dc: mutable i64 = col
-                if dl == 0:
-                    dc <- col - prev_col
-                if not first:
-                    body.push(44)
-                push_int(body, dl)
-                body.push(44)
-                push_int(body, dc)
-                body.push(44)
-                push_int(body, emit_len)
-                body.push(44)
-                push_int(body, ttype)
-                push_str(body, ",0")
-                first <- false
-                prev_line <- line
-                prev_col <- col
+                entries.push(SemTok{line: tok.line.i64() - 1, col: tok.column.i64() - 1, length: emit_len, ttype: ttype})
             # Advance the effect-list state machine for the NEXT token.
             k: Lexer::TokenKind = tok.kind
             if k == Lexer::TokenKind.LBracket:
@@ -322,6 +305,71 @@ def semtok_data_body(src: u8&, src_len: usize) -> darray[u8]:
                     new_grant <- true
             grant_pending <- new_grant
             i <- i + 1
+        return entries
+
+
+# Comment spans (harvested from the lexer's side channel) as entries. Comments
+# report `column` at the `#`/`"""` with `length` = full span, so no adjustment.
+def semtok_comment_entries(src: u8&, src_len: usize) -> darray[SemTok]:
+    can Memory.Allocate, Abort.Panic:
+        comments: darray[Lexer::Token] = frontend_tokenize_comments_with_len(src, src, src_len)
+        entries: mutable darray[SemTok] = []
+        j: mutable usize = 0
+        while j < comments.count:
+            ctok: Lexer::Token = comments[j]
+            if ctok.length > 0:
+                entries.push(SemTok{line: ctok.line.i64() - 1, col: ctok.column.i64() - 1, length: ctok.length.i64(), ttype: ST_COMMENT})
+            j <- j + 1
+        return entries
+
+
+# Tokenize `src` and build the LSP delta-encoded `{"data":[...]}` payload. Main
+# tokens and comments are both in source order, so they are merged by (line,col)
+# — a linear merge, no sort — before delta-encoding.
+def semtok_data_body(src: u8&, src_len: usize) -> darray[u8]:
+    can Memory.Allocate, Abort.Panic:
+        entries: darray[SemTok] = semtok_main_entries(src, src_len)
+        comments: darray[SemTok] = semtok_comment_entries(src, src_len)
+        body: mutable darray[u8] = []
+        push_str(body, "{\"data\":[")
+        prev_line: mutable i64 = 0
+        prev_col: mutable i64 = 0
+        first: mutable bool = true
+        a: mutable usize = 0
+        b: mutable usize = 0
+        while a < entries.count or b < comments.count:
+            take_a: mutable bool = true
+            if a >= entries.count:
+                take_a <- false
+            elif b < comments.count:
+                ea: SemTok = entries[a]
+                cb: SemTok = comments[b]
+                if cb.line < ea.line or (cb.line == ea.line and cb.col < ea.col):
+                    take_a <- false
+            e: mutable SemTok = zeroed
+            if take_a:
+                e <- entries[a]
+                a <- a + 1
+            else:
+                e <- comments[b]
+                b <- b + 1
+            dl: i64 = e.line - prev_line
+            dc: mutable i64 = e.col
+            if dl == 0:
+                dc <- e.col - prev_col
+            if not first:
+                body.push(44)
+            push_int(body, dl)
+            body.push(44)
+            push_int(body, dc)
+            body.push(44)
+            push_int(body, e.length)
+            body.push(44)
+            push_int(body, e.ttype)
+            push_str(body, ",0")
+            first <- false
+            prev_line <- e.line
+            prev_col <- e.col
         push_str(body, "]}")
         return body
 
