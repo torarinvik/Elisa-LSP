@@ -241,10 +241,12 @@ def handle_semantic_tokens(root: Json::Value, doc_uri: darray[u8], doc_text: dar
     semtok_respond(id_raw, doc_text)
 
 
-# Region-poly call site isolated in a return-free helper: combining the
-# darray-returning builder with the validation early-returns above trips a
-# stage0 "__auto_N during LLVM lowering" bug (auto-region adoption vs branch
-# structure — same family as task_00a7fdf3).
+# Region-poly call site kept in a return-free helper. This ISOLATED a stage0
+# bug (a scoped region left its name as the ambient alloc scope, so a
+# region-poly call after a nested region threaded an out-of-scope `__auto_N` →
+# "unknown identifier during LLVM lowering") — FIXED in Elisa-core 6e24e6ab.
+# Retained as a defensive boundary for anyone building against an older elisac;
+# safe to inline once the toolchain floor moves past that fix.
 def semtok_respond(id_raw: darray[u8], doc_text: darray[u8]) -> void can[Console, Memory.Allocate, Abort.Panic]:
     local_src: mutable darray[u8] = []
     for b in doc_text:
