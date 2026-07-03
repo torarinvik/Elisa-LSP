@@ -185,6 +185,14 @@ def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: L
                 if next == Lexer::TokenKind.LParen:
                     return ST_FN_USE
                 return ST_BIND_FIELD
+            # [S] per-occurrence: a param or local binding, from the resolver's
+            # log. Consulted BEFORE the global symbol table, so a local that
+            # shadows a top-level name correctly wins.
+            occ: int = Semantic::occurrence_kind(table, tok.line, text)
+            if occ == 1:
+                return ST_BIND_PARAM
+            if occ == 2:
+                return ST_BIND_LOCAL
             # [S] layer: a bare reference matching a real top-level declaration
             # takes that declaration's kind (so `Point(...)` is a type, a bare
             # function value is fn.use, a const is a global, …).
