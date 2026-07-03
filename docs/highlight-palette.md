@@ -47,7 +47,22 @@ legend (src/semtokens.elisa) — keep all three in lockstep.
 | 37 | elisa.meta.decorator | `#B6A372` | 0.72 0.07 90 |
 | 38 | elisa.meta.directive | `#9EA2C4` | 0.72 0.05 280 |
 | 39 | elisa.meta.module | `#9EBDCC` | 0.78 0.04 230 |
+| 40 | elisa.comment | `#6B7A66` | 0.52 0.03 135 |
+| 41 | elisa.punctuation | `#6B7480` | 0.51 0.02 255 |
+| 42 | elisa.op.arithmetic | `#C0A878` | 0.72 0.06 85 |
+| 43 | elisa.op.comparison | `#8FA6B8` | 0.68 0.04 240 |
+| 44 | elisa.op.logical | `#A896C4` | 0.68 0.06 295 |
+| 45 | elisa.op.bitwise | `#8FB0AA` | 0.72 0.04 175 |
+| 46 | elisa.op.assign | `#A6C79E` | 0.78 0.06 140 |
 
-Known gaps (lexical layer): comments (the lexer skips them — needs a lexer
-mode or client-side commenter), plain identifier bindings (params/locals/
-fields — the [S] semantic layer), permission dotted names after `can`.
+Indices 40–46 fill out the "universe" (every visible token colored): the
+operator families sit at low chroma so they read as connective tissue while
+hue still encodes meaning — assign near bindings-green, logical near effects-
+violet, arithmetic warm like the value literals, comparison/bitwise cool.
+Identifier bindings (params/locals/fields → bind.local, `.field` → bind.field)
+and effect dotted names after `can`/`trusted` are now emitted lexically as
+best-effort guesses; the future [S] symbol-table pass refines them.
+
+Remaining gap: **comments** (index 40 is reserved, but the frontend lexer
+discards comments so they never reach the classifier — needs a comment token
+kind in the lexer, or a client-side/standalone comment scan in the LSP).

@@ -49,11 +49,22 @@ const ST_OP_RANGE: i64 = 36
 const ST_META_DECORATOR: i64 = 37
 const ST_META_DIRECTIVE: i64 = 38
 const ST_META_MODULE: i64 = 39
+# Filling out the "universe": operators, punctuation, and comments so that
+# every visible token carries a color and color distance mirrors semantic
+# distance (docs/highlight-taxonomy.md §10/§11). Appended to keep existing
+# wire indices stable.
+const ST_COMMENT: i64 = 40
+const ST_PUNCTUATION: i64 = 41
+const ST_OP_ARITHMETIC: i64 = 42
+const ST_OP_COMPARISON: i64 = 43
+const ST_OP_LOGICAL: i64 = 44
+const ST_OP_BITWISE: i64 = 45
+const ST_OP_ASSIGN: i64 = 46
 
 # The legend, embedded in the initialize capabilities. Names mirror the
 # taxonomy leaves; the client palette keys off these exact strings.
 def semtok_legend_json() -> u8&:
-    return "[\"elisa.type.int.signed\",\"elisa.type.int.unsigned\",\"elisa.type.float\",\"elisa.type.scalar\",\"elisa.type.string\",\"elisa.type.container\",\"elisa.type.user\",\"elisa.type.void\",\"elisa.lit.int\",\"elisa.lit.float\",\"elisa.lit.char\",\"elisa.lit.string\",\"elisa.lit.value\",\"elisa.fn.def\",\"elisa.fn.use\",\"elisa.fn.lambda\",\"elisa.bind.param\",\"elisa.bind.local\",\"elisa.bind.field\",\"elisa.bind.global\",\"elisa.bind.discard\",\"elisa.effect.grant\",\"elisa.effect.name\",\"elisa.effect.unsafe\",\"elisa.effect.error\",\"elisa.mem.region\",\"elisa.mem.qualifier\",\"elisa.flow.branch\",\"elisa.flow.error\",\"elisa.flow.concurrent\",\"elisa.decl.skeleton\",\"elisa.contract.clause\",\"elisa.contract.quantifier\",\"elisa.contract.ghost\",\"elisa.op.mutation\",\"elisa.op.lambda\",\"elisa.op.range\",\"elisa.meta.decorator\",\"elisa.meta.directive\",\"elisa.meta.module\"]"
+    return "[\"elisa.type.int.signed\",\"elisa.type.int.unsigned\",\"elisa.type.float\",\"elisa.type.scalar\",\"elisa.type.string\",\"elisa.type.container\",\"elisa.type.user\",\"elisa.type.void\",\"elisa.lit.int\",\"elisa.lit.float\",\"elisa.lit.char\",\"elisa.lit.string\",\"elisa.lit.value\",\"elisa.fn.def\",\"elisa.fn.use\",\"elisa.fn.lambda\",\"elisa.bind.param\",\"elisa.bind.local\",\"elisa.bind.field\",\"elisa.bind.global\",\"elisa.bind.discard\",\"elisa.effect.grant\",\"elisa.effect.name\",\"elisa.effect.unsafe\",\"elisa.effect.error\",\"elisa.mem.region\",\"elisa.mem.qualifier\",\"elisa.flow.branch\",\"elisa.flow.error\",\"elisa.flow.concurrent\",\"elisa.decl.skeleton\",\"elisa.contract.clause\",\"elisa.contract.quantifier\",\"elisa.contract.ghost\",\"elisa.op.mutation\",\"elisa.op.lambda\",\"elisa.op.range\",\"elisa.meta.decorator\",\"elisa.meta.directive\",\"elisa.meta.module\",\"elisa.comment\",\"elisa.punctuation\",\"elisa.op.arithmetic\",\"elisa.op.comparison\",\"elisa.op.logical\",\"elisa.op.bitwise\",\"elisa.op.assign\"]"
 
 
 # Classify a contextual identifier by its text ([L] approximation: text match
@@ -126,7 +137,7 @@ def semtok_ident_class(text: sview) -> i64 can[Memory.Allocate, Abort.Panic]:
 # Classify one token; -1 = no token emitted (IDE default styling).
 # `prev`/`next` are the neighboring token kinds (Eof when out of range) for
 # the two lexical [S]-approximations that work: `def NAME` and `NAME(`.
-def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: Lexer::TokenKind) -> i64 can[Memory.Allocate, Abort.Panic]:
+def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: Lexer::TokenKind, in_effect: bool) -> i64 can[Memory.Allocate, Abort.Panic]:
     can Memory.Allocate, Abort.Panic:
         kind: Lexer::TokenKind = tok.kind
         if kind == Lexer::TokenKind.Ident:
@@ -135,15 +146,31 @@ def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: L
                 return ST_FN_DEF
             text: sview = Lexer::text_or_empty(tok, src)
             by_text: i64 = semtok_ident_class(text)
+            # Known keyword/type/effect text wins first, so e.g. `Unsafe` keeps
+            # its red-shifted effect color even inside an effect list.
             if by_text >= 0:
                 return by_text
+            # Inside a `can[...]`/`trusted …` list every remaining identifier
+            # names an effect (Memory.Allocate, Console, …) — tint the family.
+            if in_effect:
+                return ST_EFFECT_NAME
             # `NAME(` — call position (def handled above).
             if next == Lexer::TokenKind.LParen:
                 return ST_FN_USE
             # Decorator name right after `@` (the At token colors too).
             if prev == Lexer::TokenKind.At:
                 return ST_META_DECORATOR
-            return -1
+            # `.field` member access (a trailing `(` was caught above as a call).
+            if prev == Lexer::TokenKind.Dot:
+                return ST_BIND_FIELD
+            # PascalCase → a user-type reference (Point, Self, …). A lexical
+            # guess; the future [S] pass corrects capitalized value bindings.
+            first: u8 = src[tok.start.usize()]
+            if first >= 65 and first <= 90:
+                return ST_TYPE_USER
+            # Otherwise it is a value binding (param / local / field name). This
+            # is the [L]-layer default so no identifier stays uncolored.
+            return ST_BIND_LOCAL
         if kind == Lexer::TokenKind.IntLit or kind == Lexer::TokenKind.HexLit:
             return ST_LIT_INT
         if kind == Lexer::TokenKind.FloatLit:
@@ -158,24 +185,43 @@ def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: L
             return ST_FLOW_BRANCH
         if kind == Lexer::TokenKind.Try or kind == Lexer::TokenKind.Catch or kind == Lexer::TokenKind.Raise or kind == Lexer::TokenKind.Panic or kind == Lexer::TokenKind.Error:
             return ST_FLOW_ERROR
-        if kind == Lexer::TokenKind.Def or kind == Lexer::TokenKind.Struct or kind == Lexer::TokenKind.Enum or kind == Lexer::TokenKind.Const or kind == Lexer::TokenKind.Global or kind == Lexer::TokenKind.Extern or kind == Lexer::TokenKind.Export or kind == Lexer::TokenKind.Packed or kind == Lexer::TokenKind.Repr or kind == Lexer::TokenKind.Is or kind == Lexer::TokenKind.With:
+        if kind == Lexer::TokenKind.Def or kind == Lexer::TokenKind.Struct or kind == Lexer::TokenKind.Enum or kind == Lexer::TokenKind.Const or kind == Lexer::TokenKind.Global or kind == Lexer::TokenKind.Extern or kind == Lexer::TokenKind.Export or kind == Lexer::TokenKind.Packed or kind == Lexer::TokenKind.Repr or kind == Lexer::TokenKind.Aligned or kind == Lexer::TokenKind.Is or kind == Lexer::TokenKind.With or kind == Lexer::TokenKind.As or kind == Lexer::TokenKind.To:
             return ST_DECL_SKELETON
         if kind == Lexer::TokenKind.Sizeof or kind == Lexer::TokenKind.Alignof or kind == Lexer::TokenKind.Offsetof:
             return ST_DECL_SKELETON
+        if kind == Lexer::TokenKind.In:
+            return ST_FLOW_BRANCH
         if kind == Lexer::TokenKind.Static:
             return ST_META_DIRECTIVE
         if kind == Lexer::TokenKind.Region or kind == Lexer::TokenKind.New:
             return ST_MEM_REGION
-        if kind == Lexer::TokenKind.Heap or kind == Lexer::TokenKind.Stack or kind == Lexer::TokenKind.Tail:
+        # Borrow sigil `&` lives in the memory family alongside heap/stack/tail.
+        if kind == Lexer::TokenKind.Heap or kind == Lexer::TokenKind.Stack or kind == Lexer::TokenKind.Tail or kind == Lexer::TokenKind.Ampersand:
             return ST_MEM_QUALIFIER
-        if kind == Lexer::TokenKind.Mutable or kind == Lexer::TokenKind.LArrow:
+        # Mutation: `<-`, `mutable`, and the compound assignments (they write).
+        if kind == Lexer::TokenKind.Mutable or kind == Lexer::TokenKind.LArrow or kind == Lexer::TokenKind.PlusEq or kind == Lexer::TokenKind.MinusEq or kind == Lexer::TokenKind.StarEq or kind == Lexer::TokenKind.SlashEq or kind == Lexer::TokenKind.PercentEq or kind == Lexer::TokenKind.CaretEq or kind == Lexer::TokenKind.PipeEq or kind == Lexer::TokenKind.AmpEq or kind == Lexer::TokenKind.LShiftEq or kind == Lexer::TokenKind.RShiftEq or kind == Lexer::TokenKind.QAssign:
             return ST_OP_MUTATION
+        # `=` binds (defines) — a distinct hue from mutation.
+        if kind == Lexer::TokenKind.Assign:
+            return ST_OP_ASSIGN
         if kind == Lexer::TokenKind.FatArrow:
             return ST_OP_LAMBDA
         if kind == Lexer::TokenKind.Range or kind == Lexer::TokenKind.RangeLt or kind == Lexer::TokenKind.RangeGt or kind == Lexer::TokenKind.RangeLe:
             return ST_OP_RANGE
+        if kind == Lexer::TokenKind.Plus or kind == Lexer::TokenKind.Minus or kind == Lexer::TokenKind.Star or kind == Lexer::TokenKind.Slash or kind == Lexer::TokenKind.Percent:
+            return ST_OP_ARITHMETIC
+        if kind == Lexer::TokenKind.EqEq or kind == Lexer::TokenKind.BangEq or kind == Lexer::TokenKind.Lt or kind == Lexer::TokenKind.Gt or kind == Lexer::TokenKind.LtEq or kind == Lexer::TokenKind.GtEq:
+            return ST_OP_COMPARISON
+        if kind == Lexer::TokenKind.And or kind == Lexer::TokenKind.Or or kind == Lexer::TokenKind.Not:
+            return ST_OP_LOGICAL
+        if kind == Lexer::TokenKind.Pipe or kind == Lexer::TokenKind.Caret or kind == Lexer::TokenKind.LShift or kind == Lexer::TokenKind.RShift or kind == Lexer::TokenKind.Tilde:
+            return ST_OP_BITWISE
         if kind == Lexer::TokenKind.At:
             return ST_META_DECORATOR
+        # Structural glue — brackets, delimiters, arrows, sigils — gets a calm
+        # low-salience tint so the content still carries the eye (taxonomy §10).
+        if kind == Lexer::TokenKind.Colon or kind == Lexer::TokenKind.Scope or kind == Lexer::TokenKind.Arrow or kind == Lexer::TokenKind.Dot or kind == Lexer::TokenKind.Comma or kind == Lexer::TokenKind.Semicolon or kind == Lexer::TokenKind.LParen or kind == Lexer::TokenKind.RParen or kind == Lexer::TokenKind.LBracket or kind == Lexer::TokenKind.RBracket or kind == Lexer::TokenKind.LBrace or kind == Lexer::TokenKind.RBrace or kind == Lexer::TokenKind.Hash or kind == Lexer::TokenKind.Question or kind == Lexer::TokenKind.Bang or kind == Lexer::TokenKind.Ellipsis or kind == Lexer::TokenKind.PipeGt:
+            return ST_PUNCTUATION
         return -1
 
 
@@ -214,6 +260,13 @@ def semtok_data_body(src: u8&, src_len: usize) -> darray[u8]:
         prev_line: mutable i64 = 0
         prev_col: mutable i64 = 0
         first: mutable bool = true
+        # Effect-list context, so identifiers inside `can[…]` / `trusted …` /
+        # `uses[…]` colour as effect names. Two shapes: bracketed (closes on the
+        # matching `]`) and block (`can X, Y:`, closes on `:` or newline).
+        bracket_depth: mutable i64 = 0
+        effect_depth: mutable i64 = -1        # >=0 => inside a bracketed effect list
+        block_effect: mutable bool = false    # inside a block-form effect list
+        grant_pending: mutable bool = false   # previous token was can/uses/trusted
         i: mutable usize = 0
         while i < tokens.count:
             tok: Lexer::Token = tokens[i]
@@ -223,7 +276,10 @@ def semtok_data_body(src: u8&, src_len: usize) -> darray[u8]:
             next_kind: mutable Lexer::TokenKind = Lexer::TokenKind.Eof
             if i + 1 < tokens.count:
                 next_kind <- tokens[i + 1].kind
-            ttype: i64 = semtok_classify(tok, src, prev_kind, next_kind)
+            in_effect: mutable bool = effect_depth >= 0 or block_effect
+            if grant_pending and tok.kind != Lexer::TokenKind.LBracket:
+                in_effect <- true            # first effect ident of a block form
+            ttype: i64 = semtok_classify(tok, src, prev_kind, next_kind, in_effect)
             emit_len: i64 = semtok_display_length(tok, src, src_len)
             if ttype >= 0 and emit_len > 0:
                 line: i64 = tok.line.i64() - 1        # lexer is 1-based; LSP wants 0-based
@@ -245,6 +301,26 @@ def semtok_data_body(src: u8&, src_len: usize) -> darray[u8]:
                 first <- false
                 prev_line <- line
                 prev_col <- col
+            # Advance the effect-list state machine for the NEXT token.
+            k: Lexer::TokenKind = tok.kind
+            if k == Lexer::TokenKind.LBracket:
+                if grant_pending and effect_depth < 0:
+                    effect_depth <- bracket_depth
+                bracket_depth <- bracket_depth + 1
+            elif k == Lexer::TokenKind.RBracket:
+                bracket_depth <- bracket_depth - 1
+                if effect_depth >= 0 and bracket_depth == effect_depth:
+                    effect_depth <- -1
+            if block_effect and (k == Lexer::TokenKind.Colon or k == Lexer::TokenKind.Newline):
+                block_effect <- false
+            if grant_pending and k != Lexer::TokenKind.LBracket and k != Lexer::TokenKind.Colon and k != Lexer::TokenKind.Newline:
+                block_effect <- true
+            new_grant: mutable bool = false
+            if k == Lexer::TokenKind.Ident:
+                gt: sview = Lexer::text_or_empty(tok, src)
+                if gt == "can" or gt == "uses" or gt == "trusted":
+                    new_grant <- true
+            grant_pending <- new_grant
             i <- i + 1
         push_str(body, "]}")
         return body
