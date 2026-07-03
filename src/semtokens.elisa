@@ -179,6 +179,29 @@ def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: L
         return -1
 
 
+# Display width of a token for highlighting. Most tokens report their exact
+# lexeme width in `tok.length`, but string/char literals are special: the lexer
+# records `column` at the opening delimiter while `length` counts the CONTENT
+# only (both quotes excluded, since the parser wants the string value). Coloring
+# `length` chars from the opening quote would leave the last content char and the
+# closing quote uncolored. So for string/char literals we extend the width to the
+# full lexeme: +1 for the opening delimiter (column already sits on it) and +1
+# more when the closing delimiter is present (absent only for an unterminated
+# literal at EOF / end of line).
+def semtok_display_length(tok: Lexer::Token, src: u8&, src_len: usize) -> i64:
+    base: mutable i64 = tok.length.i64()
+    kind: Lexer::TokenKind = tok.kind
+    if kind == Lexer::TokenKind.StringLit or kind == Lexer::TokenKind.CharLit:
+        close: mutable u8 = 34            # '"'
+        if kind == Lexer::TokenKind.CharLit:
+            close <- 39                   # '\''
+        end_idx: usize = tok.start.usize() + tok.length.usize()
+        base <- base + 1
+        if end_idx < src_len and src[end_idx] == close:
+            base <- base + 1
+    return base
+
+
 # Tokenize `src` and build the LSP delta-encoded `{"data":[...]}` payload.
 # Mirrors check_source_buf's shape: the region-polymorphic tokenize call lives
 # behind a plain `u8& + len` boundary (calling it directly on a value derived
@@ -201,7 +224,8 @@ def semtok_data_body(src: u8&, src_len: usize) -> darray[u8]:
             if i + 1 < tokens.count:
                 next_kind <- tokens[i + 1].kind
             ttype: i64 = semtok_classify(tok, src, prev_kind, next_kind)
-            if ttype >= 0 and tok.length > 0:
+            emit_len: i64 = semtok_display_length(tok, src, src_len)
+            if ttype >= 0 and emit_len > 0:
                 line: i64 = tok.line.i64() - 1        # lexer is 1-based; LSP wants 0-based
                 col: i64 = tok.column.i64() - 1
                 dl: i64 = line - prev_line
@@ -214,7 +238,7 @@ def semtok_data_body(src: u8&, src_len: usize) -> darray[u8]:
                 body.push(44)
                 push_int(body, dc)
                 body.push(44)
-                push_int(body, tok.length.i64())
+                push_int(body, emit_len)
                 body.push(44)
                 push_int(body, ttype)
                 push_str(body, ",0")
