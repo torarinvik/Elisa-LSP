@@ -28,4 +28,4 @@ def json_probe(source: u8&, source_len: usize, id_out: mutable u64&, method_ok_o
                         pass
 
 
-export func json_probe_export(source: u8&, source_len: usize, id_out: mutable u64&, method_ok_out: mutable u8&, arr_count_out: mutable u64&, arr1_out: mutable u64&) -> void = json_probe
+export fn json_probe_export(source: u8&, source_len: usize, id_out: mutable u64&, method_ok_out: mutable u8&, arr_count_out: mutable u64&, arr1_out: mutable u64&) -> void = json_probe
