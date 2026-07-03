@@ -133,33 +133,39 @@ def request_uri(root: Json::Value) -> sview can[Memory.Allocate, Abort.Panic]:
         return sview("", 0, 0)
 
 
-# The document's full text: `params.textDocument.text` (didOpen) or
-# `params.contentChanges[0].text` (didChange, full-document sync). Empty if malformed.
-def request_text(root: Json::Value) -> sview can[Memory.Allocate, Abort.Panic]:
+# The document's full text as a Json Str value: `params.textDocument.text`
+# (didOpen) or `params.contentChanges[0].text` (didChange, full-document sync).
+# Null if malformed. Returned as the VALUE (not a span) so the caller can decode
+# the JSON string escapes — real clients escape every newline of the document.
+def request_text_value(root: Json::Value) -> Json::Value? can[Memory.Allocate, Abort.Panic]:
     can Memory.Allocate, Abort.Panic:
         if Json::get(root, "params") is params:
             if Json::get(params, "textDocument") is td:
                 if Json::get(td, "text") is t:
-                    return Json::as_str(t)
+                    return t
             if Json::get(params, "contentChanges") is changes:
                 match changes:
                     Json::Value.Arr(items):
                         if items.count > 0:
                             if Json::get(items[0], "text") is t:
-                                return Json::as_str(t)
+                                return t
                     _:
                         pass
-        return sview("", 0, 0)
+        return null
 
 
 # Run the frontend over the document and publish its findings.
 def check_and_publish(root: Json::Value) -> void can[Console, Memory.Allocate, Abort.Panic]:
     uri: sview = request_uri(root)
-    text: sview = request_text(root)
-    # Owns the NUL-terminated source copy that `table.diagnostics[i].name` spans point
-    # into — must outlive the `publish_diagnostics` call below.
+    # Owns the DECODED, NUL-terminated source (JSON escapes expanded) that
+    # `table.diagnostics[i].name` spans point into — must outlive the
+    # `publish_diagnostics` call below.
     src_owner: mutable darray[u8] = []
-    table: Semantic::SymbolTable = check_source(src_owner, text)
+    if request_text_value(root) is tv:
+        Json::decode_into(tv, src_owner)
+    src_len: usize = src_owner.count
+    src_owner.push(0)
+    table: Semantic::SymbolTable = check_source_buf(&src_owner[0], src_len)
     publish_diagnostics(uri, table)
 
 

@@ -191,3 +191,83 @@ module Json:
                     return text
                 _:
                     return sview("", 0, 0)
+
+
+        # Hex digit value, or 0 for non-hex.
+        def hex_val(c: u8) -> u32:
+            if c >= 48 and c <= 57:
+                return (c - 48).u32()
+            if c >= 97 and c <= 102:
+                return (c - 87).u32()
+            if c >= 65 and c <= 70:
+                return (c - 55).u32()
+            return 0
+
+
+        # Append `cp` to `out` as UTF-8.
+        def push_utf8(out: mutable darray[u8]&, cp: u32) -> void:
+            can Memory.Allocate, Abort.Panic:
+                if cp < 0x80:
+                    out.push(cp.u8())
+                elif cp < 0x800:
+                    out.push((0xC0 | (cp >> 6)).u8())
+                    out.push((0x80 | (cp & 0x3F)).u8())
+                elif cp < 0x10000:
+                    out.push((0xE0 | (cp >> 12)).u8())
+                    out.push((0x80 | ((cp >> 6) & 0x3F)).u8())
+                    out.push((0x80 | (cp & 0x3F)).u8())
+                else:
+                    out.push((0xF0 | (cp >> 18)).u8())
+                    out.push((0x80 | ((cp >> 12) & 0x3F)).u8())
+                    out.push((0x80 | ((cp >> 6) & 0x3F)).u8())
+                    out.push((0x80 | (cp & 0x3F)).u8())
+
+
+        # Append a Str value's DECODED content to `out`, expanding JSON escapes
+        # (\n \t \r \b \f \" \\ \/ and \uXXXX incl. surrogate pairs). This is
+        # the consumption point the parser defers to — `Str` spans stay raw, and
+        # anything that feeds string content onward (document text!) decodes here.
+        # Real clients escape every newline/quote of the document, so skipping
+        # this hands the frontend `\n`-riddled source (parse-error storms on
+        # small docs) — the exact bug found wiring up the JetBrains client.
+        def decode_into(v: Value, out: mutable darray[u8]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                text: sview = as_str(v)
+                n: usize = sview_len(text)
+                i: mutable usize = 0
+                while i < n:
+                    c: u8 = sview_at(text, i)
+                    if c != 92:
+                        out.push(c)
+                        i <- i + 1
+                    else:
+                        e: u8 = sview_at(text, i + 1) if i + 1 < n else 0
+                        if e == 110:                      # \n
+                            out.push(10)
+                            i <- i + 2
+                        elif e == 116:                    # \t
+                            out.push(9)
+                            i <- i + 2
+                        elif e == 114:                    # \r
+                            out.push(13)
+                            i <- i + 2
+                        elif e == 98:                     # \b
+                            out.push(8)
+                            i <- i + 2
+                        elif e == 102:                    # \f
+                            out.push(12)
+                            i <- i + 2
+                        elif e == 117 and i + 5 < n:      # \uXXXX
+                            cp: mutable u32 = (hex_val(sview_at(text, i + 2)) << 12) | (hex_val(sview_at(text, i + 3)) << 8) | (hex_val(sview_at(text, i + 4)) << 4) | hex_val(sview_at(text, i + 5))
+                            i <- i + 6
+                            # High surrogate followed by \uDC00-\uDFFF combines.
+                            if cp >= 0xD800 and cp <= 0xDBFF and i + 5 < n and sview_at(text, i) == 92 and sview_at(text, i + 1) == 117:
+                                lo: u32 = (hex_val(sview_at(text, i + 2)) << 12) | (hex_val(sview_at(text, i + 3)) << 8) | (hex_val(sview_at(text, i + 4)) << 4) | hex_val(sview_at(text, i + 5))
+                                if lo >= 0xDC00 and lo <= 0xDFFF:
+                                    cp <- 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00)
+                                    i <- i + 6
+                            push_utf8(out, cp)
+                        else:
+                            # \" \\ \/ and any unknown escape: literal next byte.
+                            out.push(e)
+                            i <- i + 2
