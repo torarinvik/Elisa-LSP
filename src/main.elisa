@@ -198,6 +198,133 @@ def send_result(id_raw: darray[u8], result: u8&) -> void can[Console, Memory.All
     send_message(body)
 
 
+# ---- hover: textDocument/hover (docs/119 loop-header capture list) -----------------
+
+# Byte range [start,end) of 0-based source line `line_no` in `doc`; false if OOB.
+def hover_line_range(doc: darray[u8]&, line_no: i64, start_out: mutable usize&, end_out: mutable usize&) -> bool can[Abort.Panic]:
+    cur: mutable i64 = 0
+    ls: mutable usize = 0
+    i: mutable usize = 0
+    while i < doc.count:
+        if doc[i] == 10:
+            if cur == line_no:
+                start_out <- ls
+                end_out <- i
+                return true
+            cur <- cur + 1
+            ls <- i + 1
+        i <- i + 1
+    if cur == line_no and ls <= doc.count:
+        start_out <- ls
+        end_out <- doc.count
+        return true
+    return false
+
+# If the source line [start,end) carries a loop-expression header `|item, …|` whose
+# closing `|` is followed by `:`/`->`, append a markdown summary (what it mutates vs
+# its loop-private accumulators) to `out` and return true. A bitwise `|` never matches.
+def hover_loop_header(doc: darray[u8]&, start: usize, end: usize, out: mutable darray[u8]&) -> bool can[Memory.Allocate, Abort.Panic]:
+    open: mutable usize = end
+    p: mutable usize = start
+    while p < end:
+        if doc[p] == 124:
+            open <- p
+            break
+        p <- p + 1
+    if open >= end:
+        return false
+    close: mutable usize = end
+    q: mutable usize = open + 1
+    while q < end:
+        if doc[q] == 124:
+            close <- q
+            break
+        q <- q + 1
+    if close >= end or close <= open + 1:
+        return false
+    # After the closing pipe, `:` or `->` (skipping spaces) marks a real header.
+    r: mutable usize = close + 1
+    while r < end and doc[r] == 32:
+        r <- r + 1
+    is_header: mutable bool = false
+    if r < end and doc[r] == 58:
+        is_header <- true
+    if r + 1 < end and doc[r] == 45 and doc[r + 1] == 62:
+        is_header <- true
+    if not is_header:
+        return false
+    caps: mutable darray[u8] = []
+    accs: mutable darray[u8] = []
+    ncaps: mutable i64 = 0
+    naccs: mutable i64 = 0
+    item_start: mutable usize = open + 1
+    k: mutable usize = open + 1
+    while k <= close:
+        if k == close or doc[k] == 44:
+            s: mutable usize = item_start
+            e: mutable usize = k
+            while s < e and doc[s] == 32:
+                s <- s + 1
+            while e > s and doc[e - 1] == 32:
+                e <- e - 1
+            eq: mutable usize = e
+            t: mutable usize = s
+            while t < e:
+                if doc[t] == 61:
+                    eq <- t
+                    break
+                t <- t + 1
+            if eq < e:
+                ne: mutable usize = eq
+                while ne > s and doc[ne - 1] == 32:
+                    ne <- ne - 1
+                if naccs > 0:
+                    push_str(accs, ", ")
+                accs.push_sview(sview(&doc[s], 0, (ne - s).i64()))
+                naccs <- naccs + 1
+            elif e > s:
+                if ncaps > 0:
+                    push_str(caps, ", ")
+                caps.push_sview(sview(&doc[s], 0, (e - s).i64()))
+                ncaps <- ncaps + 1
+            item_start <- k + 1
+        k <- k + 1
+    push_str(out, "**docs/119 loop header**\\n\\n")
+    if ncaps > 0:
+        push_str(out, "Mutates (captured, in place): ")
+        out.extend(caps)
+        push_str(out, "\\n\\n")
+    else:
+        push_str(out, "Pure over outer state (no captures).\\n\\n")
+    if naccs > 0:
+        push_str(out, "Loop-private accumulators: ")
+        out.extend(accs)
+    return true
+
+def handle_hover(root: Json::Value, doc_text: darray[u8]&) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    id_raw: darray[u8] = extract_id(root)
+    line_no: mutable i64 = -1
+    if Json::get(root, "params") is params:
+        if Json::get(params, "position") is pos:
+            if Json::get(pos, "line") is ln:
+                line_no <- Json::as_i64(ln)
+    ls: mutable usize = 0
+    le: mutable usize = 0
+    msg: mutable darray[u8] = []
+    ok: mutable bool = false
+    if line_no >= 0 and doc_text.count > 0:
+        if hover_line_range(doc_text, line_no, ls, le):
+            ok <- hover_loop_header(doc_text, ls, le, msg)
+    if not ok:
+        send_result(id_raw, "null")
+        return
+    body: mutable darray[u8] = []
+    push_str(body, "{\"contents\":{\"kind\":\"markdown\",\"value\":\"")
+    body.extend(msg)
+    push_str(body, "\"}}")
+    send_result_body(id_raw, body)
+
+
 # ---- server loop ------------------------------------------------------------------
 
 def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
@@ -218,7 +345,7 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
             caps: mutable darray[u8] = []
             push_str(caps, "{\"capabilities\":{\"textDocumentSync\":1,\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":")
             push_str(caps, semtok_legend_json())
-            push_str(caps, ",\"tokenModifiers\":[]},\"full\":true}}}")
+            push_str(caps, ",\"tokenModifiers\":[]},\"full\":true},\"hoverProvider\":true}}")
             send_result_body(id_raw, caps)
         elif method_is(root, "shutdown"):
             id_raw: darray[u8] = extract_id(root)
@@ -229,4 +356,6 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
             check_and_publish(root, doc_uri, doc_text)
         elif method_is(root, "textDocument/semanticTokens/full"):
             handle_semantic_tokens(root, doc_uri, doc_text)
+        elif method_is(root, "textDocument/hover"):
+            handle_hover(root, doc_text)
     return 0
