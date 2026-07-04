@@ -11,8 +11,8 @@ include "json.elisa"
 include "semtokens.elisa"
 
 # Byte-buffer builders (push_str/push_int/push_sview) come from the frontend's `module Bytes`
-# (Elisa-compiler src/bytes.elisa), pulled in transitively via diagnostics.elisa. `using`
-# makes them callable unqualified and as UFCS methods.
+# (inlined in Elisa-compiler semantic.elisa), pulled in transitively via diagnostics.elisa.
+# `using` makes them callable unqualified and as UFCS methods.
 using Bytes
 
 extern read(fd: int, buf: void&, count: usize) -> isize can[Console]
