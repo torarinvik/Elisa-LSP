@@ -218,6 +218,10 @@ def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: L
             return ST_LIT_CHAR
         if kind == Lexer::TokenKind.StringLit:
             return ST_LIT_STRING
+        # An f-string as a whole is a string literal. The main loop instead emits
+        # fine-grained spans (chunks vs `{EXPR}`); this is the whole-token fallback.
+        if kind == Lexer::TokenKind.FString:
+            return ST_LIT_STRING
         if kind == Lexer::TokenKind.True or kind == Lexer::TokenKind.False or kind == Lexer::TokenKind.Null or kind == Lexer::TokenKind.Zeroed:
             return ST_LIT_VALUE
         if kind == Lexer::TokenKind.If or kind == Lexer::TokenKind.Elif or kind == Lexer::TokenKind.Else or kind == Lexer::TokenKind.While or kind == Lexer::TokenKind.Break or kind == Lexer::TokenKind.Continue or kind == Lexer::TokenKind.Return or kind == Lexer::TokenKind.Pass or kind == Lexer::TokenKind.Match:
@@ -284,6 +288,14 @@ def semtok_display_length(tok: Lexer::Token, src: u8&, src_len: usize) -> i64:
         base <- base + 1
         if end_idx < src_len and src[end_idx] == close:
             base <- base + 1
+    # An f-string's `column` sits on the `f`, but `length` counts the RAW interior
+    # only (both `f"` prefix and closing quote excluded). Extend to the full
+    # lexeme: +2 for `f"`, +1 more for the closing quote when present.
+    if kind == Lexer::TokenKind.FString:
+        end_idx: usize = tok.start.usize() + tok.length.usize()
+        base <- base + 2
+        if end_idx < src_len and src[end_idx] == 34:
+            base <- base + 1
     return base
 
 
@@ -293,6 +305,100 @@ struct SemTok:
     col: i64
     length: i64
     ttype: i64
+
+
+# Emit fine-grained spans for one f-string token: literal chunks (including the
+# `f"` prefix, closing quote, and `{{`/`}}`/`\` escapes) as string literals, and
+# each `{EXPR}` interpolation as punctuation braces around the sub-lexed
+# expression tokens — classified like any other code, so an interpolated
+# `{d.name}` colours its identifiers, operators, and nested literals. Mirrors the
+# parser's scan (parser_expr.elisa `fstring_expr`) so the highlighted spans match
+# what actually parses. Single-line; columns are byte-based (as elsewhere here).
+def semtok_fstring_spans(entries: mutable darray[SemTok]&, tok: Lexer::Token, src: u8&, src_len: usize, table: Semantic::SymbolTable&) -> void can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        line: i64 = tok.line.i64() - 1
+        base_col: i64 = tok.column.i64() - 1     # 0-based column of the `f`
+        lo: usize = tok.start.usize()            # first interior byte (after `f"`)
+        hi: usize = lo + tok.length.usize()      # closing-quote byte offset
+        seg_start: mutable i64 = base_col        # current string run starts at the `f`
+        i: mutable usize = lo
+        while i < hi:
+            ch: char = src[i].char()
+            # Literal `{{` / `}}` and `\x` escapes stay inside the string run.
+            if ch == '{' and i + 1 < hi and src[i + 1].char() == '{':
+                i <- i + 2
+                continue
+            if ch == '}' and i + 1 < hi and src[i + 1].char() == '}':
+                i <- i + 2
+                continue
+            if ch == '\\':
+                i <- i + 2
+                continue
+            if ch == '{':
+                open_col: i64 = base_col + 2 + (i - lo).i64()
+                # Flush the pending literal chunk [seg_start, open_col).
+                if open_col > seg_start:
+                    entries.push(SemTok{line: line, col: seg_start, length: open_col - seg_start, ttype: ST_LIT_STRING})
+                # Find the matching `}` (string-aware, mirrors the lexer/parser scan).
+                j: mutable usize = i + 1
+                depth: mutable usize = 1
+                while j < hi and depth > 0:
+                    cj: char = src[j].char()
+                    if cj == '{':
+                        depth <- depth + 1
+                    elif cj == '}':
+                        depth <- depth - 1
+                        if depth == 0:
+                            break
+                    elif cj == '"':
+                        j <- j + 1
+                        while j < hi and src[j].char() != '"':
+                            if src[j].char() == '\\':
+                                j <- j + 1
+                            j <- j + 1
+                    j <- j + 1
+                # Opening `{` punctuation.
+                entries.push(SemTok{line: line, col: open_col, length: 1, ttype: ST_PUNCTUATION})
+                # Sub-lex the embedded expression. Its tokens carry ABSOLUTE
+                # `.start` offsets into `src` (so text/classification are exact),
+                # but `.line`/`.column` are stale — the span lexer jumps `position`
+                # without re-tracking them. Derive the column from `.start` (the
+                # interpolation shares the f-string's single line).
+                if j > i + 1:
+                    subtoks: darray[Lexer::Token] = Lexer::frontend_tokenize_span("", src, i + 1, j)
+                    s: mutable usize = 0
+                    while s < subtoks.count:
+                        st: Lexer::Token = subtoks[s]
+                        sp: mutable Lexer::TokenKind = Lexer::TokenKind.Eof
+                        if s > 0:
+                            sp <- subtoks[s - 1].kind
+                        sn: mutable Lexer::TokenKind = Lexer::TokenKind.Eof
+                        if s + 1 < subtoks.count:
+                            sn <- subtoks[s + 1].kind
+                        stt: i64 = semtok_classify(st, src, sp, sn, false, table)
+                        sln: i64 = semtok_display_length(st, src, src_len)
+                        if stt >= 0 and sln > 0:
+                            sub_col: i64 = base_col + 2 + (st.start.usize() - lo).i64()
+                            entries.push(SemTok{line: line, col: sub_col, length: sln, ttype: stt})
+                        s <- s + 1
+                if j < hi:
+                    # Closing `}` punctuation; the next string run follows it.
+                    close_col: i64 = base_col + 2 + (j - lo).i64()
+                    entries.push(SemTok{line: line, col: close_col, length: 1, ttype: ST_PUNCTUATION})
+                    seg_start <- close_col + 1
+                    i <- j + 1
+                else:
+                    # Unterminated interpolation (ran to end of interior).
+                    seg_start <- base_col + 2 + (hi - lo).i64()
+                    i <- hi
+                continue
+            i <- i + 1
+        # Trailing literal chunk, including the closing quote when present.
+        end_col: mutable i64 = base_col + 2 + (hi - lo).i64()
+        if hi < src_len and src[hi].char() == '"':
+            end_col <- end_col + 1
+        if end_col > seg_start:
+            entries.push(SemTok{line: line, col: seg_start, length: end_col - seg_start, ttype: ST_LIT_STRING})
 
 
 # Classify the main token stream into absolute-position entries, tracking the
@@ -319,10 +425,15 @@ def semtok_main_entries(src: u8&, src_len: usize, table: Semantic::SymbolTable&)
             in_effect: mutable bool = effect_depth >= 0 or block_effect
             if grant_pending and tok.kind != Lexer::TokenKind.LBracket:
                 in_effect <- true            # first effect ident of a block form
-            ttype: i64 = semtok_classify(tok, src, prev_kind, next_kind, in_effect, table)
-            emit_len: i64 = semtok_display_length(tok, src, src_len)
-            if ttype >= 0 and emit_len > 0:
-                entries.push(SemTok{line: tok.line.i64() - 1, col: tok.column.i64() - 1, length: emit_len, ttype: ttype})
+            if tok.kind == Lexer::TokenKind.FString:
+                # F-strings expand into multiple spans (literal chunks + coloured
+                # `{EXPR}` interpolations) rather than one whole-token span.
+                semtok_fstring_spans(entries, tok, src, src_len, table)
+            else:
+                ttype: i64 = semtok_classify(tok, src, prev_kind, next_kind, in_effect, table)
+                emit_len: i64 = semtok_display_length(tok, src, src_len)
+                if ttype >= 0 and emit_len > 0:
+                    entries.push(SemTok{line: tok.line.i64() - 1, col: tok.column.i64() - 1, length: emit_len, ttype: ttype})
             # Advance the effect-list state machine for the NEXT token.
             k: Lexer::TokenKind = tok.kind
             if k == Lexer::TokenKind.LBracket:
