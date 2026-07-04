@@ -549,9 +549,7 @@ def handle_semantic_tokens(root: Json::Value, doc_uri: darray[u8], doc_text: dar
 # Retained as a defensive boundary for anyone building against an older elisac;
 # safe to inline once the toolchain floor moves past that fix.
 def semtok_respond(id_raw: darray[u8], doc_text: darray[u8]) -> void can[Console, Memory.Allocate, Abort.Panic]:
-    local_src: mutable darray[u8] = []
-    for b in doc_text:
-        local_src.push(b)
+    local_src: mutable darray[u8] = [b for b in doc_text]
     body: darray[u8] = semtok_data_body(&local_src[0], local_src.count - 1)
     send_result_body(id_raw, body)
 
