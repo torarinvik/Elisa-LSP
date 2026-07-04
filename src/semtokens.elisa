@@ -104,7 +104,7 @@ def semtok_ident_class(text: sview) -> i64 can[Memory.Allocate, Abort.Panic]:
         if text == "move":
             return ST_MEM_QUALIFIER
         # 7. Control flow (contextual)
-        if text == "for" or text == "defer" or text == "guard" or text == "do" or text == "get":
+        if text == "for" or text == "defer" or text == "guard" or text == "do" or text == "get" or text == "rebind":
             return ST_FLOW_BRANCH
         if text == "parallel" or text == "nursery" or text == "pool" or text == "submit" or text == "await" or text == "wait" or text == "lock" or text == "spawn_daemon":
             return ST_FLOW_CONCURRENT
