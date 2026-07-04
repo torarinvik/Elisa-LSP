@@ -39,7 +39,7 @@ def check_source_buf(src: u8&, len: usize) -> Semantic::SymbolTable:
 # into it, and must stay valid for as long as the caller reads the table.
 def check_source(owner: mutable darray[u8]&, text: sview) -> Semantic::SymbolTable:
     can Memory.Allocate, Abort.Panic:
-        owner.extend([b for b in text])
+        owner.extend(text)
         owner.push(0)
         return check_source_buf(&owner[0], sview_len(text))
 
