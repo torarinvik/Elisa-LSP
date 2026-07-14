@@ -31,38 +31,38 @@ module Json:
     private:
         # Byte at `pos`, or 0 past the end.
         def at(src: sview, pos: usize) -> u8:
-            if pos >= sview_len(src):
-                return 0
+            0 return if pos >= sview_len(src)
             return sview_at(src, pos)
 
 
         def skip_ws(src: sview, pos: mutable usize&) -> void:
             while pos[0] < sview_len(src):
                 c: u8 = sview_at(src, pos[0])
-                if c == 32 or c == 9 or c == 10 or c == 13:
-                    pos[0] <- pos[0] + 1
-                else:
-                    return
+                match c:
+                    32 | 9 | 10 | 13:
+                        pos[0] <- pos[0] + 1
+                    _:
+                        return
 
 
         # Parse a JSON string, returning the raw content span (between the quotes). The
         # cursor is left just past the closing quote. Backslash escapes are skipped so an
         # escaped quote does not end the string early.
         def parse_string_span(src: sview, pos: mutable usize&) -> sview:
-            if at(src, pos[0]) != 34:
-                return sview("", 0, 0)
+            sview("", 0, 0) return if at(src, pos[0]) != 34
             pos[0] <- pos[0] + 1
             start: usize = pos[0]
             while pos[0] < sview_len(src):
                 c: u8 = sview_at(src, pos[0])
-                if c == 92:
-                    pos[0] <- pos[0] + 2
-                elif c == 34:
-                    end: usize = pos[0]
-                    pos[0] <- pos[0] + 1
-                    return string_view_slice(src, start.i64(), end.i64())
-                else:
-                    pos[0] <- pos[0] + 1
+                match c:
+                    92:
+                        pos[0] <- pos[0] + 2
+                    34:
+                        end: usize = pos[0]
+                        pos[0] <- pos[0] + 1
+                        return string_view_slice(src, start.i64(), end.i64())
+                    _:
+                        pos[0] <- pos[0] + 1
             return string_view_slice(src, start.i64(), sview_len(src).i64())
 
 
@@ -70,10 +70,11 @@ module Json:
             start: usize = pos[0]
             while pos[0] < sview_len(src):
                 c: u8 = sview_at(src, pos[0])
-                if (c >= 48 and c <= 57) or c == 45 or c == 43 or c == 46 or c == 101 or c == 69:
-                    pos[0] <- pos[0] + 1
-                else:
-                    break
+                match c:
+                    48..=57 | 45 | 43 | 46 | 101 | 69:
+                        pos[0] <- pos[0] + 1
+                    _:
+                        break
             return string_view_slice(src, start.i64(), pos[0].i64())
 
 
@@ -89,8 +90,7 @@ module Json:
                     skip_ws(src, pos)
                     k: sview = parse_string_span(src, pos)
                     skip_ws(src, pos)
-                    if at(src, pos[0]) == 58:        # `:`
-                        pos[0] <- pos[0] + 1
+                    pos[0] <- pos[0] + 1 if at(src, pos[0]) == 58        # `:`
                     v: Value = parse_value(src, pos)
                     fields.push(Field{key: k, value: v})
                     skip_ws(src, pos)
@@ -126,22 +126,24 @@ module Json:
             can Memory.Allocate, Abort.Panic:
                 skip_ws(src, pos)
                 c: u8 = at(src, pos[0])
-                if c == 123:                         # `{`
-                    return parse_object(src, pos)
-                if c == 91:                          # `[`
-                    return parse_array(src, pos)
-                if c == 34:                          # `"`
-                    return (Value.Str(parse_string_span(src, pos)))
-                if c == 116:                         # `true`
-                    pos[0] <- pos[0] + 4
-                    return (Value.Bool(true))
-                if c == 102:                         # `false`
-                    pos[0] <- pos[0] + 5
-                    return (Value.Bool(false))
-                if c == 110:                         # `null`
-                    pos[0] <- pos[0] + 4
-                    return (Value.Null)
-                return (Value.Num(parse_number_span(src, pos)))
+                match c:
+                    123:                              # `{`
+                        return parse_object(src, pos)
+                    91:                               # `[`
+                        return parse_array(src, pos)
+                    34:                               # `"`
+                        return (Value.Str(parse_string_span(src, pos)))
+                    116:                              # `true`
+                        pos[0] <- pos[0] + 4
+                        return (Value.Bool(true))
+                    102:                              # `false`
+                        pos[0] <- pos[0] + 5
+                        return (Value.Bool(false))
+                    110:                              # `null`
+                        pos[0] <- pos[0] + 4
+                        return (Value.Null)
+                    _:
+                        return (Value.Num(parse_number_span(src, pos)))
 
     public:
         # Parse a complete JSON document, returning the root value.
@@ -157,8 +159,7 @@ module Json:
                 match v:
                     Value.Obj(fields):
                         for f in fields:
-                            if string_view_eq(f.key, key) == 1:
-                                return f.value
+                            f.value return if string_view_eq(f.key, key) == 1
                     _:
                         pass
                 return null
@@ -176,8 +177,7 @@ module Json:
                         i <- 1
                     while i < text.len:
                         d: u8 = sview_at(text, i)
-                        if d >= 48 and d <= 57:
-                            n <- n * 10 + (d.i64() - 48)
+                        n <- n * 10 + (d.i64() - 48) if d >= 48 and d <= 57
                         i <- i + 1
                     return (0 - n) if neg else n
                 _:
@@ -195,32 +195,31 @@ module Json:
 
         # Hex digit value, or 0 for non-hex.
         def hex_val(c: u8) -> u32:
-            if c >= 48 and c <= 57:
-                return (c - 48).u32()
-            if c >= 97 and c <= 102:
-                return (c - 87).u32()
-            if c >= 65 and c <= 70:
-                return (c - 55).u32()
-            return 0
+            return when c:
+                48..=57 -> (c - 48).u32()
+                97..=102 -> (c - 87).u32()
+                65..=70 -> (c - 55).u32()
+                _ -> 0
 
 
         # Append `cp` to `out` as UTF-8.
         def push_utf8(out: mutable darray[u8]&, cp: u32) -> void:
             can Memory.Allocate, Abort.Panic:
-                if cp < 0x80:
-                    out.push(cp.u8())
-                elif cp < 0x800:
-                    out.push((0xC0 | (cp >> 6)).u8())
-                    out.push((0x80 | (cp & 0x3F)).u8())
-                elif cp < 0x10000:
-                    out.push((0xE0 | (cp >> 12)).u8())
-                    out.push((0x80 | ((cp >> 6) & 0x3F)).u8())
-                    out.push((0x80 | (cp & 0x3F)).u8())
-                else:
-                    out.push((0xF0 | (cp >> 18)).u8())
-                    out.push((0x80 | ((cp >> 12) & 0x3F)).u8())
-                    out.push((0x80 | ((cp >> 6) & 0x3F)).u8())
-                    out.push((0x80 | (cp & 0x3F)).u8())
+                match cp:
+                    0..<0x80:
+                        out.push(cp.u8())
+                    0x80..<0x800:
+                        out.push((0xC0 | (cp >> 6)).u8())
+                        out.push((0x80 | (cp & 0x3F)).u8())
+                    0x800..<0x10000:
+                        out.push((0xE0 | (cp >> 12)).u8())
+                        out.push((0x80 | ((cp >> 6) & 0x3F)).u8())
+                        out.push((0x80 | (cp & 0x3F)).u8())
+                    _:
+                        out.push((0xF0 | (cp >> 18)).u8())
+                        out.push((0x80 | ((cp >> 12) & 0x3F)).u8())
+                        out.push((0x80 | ((cp >> 6) & 0x3F)).u8())
+                        out.push((0x80 | (cp & 0x3F)).u8())
 
 
         # Append a Str value's DECODED content to `out`, expanding JSON escapes

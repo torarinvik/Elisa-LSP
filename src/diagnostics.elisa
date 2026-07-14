@@ -28,7 +28,7 @@ using Bytes
 # for as long as the returned table is read (see `check_source` below).
 def check_source_buf(src: u8&, len: usize) -> Semantic::SymbolTable:
     can Memory.Allocate, Abort.Panic:
-        tokens: darray[Token] = frontend_tokenize_with_len(src, src, len)
+        tokens: darray[Token] = Lexer::frontend_tokenize_with_length(src, src, len)
         file: Ast::File = frontend_parser_parse_file(src, tokens)
         return Semantic::check(file)
 
@@ -49,22 +49,23 @@ def check_source(owner: mutable darray[u8]&, text: sview) -> Semantic::SymbolTab
 # must be escaped rather than concatenated raw.
 def json_escape_byte(buffer: mutable darray[u8]&, b: u8) -> void:
     can Memory.Allocate, Abort.Panic:
-        if b == 34:            # "
-            buffer.push_str("\\\"")
-        elif b == 92:          # \
-            buffer.push_str("\\\\")
-        elif b == 10:          # \n
-            buffer.push_str("\\n")
-        elif b == 13:          # \r
-            buffer.push_str("\\r")
-        elif b == 9:           # \t
-            buffer.push_str("\\t")
-        elif b < 32:           # other C0 controls -> \u00XX
-            buffer.push_str("\\u00")
-            buffer.push(hex_digit((b.i64() >> 4) & 15))
-            buffer.push(hex_digit(b.i64() & 15))
-        else:
-            buffer.push(b)
+        match b:
+            34:            # "
+                buffer.push_str("\\\"")
+            92:          # \
+                buffer.push_str("\\\\")
+            10:           # \n
+                buffer.push_str("\\n")
+            13:           # \r
+                buffer.push_str("\\r")
+            9:           # \t
+                buffer.push_str("\\t")
+            _ if b < 32:           # other C0 controls -> \u00XX
+                buffer.push_str("\\u00")
+                buffer.push(hex_digit((b.i64() >> 4) & 15))
+                buffer.push(hex_digit(b.i64() & 15))
+            _:
+                buffer.push(b)
 
 
 # ASCII hex digit for a nibble 0..15.
@@ -109,8 +110,7 @@ def publish_diagnostics(uri: sview, table: Semantic::SymbolTable) -> void:
         body.push_sview(uri)
         body.push_str("\",\"diagnostics\":[")
         for index, diagnostic in table.diagnostics.enumerate():
-            if index > 0:
-                body.push_str(",")
+            body.push_str(",") if index > 0
             entry: darray[u8] = diagnostic_json(diagnostic)
             body.extend(entry)
         body.push_str("]}}")

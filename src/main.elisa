@@ -24,8 +24,7 @@ extern read(fd: int, buf: void&, count: usize) -> isize can[Console]
 def read_byte() -> int can[Console, Memory.Allocate, Abort.Panic]:
     b: mutable darray[u8] = [0]
     n: isize = read(0, (&b[0]).cast[void&], 1) can Console
-    if n <= 0:
-        return -1
+    -1 return if n <= 0
     return b[0].int()
 
 
@@ -37,27 +36,22 @@ def read_line(eof: mutable bool&) -> darray[u8] can[Console, Memory.Allocate, Ab
         if c < 0:
             eof[0] <- true
             return out
-        if c == 10:
-            return out
-        if c != 13:
-            out.push(c.u8())
+        out return if c == 10
+        out.push(c.u8()) if c != 13
     return out
 
 
 # Parse a `Content-Length: N` header line, or -1 if it isn't one.
 def content_length_of(line: darray[u8]) -> i64 can[Memory.Allocate, Abort.Panic]:
     prefix: sview = sview("Content-Length:", 0, -1)
-    if line.count.i64() < prefix.len:
-        return -1
+    -1 return if line.count.i64() < prefix.len
     head: sview = sview(&line[0], 0, prefix.len)
-    if string_views_eq(head, prefix) == 0:
-        return -1
+    -1 return if string_views_eq(head, prefix) == 0
     n: mutable i64 = 0
     i: mutable usize = prefix.len.usize()
     while i < line.count:
         ch: u8 = line[i]
-        if ch >= 48 and ch <= 57:
-            n <- n * 10 + (ch.i64() - 48)
+        n <- n * 10 + (ch.i64() - 48) if ch >= 48 and ch <= 57
         i <- i + 1
     return n
 
@@ -68,20 +62,15 @@ def read_message(body: mutable darray[u8]&) -> bool can[Console, Memory.Allocate
     while true:
         eof: mutable bool = false
         line: darray[u8] = read_line(eof)
-        if eof:
-            return false
-        if line.count == 0:
-            break
+        false return if eof
+        break if line.count == 0
         cl: i64 = content_length_of(line)
-        if cl >= 0:
-            content_length <- cl
-    if content_length < 0:
-        return false
+        content_length <- cl if cl >= 0
+    false return if content_length < 0
     i: mutable i64 = 0
     while i < content_length:
         c: int = read_byte()
-        if c < 0:
-            return false
+        false return if c < 0
         body.push(c.u8())
         i <- i + 1
     return true
@@ -147,9 +136,7 @@ def request_text_value(root: Json::Value) -> Json::Value? can[Memory.Allocate, A
             if Json::get(params, "contentChanges") is changes:
                 match changes:
                     Json::Value.Arr(items):
-                        if items.count > 0:
-                            if Json::get(items[0], "text") is t:
-                                return t
+                        t return if items.count > 0 and Json::get(items[0], "text") is t
                     _:
                         pass
         return null
@@ -231,8 +218,7 @@ def hover_loop_header(doc: darray[u8]&, start: usize, end: usize, out: mutable d
             open <- p
             break
         p <- p + 1
-    if open >= end:
-        return false
+    false return if open >= end
     close: mutable usize = end
     q: mutable usize = open + 1
     while q < end:
@@ -240,19 +226,15 @@ def hover_loop_header(doc: darray[u8]&, start: usize, end: usize, out: mutable d
             close <- q
             break
         q <- q + 1
-    if close >= end or close <= open + 1:
-        return false
+    false return if close >= end or close <= open + 1
     # After the closing pipe, `:` or `->` (skipping spaces) marks a real header.
     r: mutable usize = close + 1
     while r < end and doc[r] == 32:
         r <- r + 1
     is_header: mutable bool = false
-    if r < end and doc[r] == 58:
-        is_header <- true
-    if r + 1 < end and doc[r] == 45 and doc[r + 1] == 62:
-        is_header <- true
-    if not is_header:
-        return false
+    is_header <- true if r < end and doc[r] == 58
+    is_header <- true if r + 1 < end and doc[r] == 45 and doc[r + 1] == 62
+    false return if not is_header
     caps: mutable darray[u8] = []
     accs: mutable darray[u8] = []
     ncaps: mutable i64 = 0
@@ -278,13 +260,11 @@ def hover_loop_header(doc: darray[u8]&, start: usize, end: usize, out: mutable d
                 ne: mutable usize = eq
                 while ne > s and doc[ne - 1] == 32:
                     ne <- ne - 1
-                if naccs > 0:
-                    push_str(accs, ", ")
+                push_str(accs, ", ") if naccs > 0
                 accs.push_sview(sview(&doc[s], 0, (ne - s).i64()))
                 naccs <- naccs + 1
             elif e > s:
-                if ncaps > 0:
-                    push_str(caps, ", ")
+                push_str(caps, ", ") if ncaps > 0
                 caps.push_sview(sview(&doc[s], 0, (e - s).i64()))
                 ncaps <- ncaps + 1
             item_start <- k + 1
@@ -312,9 +292,7 @@ def handle_hover(root: Json::Value, doc_text: darray[u8]&) -> void can[Console, 
     le: mutable usize = 0
     msg: mutable darray[u8] = []
     ok: mutable bool = false
-    if line_no >= 0 and doc_text.count > 0:
-        if hover_line_range(doc_text, line_no, ls, le):
-            ok <- hover_loop_header(doc_text, ls, le, msg)
+    ok <- hover_loop_header(doc_text, ls, le, msg) if line_no >= 0 and doc_text.count > 0 and hover_line_range(doc_text, line_no, ls, le)
     if not ok:
         send_result(id_raw, "null")
         return
@@ -334,28 +312,30 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
     doc_text: mutable darray[u8] = []
     while true:
         body: mutable darray[u8] = []
-        if not read_message(body):
-            return 0
-        if body.count == 0:
-            return 0
+        0 return if not read_message(body)
+        0 return if body.count == 0
         bsv: sview = sview(&body[0], 0, body.count.i64())
         root: Json::Value = Json::parse(bsv)
-        if method_is(root, "initialize"):
-            id_raw: darray[u8] = extract_id(root)
-            caps: mutable darray[u8] = []
-            push_str(caps, "{\"capabilities\":{\"textDocumentSync\":1,\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":")
-            push_str(caps, semtok_legend_json())
-            push_str(caps, ",\"tokenModifiers\":[]},\"full\":true},\"hoverProvider\":true}}")
-            send_result_body(id_raw, caps)
-        elif method_is(root, "shutdown"):
-            id_raw: darray[u8] = extract_id(root)
-            send_result(id_raw, "null")
-        elif method_is(root, "exit"):
-            return 0
-        elif method_is(root, "textDocument/didOpen") or method_is(root, "textDocument/didChange"):
-            check_and_publish(root, doc_uri, doc_text)
-        elif method_is(root, "textDocument/semanticTokens/full"):
-            handle_semantic_tokens(root, doc_uri, doc_text)
-        elif method_is(root, "textDocument/hover"):
-            handle_hover(root, doc_text)
+        method: sview = request_method(root)
+        match method:
+            "initialize":
+                id_raw: darray[u8] = extract_id(root)
+                caps: mutable darray[u8] = []
+                push_str(caps, "{\"capabilities\":{\"textDocumentSync\":1,\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":")
+                push_str(caps, semtok_legend_json())
+                push_str(caps, ",\"tokenModifiers\":[]},\"full\":true},\"hoverProvider\":true}}")
+                send_result_body(id_raw, caps)
+            "shutdown":
+                id_raw: darray[u8] = extract_id(root)
+                send_result(id_raw, "null")
+            "exit":
+                return 0
+            "textDocument/didOpen" | "textDocument/didChange":
+                check_and_publish(root, doc_uri, doc_text)
+            "textDocument/semanticTokens/full":
+                handle_semantic_tokens(root, doc_uri, doc_text)
+            "textDocument/hover":
+                handle_hover(root, doc_text)
+            _:
+                pass
     return 0
