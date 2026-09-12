@@ -94,7 +94,7 @@ def hex_digit(n: i64) -> u8:
 # through a by-reference helper had its backing split across the base and its parallel
 # stack. Fixed in Elisa-core: resolveRegionArenaArgs now peels the `&` a `mutable darray&`
 # argument is wrapped in, so the helper grows into the darray's own stack.)
-def diagnostic_json(d: Semantic::Diagnostic, src: u8&, src_len: usize, utf8: bool) -> darray[u8]:
+def diagnostic_json(d: Semantic::Diagnostic, src: u8&, src_len: usize, utf8: bool, related: bool, uri: sview) -> darray[u8]:
     can Memory.Allocate, Abort.Panic:
         nlines: i64 = line_count(src, src_len)
         last: i64 = nlines - 1
@@ -134,7 +134,36 @@ def diagnostic_json(d: Semantic::Diagnostic, src: u8&, src_len: usize, utf8: boo
         buffer.push_str(",\"message\":\"")
         for b in Semantic::diagnostic_message(d):
             json_escape_byte(buffer, b)
-        buffer.push_str("\"}")
+        buffer.push_str("\"")
+        # G03: expose the compiler's structured secondary location as LSP
+        # `relatedInformation` (a duplicate declaration points at the original).
+        # Only when the client advertises support and the frontend actually
+        # carried a secondary line; otherwise the diagnostic is unchanged.
+        if related and d.secondary_line > 0:
+            srel0: mutable i64 = d.secondary_line.i64() - 1
+            srel0 <- last if srel0 > last
+            srel0 <- 0 if srel0 < 0
+            rel_s: mutable i64 = 0
+            rel_e: mutable i64 = line_unit_length(src, src_len, srel0, utf8)
+            if d.secondary_end_column > 0:
+                rscol: i64 = d.secondary_column.i64() - 1 if d.secondary_column > 0 else 0
+                recol: i64 = d.secondary_end_column.i64() - 1
+                rel_s <- byte_col_to_units(src, src_len, srel0, rscol, utf8)
+                rel_e <- byte_col_to_units(src, src_len, srel0, recol, utf8)
+                rel_e <- rel_s if rel_e < rel_s
+            buffer.push_str(",\"relatedInformation\":[{\"location\":{\"uri\":\"")
+            for b in uri:
+                json_escape_byte(buffer, b)
+            buffer.push_str("\",\"range\":{\"start\":{\"line\":")
+            buffer.push_int(srel0)
+            buffer.push_str(",\"character\":")
+            buffer.push_int(rel_s)
+            buffer.push_str("},\"end\":{\"line\":")
+            buffer.push_int(srel0)
+            buffer.push_str(",\"character\":")
+            buffer.push_int(rel_e)
+            buffer.push_str("}}},\"message\":\"first declared here\"}]")
+        buffer.push_str("}")
         return buffer
 
 
@@ -148,7 +177,7 @@ def diagnostic_json(d: Semantic::Diagnostic, src: u8&, src_len: usize, utf8: boo
 # identical-repeat suppression before sending.
 const MAX_DIAGNOSTICS: i64 = 200
 
-def build_publish_body(uri: sview, table: Semantic::SymbolTable, src: u8&, src_len: usize, version: i64, utf8: bool) -> darray[u8]:
+def build_publish_body(uri: sview, table: Semantic::SymbolTable, src: u8&, src_len: usize, version: i64, utf8: bool, related: bool) -> darray[u8]:
     can Memory.Allocate, Abort.Panic:
         body: mutable darray[u8] = []
         body.push_str("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"")
@@ -171,7 +200,7 @@ def build_publish_body(uri: sview, table: Semantic::SymbolTable, src: u8&, src_l
         i: mutable usize = 0
         while i < table.diagnostics.count:
             break if rendered >= MAX_DIAGNOSTICS
-            entry: darray[u8] = diagnostic_json(table.diagnostics[i], src, src_len, utf8)
+            entry: darray[u8] = diagnostic_json(table.diagnostics[i], src, src_len, utf8, related, uri)
             dup: mutable bool = false
             k: mutable usize = 0
             while k < starts.count:

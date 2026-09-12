@@ -180,6 +180,18 @@ header / 64 lines / 16 MiB body) are controlled nonzero exits with no output
 frame. Clean EOF between messages is exit 0. Floors: `test/transport_test.sh`
 (split at every byte, pipelining, malformed-length matrix, large-body refill).
 
+## Related diagnostic locations (G03)
+
+When the client advertises
+`textDocument.publishDiagnostics.relatedInformation`, a finding whose compiler
+`Diagnostic` carries a secondary span (`secondary_line > 0`, as
+`ModuleRedeclared` does) emits `relatedInformation` pointing at the original
+declaration's range, converted through the same coordinate layer. Incapable
+clients get the unchanged diagnostic; findings without a secondary span never
+fabricate related info. The compiler remains the source of the relation and
+the diagnostic wording; the server owns only the LSP framing and a short
+presentation label. Floor: `test/related_info_test.sh`.
+
 ## Region/lifetime constraints
 
 The frontend's region system rejects storing a function-local container into

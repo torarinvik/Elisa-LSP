@@ -3,7 +3,11 @@
   "server": "elisa-lsp",
   "transport": {
     "framing": "buffered Content-Length framing (case-insensitive header, strict digit value, overflow-checked)",
-    "bounds": {"max_header_bytes": 16384, "max_header_lines": 64, "max_body_bytes": 16777216},
+    "bounds": {
+      "max_header_bytes": 16384,
+      "max_header_lines": 64,
+      "max_body_bytes": 16777216
+    },
     "failure": "malformed/conflicting/missing/zero/truncated/oversized frames are controlled nonzero exits with no output frame; clean EOF is exit 0",
     "test": "test/transport_test.sh"
   },
@@ -134,6 +138,10 @@
       "shapes": "flat SymbolInformation; hierarchical when hierarchicalDocumentSymbolSupport",
       "valueSet": "honored via per-category fallbacks",
       "test": "test/document_symbols_test.sh"
+    },
+    "publishDiagnostics": {
+      "relatedInformation": "emitted when the client advertises support and the compiler carries a secondary span",
+      "test": "test/related_info_test.sh"
     }
   },
   "legend": {

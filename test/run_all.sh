@@ -42,6 +42,7 @@ run test/numerics_test.sh
 run test/sync_test.sh
 run test/positions_test.sh
 run test/diagnostic_ranges_test.sh
+run test/related_info_test.sh
 run test/diagnostics_version_test.sh
 run test/json_smoke.sh
 run test/manifest_test.sh

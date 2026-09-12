@@ -590,7 +590,7 @@ def store_document_symbols(document: mutable LspDocument&, storage: mutable darr
 # D01: versioned lifecycle — accept text into the store only for eligible
 # versions; stale/equal versions never mutate; duplicate opens start a new
 # generation; malformed notifications mutate nothing.
-def check_and_publish(root: Json::Value, documents: mutable darray[LspDocument]&, storage: mutable darray[u8]&, heads: mutable dict[u64, u32]&, utf8: bool, symbols_hier: bool, allowed_kinds: darray[i64]&) -> void can[Console, Memory.Allocate, Abort.Panic]:
+def check_and_publish(root: Json::Value, documents: mutable darray[LspDocument]&, storage: mutable darray[u8]&, heads: mutable dict[u64, u32]&, utf8: bool, symbols_hier: bool, allowed_kinds: darray[i64]&, related: bool) -> void can[Console, Memory.Allocate, Abort.Panic]:
     spell_bytes: mutable darray[u8] = []
     canon_bytes: mutable darray[u8] = []
     uri: sview = request_identity(root, spell_bytes, canon_bytes)
@@ -634,7 +634,7 @@ def check_and_publish(root: Json::Value, documents: mutable darray[LspDocument]&
     # moment analysis moves off the event loop (slow old results must never
     # overwrite newer findings).
     return if documents[slot].generation != gen
-    body: darray[u8] = build_publish_body(spell, table, &source[0], source.count - 1, document.version, utf8)
+    body: darray[u8] = build_publish_body(spell, table, &source[0], source.count - 1, document.version, utf8, related)
     fp: u64 = body_fingerprint(body)
     # Suppress identical repeats for the same version (e.g. duplicate didOpen);
     # the version is embedded in the body, so equal fingerprints imply equal
@@ -847,6 +847,23 @@ def negotiate_symbol_kinds(root: Json::Value) -> darray[i64] can[Memory.Allocate
         return out
 
 
+# Whether the client accepts `relatedInformation` on published diagnostics
+# (G03). False (and no related info emitted) unless explicitly advertised.
+def negotiate_related_info(root: Json::Value) -> bool can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        if Json::get(root, "params") is params:
+            if Json::get(params, "capabilities") is caps:
+                if Json::get(caps, "textDocument") is td:
+                    if Json::get(td, "publishDiagnostics") is pd:
+                        if Json::get(pd, "relatedInformation") is ri:
+                            match ri:
+                                Json::Value.Bool(enabled):
+                                    return enabled
+                                _:
+                                    return false
+        return false
+
+
 # ---- hover: textDocument/hover (docs/119 loop-header capture list) -----------------
 # Byte range [start,end) of 0-based source line `line_no` in `doc`; false if OOB.
 # U02: routed through the shared `Positions` coordinate module so hover slices
@@ -992,6 +1009,7 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
     hover_markdown: mutable bool = true
     symbols_hier: mutable bool = false
     allowed_kinds: mutable darray[i64] = []
+    diag_related: mutable bool = false
     # T01 buffered input: bytes read ahead of the cursor survive across
     # messages, so pipelined frames and split UTF-8 sequences frame exactly.
     inbuf: mutable darray[u8] = []
@@ -1019,6 +1037,7 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
                     hover_markdown <- negotiate_hover_markdown(root)
                     symbols_hier <- negotiate_symbols_hier(root)
                     allowed_kinds <- negotiate_symbol_kinds(root)
+                    diag_related <- negotiate_related_info(root)
                     caps: mutable darray[u8] = []
                     push_str(caps, "{\"capabilities\":{\"textDocumentSync\":1,\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":")
                     push_str(caps, semtok_legend_json())
@@ -1044,7 +1063,7 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
                     id_raw: darray[u8] = extract_id(root)
                     send_error(id_raw, -32002, "ServerNotInitialized") if has_id
                 else:
-                    check_and_publish(root, documents, document_storage, document_heads, pos_utf8, symbols_hier, allowed_kinds)
+                    check_and_publish(root, documents, document_storage, document_heads, pos_utf8, symbols_hier, allowed_kinds, diag_related)
             "textDocument/didClose":
                 if shutdown_requested:
                     pass
