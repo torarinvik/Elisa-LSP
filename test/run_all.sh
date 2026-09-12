@@ -37,6 +37,7 @@ run test/precedence_test.sh
 run test/fstring_semtokens_test.sh
 run test/multiline_tokens_test.sh
 run test/hover_test.sh
+run test/general_hover_test.sh
 run test/hover_escapes_test.sh
 run test/document_symbols_test.sh
 run test/folding_test.sh

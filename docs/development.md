@@ -287,6 +287,19 @@ cancellations are harmless. Analysis is synchronous, so cancellation is
 honored for pipelined requests today and becomes load-bearing when analysis
 moves off the loop. Floor: `test/cancel_test.sh`.
 
+## General hover (A03/F01)
+
+At analysis time `build_hover_index` (in `src/features/hover.elisa`)
+serializes the compiler's file symbols and param/local occurrences into a
+compact record stream stored in the document's flat storage — a retained,
+compaction-safe analysis summary, so hover never re-runs the frontend. Hover
+resolves the identifier under the cursor with H02 precedence (a param/local
+occurrence on that line wins, then a file-level declaration by name),
+converts columns through `Positions`, and returns the exact identifier range.
+Unknown identifiers fall back to the loop-header hover. Name matching is
+display-only and never used as proof for an edit. Floor:
+`test/general_hover_test.sh`.
+
 ## Region/lifetime constraints
 
 The frontend's region system rejects storing a function-local container into

@@ -226,7 +226,8 @@ def general_hover_body(document: LspDocument, storage: darray[u8]&, line_no: i64
             return []
         blob: sview = sview(&storage[document.hover_start], 0, document.hover_len.i64())
         value: mutable darray[u8] = []
-        occ: i64 = hover_occ_kind(blob, line_no, name)
+        # The frontend's occurrence log is 1-based; the request is 0-based.
+        occ: i64 = hover_occ_kind(blob, line_no + 1, name)
         if occ == OCC_PARAM:
             push_str(value, "(parameter) ")
             hover_push(value, name)

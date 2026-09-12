@@ -54,9 +54,9 @@
     },
     "textDocument/hover": {
       "implemented": true,
-      "test": "test/hover_test.sh",
-      "module": "src/main.elisa:handle_hover",
-      "note": "loop-header specialization only; general hover pending (F01)"
+      "test": "test/general_hover_test.sh",
+      "module": "src/features/hover.elisa:general_hover_body",
+      "note": "general hover from a retained analysis summary (declarations + param/local bindings) with loop-header fallback; A03 summary in flat storage"
     },
     "textDocument/publishDiagnostics": {
       "implemented": true,
