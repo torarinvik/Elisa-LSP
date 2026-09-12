@@ -1,27 +1,36 @@
 #!/usr/bin/env bash
-# didOpen diagnostics:
+# didOpen diagnostics (valid JSON fixtures via python json.dumps — B02):
 #   1. a clean document -> empty publishDiagnostics notification.
 #   2. a document with an error -> publishDiagnostics with >=1 diagnostic (no crash).
 #
 # Case 2 used to abort the server with an arena "assert failed" (fixed in Elisa-core
 # 742c2b4b — see the comment atop src/diagnostics.elisa).
-set -uo pipefail
+set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 SRV="$ROOT/build/elisa-lsp"
 [[ -x "$SRV" ]] || { echo "build first: bash build.sh" >&2; exit 2; }
 
-frame() { local b="$1"; printf 'Content-Length: %d\r\n\r\n%s' "${#b}" "$b"; }
+run_case() {
+  python3 - "$SRV" "$1" "$2" <<'PY'
+import json, subprocess, sys
+_, srv, uri, text = sys.argv
+def frame(o):
+    b = json.dumps(o).encode()
+    return b"Content-Length: " + str(len(b)).encode() + b"\r\n\r\n" + b
+m = frame({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})
+m += frame({"jsonrpc":"2.0","method":"textDocument/didOpen",
+            "params":{"textDocument":{"uri":uri,"languageId":"Elisa","version":1,"text":text}}})
+m += frame({"jsonrpc":"2.0","method":"exit"})
+sys.stdout.write(subprocess.run([srv], input=m, capture_output=True, timeout=30).stdout.decode(errors="replace"))
+PY
+}
 
 fail=0
 
 # ---- case 1: clean document -> empty diagnostics ----
-CLEAN=$'def main() -> int:\n    return 0\n'
-clean_req() {
-  frame '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
-  frame "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file:///t.elisa\",\"text\":\"$CLEAN\"}}}"
-  frame '{"jsonrpc":"2.0","method":"exit"}'
-}
-OUT="$(clean_req | "$SRV")"
+OUT="$(run_case "file:///t.elisa" 'def main() -> int:
+    return 0
+')"
 echo "---- case 1: clean document ----"
 printf '%s' "$OUT" | cat -v
 echo
@@ -30,13 +39,9 @@ grep -q '"uri":"file:///t.elisa"' <<<"$OUT" || { echo "FAIL: uri not echoed"; fa
 grep -q '"diagnostics":\[\]' <<<"$OUT" || { echo "FAIL: expected empty diagnostics for a clean document"; fail=1; }
 
 # ---- case 2: document with an error -> >=1 diagnostic, no crash ----
-BAD='def main() -> int:\n    return nope_undefined\n'
-bad_req() {
-  frame '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
-  frame "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file:///bad.elisa\",\"text\":\"$BAD\"}}}"
-  frame '{"jsonrpc":"2.0","method":"exit"}'
-}
-OUT2="$(bad_req | "$SRV")"
+OUT2="$(run_case "file:///bad.elisa" 'def main() -> int:
+    return nope_undefined
+')"
 echo "---- case 2: document with an error ----"
 printf '%s' "$OUT2" | cat -v
 echo
@@ -48,13 +53,9 @@ grep -qi 'assert failed' <<<"$OUT2" && { echo "FAIL: server aborted with an aren
 # ---- case 3: document with a syntax error -> parser diagnostic surfaced ----
 # Parse errors come from the frontend (Ast::File.errors, folded into the diagnostic
 # stream by Semantic::check) — the LSP must surface them, not just semantic findings.
-SYN='def main( -> int:\n    return 0\n'
-syn_req() {
-  frame '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
-  frame "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file:///syn.elisa\",\"text\":\"$SYN\"}}}"
-  frame '{"jsonrpc":"2.0","method":"exit"}'
-}
-OUT3="$(syn_req | "$SRV")"
+OUT3="$(run_case "file:///syn.elisa" 'def main( -> int:
+    return 0
+')"
 echo "---- case 3: document with a syntax error ----"
 printf '%s' "$OUT3" | cat -v
 echo

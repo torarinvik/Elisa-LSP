@@ -54,6 +54,7 @@ legend (src/semtokens.elisa) — keep all three in lockstep.
 | 44 | elisa.op.logical | `#A896C4` | 0.68 0.06 295 |
 | 45 | elisa.op.bitwise | `#8FB0AA` | 0.72 0.04 175 |
 | 46 | elisa.op.assign | `#A6C79E` | 0.78 0.06 140 |
+| 47 | elisa.enum.variant | `#D6B3FF` | 0.82 0.11 300 |
 
 Indices 40–46 fill out the "universe" (every visible token colored): the
 operator families sit at low chroma so they read as connective tissue while
@@ -63,8 +64,9 @@ Identifier bindings (params/locals/fields → bind.local, `.field` → bind.fiel
 and effect dotted names after `can`/`trusted` are emitted lexically. The **[S]
 layer** then refines bare references against the real symbol table (parse +
 collect): a name declared as a Struct/Enum/Alias → type.user, Func/Extern →
-fn.use, Const → bind.global, Module → meta.module — so even a lowercase type or
-a function passed as a value colors correctly.
+fn.use, Const → bind.global, Module → meta.module, and enum variant declarations,
+qualified selectors, and bare match arms → enum.variant — so even a lowercase
+type or a function passed as a value colors correctly.
 
 **Comments** (index 40) are now emitted: the frontend lexer collects comment
 spans in a side channel (frontend_tokenize_comments_with_len) and the LSP merges

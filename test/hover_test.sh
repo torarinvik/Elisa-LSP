@@ -3,10 +3,10 @@
 # "Mutates (captured, in place): …" plus "Loop-private accumulators: …" — reports
 # "Pure over outer state" for a header with no captures, and returns null on a
 # non-header line and on a bitwise `|` that is not a header.
-set -uo pipefail
+set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 SRV="$ROOT/build/elisa-lsp"
-[ -x "$SRV" ] || { echo "hover test SKIP: $SRV not built" >&2; exit 0; }
+[[ -x "$SRV" ]] || { echo "error: $SRV missing — build first: bash build.sh" >&2; exit 2; }
 
 python3 - "$SRV" <<'PY'
 import subprocess, json, sys, re

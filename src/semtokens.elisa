@@ -60,11 +60,13 @@ const ST_OP_COMPARISON: i64 = 43
 const ST_OP_LOGICAL: i64 = 44
 const ST_OP_BITWISE: i64 = 45
 const ST_OP_ASSIGN: i64 = 46
+# Enum variants are appended so existing semantic-token wire indices remain stable.
+const ST_ENUM_VARIANT: i64 = 47
 
 # The legend, embedded in the initialize capabilities. Names mirror the
 # taxonomy leaves; the client palette keys off these exact strings.
 def semtok_legend_json() -> u8&:
-    return "[\"elisa.type.int.signed\",\"elisa.type.int.unsigned\",\"elisa.type.float\",\"elisa.type.scalar\",\"elisa.type.string\",\"elisa.type.container\",\"elisa.type.user\",\"elisa.type.void\",\"elisa.lit.int\",\"elisa.lit.float\",\"elisa.lit.char\",\"elisa.lit.string\",\"elisa.lit.value\",\"elisa.fn.def\",\"elisa.fn.use\",\"elisa.fn.lambda\",\"elisa.bind.param\",\"elisa.bind.local\",\"elisa.bind.field\",\"elisa.bind.global\",\"elisa.bind.discard\",\"elisa.effect.grant\",\"elisa.effect.name\",\"elisa.effect.unsafe\",\"elisa.effect.error\",\"elisa.mem.region\",\"elisa.mem.qualifier\",\"elisa.flow.branch\",\"elisa.flow.error\",\"elisa.flow.concurrent\",\"elisa.decl.skeleton\",\"elisa.contract.clause\",\"elisa.contract.quantifier\",\"elisa.contract.ghost\",\"elisa.op.mutation\",\"elisa.op.lambda\",\"elisa.op.range\",\"elisa.meta.decorator\",\"elisa.meta.directive\",\"elisa.meta.module\",\"elisa.comment\",\"elisa.punctuation\",\"elisa.op.arithmetic\",\"elisa.op.comparison\",\"elisa.op.logical\",\"elisa.op.bitwise\",\"elisa.op.assign\"]"
+    return "[\"elisa.type.int.signed\",\"elisa.type.int.unsigned\",\"elisa.type.float\",\"elisa.type.scalar\",\"elisa.type.string\",\"elisa.type.container\",\"elisa.type.user\",\"elisa.type.void\",\"elisa.lit.int\",\"elisa.lit.float\",\"elisa.lit.char\",\"elisa.lit.string\",\"elisa.lit.value\",\"elisa.fn.def\",\"elisa.fn.use\",\"elisa.fn.lambda\",\"elisa.bind.param\",\"elisa.bind.local\",\"elisa.bind.field\",\"elisa.bind.global\",\"elisa.bind.discard\",\"elisa.effect.grant\",\"elisa.effect.name\",\"elisa.effect.unsafe\",\"elisa.effect.error\",\"elisa.mem.region\",\"elisa.mem.qualifier\",\"elisa.flow.branch\",\"elisa.flow.error\",\"elisa.flow.concurrent\",\"elisa.decl.skeleton\",\"elisa.contract.clause\",\"elisa.contract.quantifier\",\"elisa.contract.ghost\",\"elisa.op.mutation\",\"elisa.op.lambda\",\"elisa.op.range\",\"elisa.meta.decorator\",\"elisa.meta.directive\",\"elisa.meta.module\",\"elisa.comment\",\"elisa.punctuation\",\"elisa.op.arithmetic\",\"elisa.op.comparison\",\"elisa.op.logical\",\"elisa.op.bitwise\",\"elisa.op.assign\",\"elisa.enum.variant\"]"
 
 
 # Classify a contextual identifier by its text ([L] approximation: text match
@@ -118,10 +120,40 @@ def symbol_ttype(table: Semantic::SymbolTable&, name: sview) -> i64:
     return -1
 
 
+# Enum variants are kept in parallel registry arrays, not ordinary Symbol rows.
+def enum_variant_for_owner(table: Semantic::SymbolTable&, owner: sview, name: sview) -> bool:
+    i: mutable usize = 0
+    while i < table.enum_variant_owner.count:
+        return true if string_views_eq(table.enum_variant_owner[i], owner) != 0 and string_views_eq(table.enum_variant_name[i], name) != 0
+        i <- i + 1
+    return false
+
+
+def enum_variant_anywhere(table: Semantic::SymbolTable&, name: sview) -> bool:
+    i: mutable usize = 0
+    while i < table.enum_variant_name.count:
+        return true if string_views_eq(table.enum_variant_name[i], name) != 0
+        i <- i + 1
+    return false
+
+
+# Resolve a param/local occurrence from the frontend's current tooling log.
+# The compiler stores this as parallel arrays rather than exposing a helper API;
+# its documented ref_kind values are 1 (parameter) and 2 (local). Keep the
+# lookup here so the LSP stays buildable as the semantic module evolves.
+def occurrence_ttype(table: Semantic::SymbolTable&, line: u32, name: sview) -> i64:
+    i: mutable usize = 0
+    while i < table.ref_line.count:
+        if table.ref_line[i] == line and string_views_eq(table.ref_name[i], name) != 0:
+            return table.ref_kind[i].i64()
+        i <- i + 1
+    return -1
+
+
 # Classify one token; -1 = no token emitted (IDE default styling). `prev`/`next`
 # are the neighboring token kinds; `table` is the real symbol table so bare
 # references take their declared kind ([S] layer) rather than a lexical guess.
-def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: Lexer::TokenKind, in_effect: bool, table: Semantic::SymbolTable&) -> i64 can[Memory.Allocate, Abort.Panic]:
+def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: Lexer::TokenKind, in_effect: bool, table: Semantic::SymbolTable&, qualified_owner: sview, shorthand_member: bool) -> i64 can[Memory.Allocate, Abort.Panic]:
     can Memory.Allocate, Abort.Panic:
         kind: Lexer::TokenKind = tok.kind
         match kind:
@@ -138,6 +170,9 @@ def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: L
                 ST_EFFECT_NAME return if in_effect
                 # Decorator name right after `@` (the At token colors too).
                 ST_META_DECORATOR return if prev == Lexer::TokenKind.At
+                # A qualified enum member is a variant selector, not a field/function.
+                ST_ENUM_VARIANT return if prev == Lexer::TokenKind.Dot and enum_variant_for_owner(table, qualified_owner, text)
+                ST_ENUM_VARIANT return if shorthand_member and enum_variant_anywhere(table, text)
                 # Member access is always a field or method — decided before the
                 # symbol table, so a `.field` sharing a top-level name isn't mistaken
                 # for that declaration.
@@ -146,7 +181,7 @@ def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: L
                 # [S] per-occurrence: a param or local binding, from the resolver's
                 # log. Consulted BEFORE the global symbol table, so a local that
                 # shadows a top-level name correctly wins.
-                occ: int = Semantic::occurrence_kind(table, tok.line, text)
+                occ: i64 = occurrence_ttype(table, tok.line, text)
                 ST_BIND_PARAM return if occ == 1
                 ST_BIND_LOCAL return if occ == 2
                 # [S] layer: a bare reference matching a real top-level declaration
@@ -154,6 +189,9 @@ def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: L
                 # function value is fn.use, a const is a global, …).
                 by_symbol: i64 = symbol_ttype(table, text)
                 by_symbol return if by_symbol >= 0
+                # Bare variants (including bare match arms) are registry-resolved,
+                # not guessed from case.
+                ST_ENUM_VARIANT return if enum_variant_anywhere(table, text)
                 # Unknown name in call position — best-effort function use.
                 ST_FN_USE return if next == Lexer::TokenKind.LParen
                 # PascalCase → a user-type reference (Point, Self, …). Lexical guess
@@ -251,6 +289,9 @@ def semtok_display_length(tok: Lexer::Token, src: u8&, src_len: usize) -> i64:
 
 
 # One classified span, in absolute 0-based coordinates (pre delta-encoding).
+# U02: `col`/`length` are BYTE offsets into the source snapshot (the shared
+# internal system); conversion to UTF-16 happens once at the protocol boundary
+# in `semtok_data_body_with_table` via `module Positions`.
 struct SemTok:
     line: i64
     col: i64
@@ -324,7 +365,14 @@ def semtok_fstring_spans(entries: mutable darray[SemTok]&, tok: Lexer::Token, sr
                         sp <- subtoks[s - 1].kind if s > 0
                         sn: mutable Lexer::TokenKind = Lexer::TokenKind.Eof
                         sn <- subtoks[s + 1].kind if s + 1 < subtoks.count
-                        stt: i64 = semtok_classify(st, src, sp, sn, false, table)
+                        qualified_owner: mutable sview = sview("", 0, 0)
+                        shorthand_member: mutable bool = false
+                        if sp == Lexer::TokenKind.Dot:
+                            if s >= 2 and subtoks[s - 2].kind == Lexer::TokenKind.Ident:
+                                qualified_owner <- Lexer::text_or_empty(subtoks[s - 2], src)
+                            else:
+                                shorthand_member <- true
+                        stt: i64 = semtok_classify(st, src, sp, sn, false, table, qualified_owner, shorthand_member)
                         sln: i64 = semtok_display_length(st, src, src_len)
                         if stt >= 0 and sln > 0:
                             sub_col: i64 = base_col + 2 + (st.start.usize() - lo).i64()
@@ -374,7 +422,14 @@ def semtok_main_entries(src: u8&, src_len: usize, table: Semantic::SymbolTable&)
                 # `{EXPR}` interpolations) rather than one whole-token span.
                 semtok_fstring_spans(entries, tok, src, src_len, table)
             else:
-                ttype: i64 = semtok_classify(tok, src, prev_kind, next_kind, in_effect, table)
+                qualified_owner: mutable sview = sview("", 0, 0)
+                shorthand_member: mutable bool = false
+                if prev_kind == Lexer::TokenKind.Dot:
+                    if i >= 2 and tokens[i - 2].kind == Lexer::TokenKind.Ident:
+                        qualified_owner <- Lexer::text_or_empty(tokens[i - 2], src)
+                    else:
+                        shorthand_member <- true
+                ttype: i64 = semtok_classify(tok, src, prev_kind, next_kind, in_effect, table, qualified_owner, shorthand_member)
                 emit_len: i64 = semtok_display_length(tok, src, src_len)
                 entries.push(SemTok{line: tok.line.i64() - 1, col: tok.column.i64() - 1, length: emit_len, ttype: ttype}) if ttype >= 0 and emit_len > 0
             # Advance the effect-list state machine for the NEXT token.
@@ -413,14 +468,16 @@ def semtok_comment_entries(src: u8&, src_len: usize) -> darray[SemTok]:
         return entries
 
 
-# Tokenize `src` and build the LSP delta-encoded `{"data":[...]}` payload. Main
-# tokens and comments are both in source order, so they are merged by (line,col)
-# — a linear merge, no sort — before delta-encoding.
-def semtok_data_body(src: u8&, src_len: usize) -> darray[u8]:
+# Build the LSP delta-encoded `{"data":[...]}` payload from a frontend result.
+# Main tokens and comments are both in source order, so they are merged by
+# (line, byte-col) — a linear merge, no sort — before delta-encoding. Starts
+# and lengths convert from bytes to UTF-16 code units here, at the protocol
+# boundary, through the shared `Positions` module (U02); the merge order is
+# unaffected because the conversion is monotonic within a line. The caller
+# passes the already-computed table so diagnostics and highlighting share one
+# frontend pass per source update.
+def semtok_data_body_with_table(src: u8&, src_len: usize, table: Semantic::SymbolTable&, utf8: bool) -> darray[u8]:
     can Memory.Allocate, Abort.Panic:
-        # The real symbol table (parse + collect) drives the [S] layer: bare
-        # identifiers take their declared kind. Borrows `src`, which outlives it.
-        table: Semantic::SymbolTable = check_source_buf(src, src_len)
         entries: darray[SemTok] = semtok_main_entries(src, src_len, table)
         comments: darray[SemTok] = semtok_comment_entries(src, src_len)
         body: mutable darray[u8] = []
@@ -444,50 +501,45 @@ def semtok_data_body(src: u8&, src_len: usize) -> darray[u8]:
             else:
                 e <- comments[b]
                 b <- b + 1
+            lstart: usize = Positions::line_start_offset(src, src_len, e.line)
+            llen: i64 = Positions::line_byte_length(src, src_len, e.line)
+            bcol: i64 = 0 if e.col < 0 else (llen if e.col > llen else e.col)
+            ucol: i64 = Positions::byte_col_to_units(src, src_len, e.line, e.col, utf8)
+            ulen: i64 = Positions::span_unit_length(src, src_len, lstart + bcol.usize(), e.length.usize(), utf8)
             dl: i64 = e.line - prev_line
-            dc: mutable i64 = e.col
-            dc <- e.col - prev_col if dl == 0
+            dc: mutable i64 = ucol
+            dc <- ucol - prev_col if dl == 0
             body.push(44) if not first
             push_int(body, dl)
             body.push(44)
             push_int(body, dc)
             body.push(44)
-            push_int(body, e.length)
+            push_int(body, ulen)
             body.push(44)
             push_int(body, e.ttype)
             push_str(body, ",0")
             first <- false
             prev_line <- e.line
-            prev_col <- e.col
+            prev_col <- ucol
         push_str(body, "]}")
         return body
 
 
-# Handle `textDocument/semanticTokens/full`: tokenize the cached document and
-# emit the LSP delta-encoded data array. Unknown/uncached uri -> empty data.
-def handle_semantic_tokens(root: Json::Value, doc_uri: darray[u8], doc_text: darray[u8]) -> void can[Console, Memory.Allocate, Abort.Panic]:
+# Handle `textDocument/semanticTokens/full`: emit the cached LSP delta-encoded
+# data array. Unknown/uncached uri -> empty data.
+# `LspDocument` is declared in main.elisa; all included source shares one module
+# scope, so this handler can select the requested snapshot by URI.
+def handle_semantic_tokens(root: Json::Value, documents: darray[LspDocument]&, document_storage: darray[u8]&, document_heads: dict[u64, u32]&) -> void can[Console, Memory.Allocate, Abort.Panic]:
     id_raw: darray[u8] = extract_id(root)
-    uri: sview = request_uri(root)
-    if doc_uri.count == 0 or doc_text.count == 0:
+    spell_bytes: mutable darray[u8] = []
+    canon_bytes: mutable darray[u8] = []
+    uri: sview = request_identity(root, spell_bytes, canon_bytes)
+    found: i64 = document_index(documents, document_storage, document_heads, uri)
+    if found < 0 or not documents[found.usize()].open or documents[found.usize()].text_len <= 1:
         send_result(id_raw, "{\"data\":[]}")
         return
-    cached: sview = sview(&doc_uri[0], 0, doc_uri.count.i64())
-    if string_views_eq(uri, cached) == 0:
-        send_result(id_raw, "{\"data\":[]}")
-        return
-    semtok_respond(id_raw, doc_text)
-
-
-# Region-poly call site kept in a return-free helper. This ISOLATED a stage0
-# bug (a scoped region left its name as the ambient alloc scope, so a
-# region-poly call after a nested region threaded an out-of-scope `__auto_N` →
-# "unknown identifier during LLVM lowering") — FIXED in Elisa-core 6e24e6ab.
-# Retained as a defensive boundary for anyone building against an older elisac;
-# safe to inline once the toolchain floor moves past that fix.
-def semtok_respond(id_raw: darray[u8], doc_text: darray[u8]) -> void can[Console, Memory.Allocate, Abort.Panic]:
-    local_src: mutable darray[u8] = [b for b in doc_text]
-    body: darray[u8] = semtok_data_body(&local_src[0], local_src.count - 1)
-    send_result_body(id_raw, body)
+    document: LspDocument = documents[found.usize()]
+    send_result_storage(id_raw, document_storage, document.semantic_start, document.semantic_len)
 
 
 # `send_result` variant whose result payload is an owned buffer.
@@ -497,5 +549,19 @@ def send_result_body(id_raw: darray[u8], result: darray[u8]) -> void can[Console
     body.extend(id_raw)
     push_str(body, ",\"result\":")
     body.extend(result)
+    push_str(body, "}")
+    send_message(body)
+
+
+# The cached semantic result already lives in the session storage. Build the
+# response directly from that range to avoid an intermediate result-buffer copy
+# on the frequent semantic-token request path.
+def send_result_storage(id_raw: darray[u8], storage: darray[u8]&, start: usize, length: usize) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    body: mutable darray[u8] = []
+    push_str(body, "{\"jsonrpc\":\"2.0\",\"id\":")
+    body.extend(id_raw)
+    push_str(body, ",\"result\":")
+    for i in 0..<length:
+        body.push(storage[start + i])
     push_str(body, "}")
     send_message(body)

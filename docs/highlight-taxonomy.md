@@ -32,6 +32,9 @@ The type family is the biggest cluster; numerics huddle tightest.
   brighter accent within 2d
 - **2e. Value keywords** [L]: `true` `false` `null` `zeroed` — bool literals
   match 1d's hue-relationship; `null`/`zeroed` desaturated like `void`
+- **2f. Enum variants** [S]: variant declarations, qualified selectors such as
+  `Event.Resize`, and bare match arms — a violet value-atom accent, distinct
+  from fields and functions while remaining close to the value family
 
 ## 3. Functions (gold)
 - **3a. Definition name** [S]: name in `def f(...)` — boldest gold
@@ -96,7 +99,7 @@ These are the scaffolding — one calm hue so the *contents* carry the color.
 - Default: low-salience grey for `. , ( ) [ ] { } : :: ->` etc.
 - **Exceptions that earn color**: `<-` (mutation — echoes the 4f mutability
   accent), `=>` (lambda body — echoes 3d), range operators `..< ..= ..>`
-  (echo 2a, they construct values)
+  (echo 2a, they construct values), and enum variant selectors (2f)
 
 ## 11. Meta & annotations (muted)
 - **11a. Comments** [L]: classic muted grey-green

@@ -184,6 +184,60 @@ module Json:
                     return 0
 
 
+        # J02 strict protocol integers: canonical optional-`-` plus 1+ ASCII
+        # digits and nothing else. Fractional (`1.5`), signed-plus (`+1`),
+        # empty, or lone-`-` spellings are NOT integers — accepting them would
+        # coerce (e.g. version `1.5` parsed as 15), corrupting staleness logic.
+        def is_int_text(text: sview) -> bool:
+            return false if text.len == 0
+            i: mutable usize = 0
+            if sview_at(text, 0) == 45:
+                return false if text.len == 1
+                i <- 1
+            digits: mutable bool = false
+            while i < text.len.usize():
+                d: u8 = sview_at(text, i)
+                return false if d < 48 or d > 57
+                digits <- true
+                i <- i + 1
+            return digits
+
+
+        def is_int_num(v: Value) -> bool:
+            match v:
+                Value.Num(text):
+                    return is_int_text(text)
+                _:
+                    return false
+
+
+        # Checked conversion for protocol fields (versions, positions): the
+        # value, or -2 when present-but-malformed (wrong type, fractional
+        # syntax, or i64 overflow). -2 is deliberately distinct from -1
+        # (absent), so callers can reject malformed input instead of treating
+        # an overflowing version as "unversioned" and applying it.
+        def as_i64_checked(v: Value) -> i64:
+            match v:
+                Value.Num(text):
+                    return -2 if not is_int_text(text)
+                    neg: mutable bool = false
+                    i: mutable usize = 0
+                    if sview_at(text, 0) == 45:
+                        neg <- true
+                        i <- 1
+                    n: mutable i64 = 0
+                    limit: i64 = 922337203685477580
+                    while i < text.len.usize():
+                        d: i64 = sview_at(text, i).i64() - 48
+                        last: i64 = 8 if neg else 7
+                        return -2 if n > limit or (n == limit and d > last)
+                        n <- n * 10 + d
+                        i <- i + 1
+                    return (0 - n) if neg else n
+                _:
+                    return -2
+
+
         # The raw string content of a Str value; empty for non-strings.
         def as_str(v: Value) -> sview:
             match v:

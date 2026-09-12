@@ -1,0 +1,121 @@
+# Shared source coordinates (U01/U02): half-open byte offsets are the internal
+# system; LSP line/character positions (UTF-16 code units by default) are
+# calculated only at the protocol boundary. Every provider — diagnostics,
+# semantic tokens, hover, and all future ones — must route through this module
+# so the same marked span is reported identically everywhere.
+#
+# Conventions: lines are 0-based; columns are 0-based UTF-16 code units;
+# byte columns are 0-based raw UTF-8 offsets. LF terminates lines; a CR
+# immediately before LF is content-excluded (CRLF). An empty source is one
+# empty line. Tabs are never expanded; grapheme clusters are never merged —
+# units are counted, not glyphs. Astral code points count 2 (surrogate pair);
+# lone/invalid bytes count 1 each so conversion stays total and bounded.
+module Positions:
+    public:
+        # Byte offset of the first byte of 0-based `line0`. Lines past the end
+        # clamp to `src_len` (empty trailing span, never OOB).
+        def line_start_offset(src: u8&, src_len: usize, line0: i64) -> usize:
+            off: mutable usize = 0
+            cur: mutable i64 = 0
+            i: mutable usize = 0
+            while i < src_len:
+                return off if cur == line0
+                if src[i] == 10:
+                    cur <- cur + 1
+                    off <- i + 1
+                i <- i + 1
+            return off
+
+
+        # Number of lines: newlines + 1 (empty source is one empty line).
+        def line_count(src: u8&, src_len: usize) -> i64:
+            n: mutable i64 = 1
+            i: mutable usize = 0
+            while i < src_len:
+                n <- n + 1 if src[i] == 10
+                i <- i + 1
+            return n
+
+
+        # Content bytes of 0-based `line0`, excluding LF and a trailing CR.
+        def line_byte_length(src: u8&, src_len: usize, line0: i64) -> i64:
+            start: usize = line_start_offset(src, src_len, line0)
+            end: mutable usize = start
+            while end < src_len and src[end] != 10:
+                end <- end + 1
+            end <- end - 1 if end > start and src[end - 1] == 13
+            return (end - start).i64()
+
+
+        # UTF-8 sequence length implied by a lead byte; lone continuations and
+        # impossible leads count 1 so scanning never stalls or overruns.
+        def utf8_seq_length(first: u8) -> usize:
+            1 return if first < 128
+            2 return if first >= 194 and first <= 223
+            3 return if first >= 224 and first <= 239
+            4 return if first >= 240 and first <= 247
+            return 1
+
+
+        # UTF-16 code units in `nbytes` starting at `start` (clamped by caller
+        # discipline to valid bounds; overlong tails are absorbed, never read
+        # past). Astral sequences count 2, all others 1.
+        def utf16_units_for_bytes(src: u8&, start: usize, nbytes: usize) -> i64:
+            units: mutable i64 = 0
+            i: mutable usize = 0
+            while i < nbytes:
+                first: u8 = src[start + i]
+                seqlen: mutable usize = utf8_seq_length(first)
+                seqlen <- nbytes - i if seqlen > nbytes - i
+                if seqlen == 4:
+                    units <- units + 2
+                else:
+                    units <- units + 1
+                i <- i + seqlen
+            return units
+
+
+        # UTF-16 code units on 0-based `line0` (content only, no terminator).
+        def line_utf16_length(src: u8&, src_len: usize, line0: i64) -> i64:
+            start: usize = line_start_offset(src, src_len, line0)
+            return utf16_units_for_bytes(src, start, line_byte_length(src, src_len, line0).usize())
+
+
+        # Byte column (0-based, clamped to the line) to UTF-16 column. A column
+        # landing mid-sequence resolves to the units before it — boundaries
+        # only, never a split pair.
+        def byte_col_to_utf16(src: u8&, src_len: usize, line0: i64, byte_col: i64) -> i64:
+            start: usize = line_start_offset(src, src_len, line0)
+            llen: i64 = line_byte_length(src, src_len, line0)
+            clamped: i64 = 0 if byte_col < 0 else (llen if byte_col > llen else byte_col)
+            return utf16_units_for_bytes(src, start, clamped.usize())
+
+
+        # UTF-16 units in an absolute byte span (clamped to the source). Used
+        # for token lengths, which may cross line ends for multiline lexemes.
+        def span_utf16_length(src: u8&, src_len: usize, start_off: usize, nbytes: usize) -> i64:
+            start: usize = src_len if start_off > src_len else start_off
+            avail: usize = src_len - start
+            take: usize = avail if nbytes > avail else nbytes
+            return utf16_units_for_bytes(src, start, take)
+
+
+        # Negotiated-unit views (P03): when the session negotiated UTF-8,
+        # columns and lengths are byte counts; otherwise UTF-16 code units.
+        # One branch point so providers cannot disagree about the session mode.
+        def line_unit_length(src: u8&, src_len: usize, line0: i64, utf8: bool) -> i64:
+            return line_byte_length(src, src_len, line0) if utf8 else line_utf16_length(src, src_len, line0)
+
+
+        def byte_col_to_units(src: u8&, src_len: usize, line0: i64, byte_col: i64, utf8: bool) -> i64:
+            start: usize = line_start_offset(src, src_len, line0)
+            llen: i64 = line_byte_length(src, src_len, line0)
+            clamped: i64 = 0 if byte_col < 0 else (llen if byte_col > llen else byte_col)
+            return clamped if utf8 else utf16_units_for_bytes(src, start, clamped.usize())
+
+
+        def span_unit_length(src: u8&, src_len: usize, start_off: usize, nbytes: usize, utf8: bool) -> i64:
+            start: usize = src_len if start_off > src_len else start_off
+            avail: usize = src_len - start
+            take: usize = avail if nbytes > avail else nbytes
+            return take.i64() if utf8 else utf16_units_for_bytes(src, start, take)

@@ -1,0 +1,132 @@
+{
+  "spec_baseline": "LSP 3.17",
+  "server": "elisa-lsp",
+  "methods": {
+    "initialize": {
+      "implemented": true,
+      "test": "test/handshake_test.sh",
+      "module": "src/main.elisa:main"
+    },
+    "initialized": {
+      "implemented": false,
+      "note": "accepted silently (no-op); P02 state machine pending"
+    },
+    "shutdown": {
+      "implemented": true,
+      "test": "test/handshake_test.sh",
+      "module": "src/main.elisa:main"
+    },
+    "exit": {
+      "implemented": true,
+      "test": "test/handshake_test.sh",
+      "module": "src/main.elisa:main"
+    },
+    "textDocument/didOpen": {
+      "implemented": true,
+      "test": "test/diagnostics_test.sh",
+      "module": "src/main.elisa:check_and_publish"
+    },
+    "textDocument/didChange": {
+      "implemented": true,
+      "test": "test/escapes_test.sh",
+      "module": "src/main.elisa:check_and_publish",
+      "note": "full-sync entry zero only; multi-change + incremental pending (D02)"
+    },
+    "textDocument/didClose": {
+      "implemented": true,
+      "test": "test/multi_document_test.sh",
+      "module": "src/main.elisa:handle_did_close"
+    },
+    "textDocument/semanticTokens/full": {
+      "implemented": true,
+      "test": "test/semtokens_test.sh",
+      "module": "src/semtokens.elisa:handle_semantic_tokens"
+    },
+    "textDocument/hover": {
+      "implemented": true,
+      "test": "test/hover_test.sh",
+      "module": "src/main.elisa:handle_hover",
+      "note": "loop-header specialization only; general hover pending (F01)"
+    },
+    "textDocument/publishDiagnostics": {
+      "implemented": true,
+      "kind": "server-to-client notification",
+      "test": "test/diagnostics_test.sh",
+      "module": "src/diagnostics.elisa:publish_diagnostics"
+    },
+    "textDocument/didSave": {
+      "implemented": false,
+      "note": "not handled"
+    },
+    "textDocument/willSave": {
+      "implemented": false,
+      "note": "not handled"
+    },
+    "textDocument/documentSymbol": {
+      "implemented": false,
+      "planned": "F02"
+    },
+    "textDocument/definition": {
+      "implemented": false,
+      "planned": "F03"
+    },
+    "textDocument/references": {
+      "implemented": false,
+      "planned": "F04"
+    },
+    "textDocument/completion": {
+      "implemented": false,
+      "planned": "F05"
+    },
+    "textDocument/signatureHelp": {
+      "implemented": false,
+      "planned": "F06"
+    },
+    "textDocument/rename": {
+      "implemented": false,
+      "planned": "F07"
+    },
+    "textDocument/prepareRename": {
+      "implemented": false,
+      "planned": "F07"
+    },
+    "workspace/symbol": {
+      "implemented": false,
+      "planned": "F08"
+    },
+    "workspace/executeCommand": {
+      "implemented": false,
+      "note": "no commands advertised"
+    },
+    "$/cancelRequest": {
+      "implemented": false,
+      "planned": "Q02"
+    },
+    "window/workDoneProgress/create": {
+      "implemented": false,
+      "planned": "Q03"
+    }
+  },
+  "capabilities_advertised": {
+    "textDocumentSync": 1,
+    "semanticTokensProvider": {
+      "legend": "src/semtokens.elisa:semtok_legend_json (48 custom types)",
+      "full": true
+    },
+    "hoverProvider": {
+      "markdown": "default",
+      "plaintext": "when contentFormat lacks markdown",
+      "test": "test/capabilities_test.sh"
+    },
+    "positionEncoding": {
+      "negotiated": "utf-8 only when the client offers it first; otherwise UTF-16 (default, field omitted)",
+      "test": "test/capabilities_test.sh"
+    }
+  },
+  "legend": {
+    "source": "src/semtokens.elisa",
+    "count": 48,
+    "manifest": "docs/semantic-token-schema.json",
+    "note": "custom names; standard fallback pending (H01)"
+  }
+}

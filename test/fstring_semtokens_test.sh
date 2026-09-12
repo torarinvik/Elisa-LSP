@@ -17,7 +17,13 @@ def frame(o):
 doc = ('def f(name: i64, b: i64) -> i64:\n'
        '    msg: dstr = f"hi {name}!"\n'
        '    two: dstr = f"{{x}} {name} {b}"\n'
-       '    return name\n')
+       '    return name\n'
+       '\n'
+       'enum Event:\n'
+       '    None\n'
+       '\n'
+       'def event_text(event: Event) -> dstr:\n'
+       '    return f"event={Event.None}"\n')
 m  = frame({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})
 m += frame({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///t.elisa","languageId":"Elisa","version":1,"text":doc}}})
 m += frame({"jsonrpc":"2.0","id":2,"method":"textDocument/semanticTokens/full","params":{"textDocument":{"uri":"file:///t.elisa"}}})
@@ -30,6 +36,7 @@ assert len(data) % 5 == 0
 
 ST_LIT_STRING, ST_PUNCTUATION = 11, 41
 ST_BIND_PARAM, ST_BIND_LOCAL, ST_BIND_FIELD = 16, 17, 18
+ST_ENUM_VARIANT = 47
 
 toks = []
 line = col = 0
@@ -68,6 +75,11 @@ assert 'name' in names and 'b' in names, f"interpolated idents missing: {seq2}"
 for txt, k in seq2:
     if txt == 'name': assert k == ST_BIND_PARAM
     if txt == 'b':    assert k == ST_BIND_PARAM
+
+# --- line 9: qualified enum variant inside an interpolation ---
+l9 = [t for t in toks if t[0] == 9]
+assert ('None', ST_ENUM_VARIANT) in [(text(t), t[3]) for t in l9], \
+       f"enum variant interpolation missing: {[(text(t), t[3]) for t in l9]}"
 
 print("fstring semtokens OK: %d spans; interpolations coloured as code" % len(toks))
 PY

@@ -1,6 +1,9 @@
 # JSON smoke: parse a JSON-RPC-shaped document and navigate it (object field lookup,
 # string compare, nested array indexing). Anchors the Json module.
-include "../../../Go projects/Elisa-core/compiler/runtime/elisacore_std/elisacore_runtime.elisa"
+# Frontend runtime comes from the adjacent compiler checkout (same mechanism as
+# src/diagnostics.elisa); override the checkout location via ELISA_COMPILER_ROOT
+# when invoking the compiler, keeping this relative include as the default.
+include "../../Elisa-compiler/elisacore_std/elisacore_runtime.elisa"
 include "../src/json.elisa"
 
 

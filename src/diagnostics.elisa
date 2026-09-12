@@ -17,10 +17,15 @@
 # grower (resolveRegionArenaArgs ignored darrayStackTag), so a later realloc straddled two
 # arenas. The >=1-diagnostic path is now covered by test/diagnostics_test.sh.
 include "../../Elisa-compiler/src/semantic/semantic.elisa"
+include "positions.elisa"
 
 # push_str/push_int/push_sview come from the frontend's `module Bytes` (inlined in
 # semantic.elisa), pulled in via the include above; `using` makes them callable here.
 using Bytes
+# Source coordinates come from `module Positions` (src/positions.elisa): line
+# offsets, UTF-16 conversion, and clamping. Unqualified here; other files in
+# the unit call them as `Positions::...`.
+using Positions
 
 
 # Run the frontend over a NUL-terminated source buffer, returning the located semantic
@@ -49,23 +54,22 @@ def check_source(owner: mutable darray[u8]&, text: sview) -> Semantic::SymbolTab
 # must be escaped rather than concatenated raw.
 def json_escape_byte(buffer: mutable darray[u8]&, b: u8) -> void:
     can Memory.Allocate, Abort.Panic:
-        match b:
-            34:            # "
-                buffer.push_str("\\\"")
-            92:          # \
-                buffer.push_str("\\\\")
-            10:           # \n
-                buffer.push_str("\\n")
-            13:           # \r
-                buffer.push_str("\\r")
-            9:           # \t
-                buffer.push_str("\\t")
-            _ if b < 32:           # other C0 controls -> \u00XX
-                buffer.push_str("\\u00")
-                buffer.push(hex_digit((b.i64() >> 4) & 15))
-                buffer.push(hex_digit(b.i64() & 15))
-            _:
-                buffer.push(b)
+        if b == 34:            # "
+            buffer.push_str("\\\"")
+        elif b == 92:          # \
+            buffer.push_str("\\\\")
+        elif b == 10:          # \n
+            buffer.push_str("\\n")
+        elif b == 13:          # \r
+            buffer.push_str("\\r")
+        elif b == 9:           # \t
+            buffer.push_str("\\t")
+        elif b < 32:           # other C0 controls -> \u00XX
+            buffer.push_str("\\u00")
+            buffer.push(hex_digit((b.i64() >> 4) & 15))
+            buffer.push(hex_digit(b.i64() & 15))
+        else:
+            buffer.push(b)
 
 
 # ASCII hex digit for a nibble 0..15.
@@ -77,23 +81,55 @@ def hex_digit(n: i64) -> u8:
 # come straight from the frontend (`Semantic::diagnostic_message` / `diagnostic_severity`) —
 # the LSP does NOT re-derive per-kind wording or severity, so the two stay in sync as the
 # frontend gains new `DiagnosticKind`s. The LSP only owns the JSON framing and the
-# source-position mapping (line is 1-based in the frontend, 0-based in LSP; column info is
-# not yet carried by the frontend, so the range spans the whole line for now).
+# source-position mapping.
+#
+# G01: exact ranges from `Diagnostic.pos` (1-based byte columns) converted to
+# UTF-16 code units via `module Positions` (src/positions.elisa) and clamped
+# inside the source snapshot. When the frontend has no span (`pos.end_column == 0`), fall back to
+# the bounded line extent instead of inventing positions. Never emits 999.
+# Multiline spans map each end on its own line; inverted ends collapse to start.
 #
 # Builds and returns its own buffer; the caller appends it with `body.extend(...)`. (An
 # earlier arena-growth bug forced an element-wise copy here — a stack-tagged darray grown
 # through a by-reference helper had its backing split across the base and its parallel
 # stack. Fixed in Elisa-core: resolveRegionArenaArgs now peels the `&` a `mutable darray&`
 # argument is wrapped in, so the helper grows into the darray's own stack.)
-def diagnostic_json(d: Semantic::Diagnostic) -> darray[u8]:
+def diagnostic_json(d: Semantic::Diagnostic, src: u8&, src_len: usize, utf8: bool) -> darray[u8]:
     can Memory.Allocate, Abort.Panic:
-        line0: i64 = (d.line.i64() - 1) if d.line > 0 else 0
+        nlines: i64 = line_count(src, src_len)
+        last: i64 = nlines - 1
+        # Prefer the frontend span; otherwise the report line.
+        raw_line: i64 = d.pos.line.i64() if d.pos.line > 0 else d.line.i64()
+        line1: i64 = 1 if raw_line < 1 else raw_line
+        sline0: mutable i64 = line1 - 1
+        sline0 <- last if sline0 > last
+        eline0: mutable i64 = sline0
+        schar: mutable i64 = 0
+        echar: mutable i64 = line_unit_length(src, src_len, sline0, utf8)
+        if d.pos.end_column > 0 and d.pos.line > 0:
+            el1: i64 = d.pos.end_line.i64() if d.pos.end_line >= d.pos.line else d.pos.line.i64()
+            eline0 <- el1 - 1
+            eline0 <- last if eline0 > last
+            eline0 <- 0 if eline0 < 0
+            scol_byte: i64 = d.pos.column.i64() - 1 if d.pos.column > 0 else 0
+            ecol_byte: i64 = d.pos.end_column.i64() - 1
+            schar <- byte_col_to_units(src, src_len, sline0, scol_byte, utf8)
+            echar <- byte_col_to_units(src, src_len, eline0, ecol_byte, utf8)
+            if eline0 == sline0 and echar < schar:
+                echar <- schar
+            if eline0 < sline0:
+                eline0 <- sline0
+                echar <- schar
         buffer: mutable darray[u8] = []
         buffer.push_str("{\"range\":{\"start\":{\"line\":")
-        buffer.push_int(line0)
-        buffer.push_str(",\"character\":0},\"end\":{\"line\":")
-        buffer.push_int(line0)
-        buffer.push_str(",\"character\":999}},\"severity\":")
+        buffer.push_int(sline0)
+        buffer.push_str(",\"character\":")
+        buffer.push_int(schar)
+        buffer.push_str("},\"end\":{\"line\":")
+        buffer.push_int(eline0)
+        buffer.push_str(",\"character\":")
+        buffer.push_int(echar)
+        buffer.push_str("}},\"severity\":")
         buffer.push_int(Semantic::diagnostic_severity(d).i64())
         buffer.push_str(",\"message\":\"")
         for b in Semantic::diagnostic_message(d):
@@ -103,15 +139,79 @@ def diagnostic_json(d: Semantic::Diagnostic) -> darray[u8]:
 
 
 # `{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":<uri>,"diagnostics":[...]}}`
-def publish_diagnostics(uri: sview, table: Semantic::SymbolTable) -> void:
-    can Console, Memory.Allocate, Abort.Panic:
+#
+# G02 versioned publication: the body carries the client's document `version`
+# (when known) so the client can drop stale pushes; exact-duplicate findings
+# are deduplicated; output is capped at MAX_DIAGNOSTICS with a visible hint
+# entry rather than silent truncation. Returns the complete notification body;
+# the caller (which owns the document lifecycle) decides eligibility and
+# identical-repeat suppression before sending.
+const MAX_DIAGNOSTICS: i64 = 200
+
+def build_publish_body(uri: sview, table: Semantic::SymbolTable, src: u8&, src_len: usize, version: i64, utf8: bool) -> darray[u8]:
+    can Memory.Allocate, Abort.Panic:
         body: mutable darray[u8] = []
         body.push_str("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"")
-        body.push_sview(uri)
-        body.push_str("\",\"diagnostics\":[")
-        for index, diagnostic in table.diagnostics.enumerate():
-            body.push_str(",") if index > 0
-            entry: darray[u8] = diagnostic_json(diagnostic)
-            body.extend(entry)
+        for b in uri:
+            json_escape_byte(body, b)
+        if version >= 0:
+            body.push_str("\",\"version\":")
+            body.push_int(version)
+            body.push_str(",\"diagnostics\":[")
+        else:
+            body.push_str("\",\"diagnostics\":[")
+        # Render entries into a flat span buffer with per-entry bounds so exact
+        # duplicates (same range, severity, wording) collapse. Scalar index
+        # arrays only — no nested containers, per the region discipline.
+        spans: mutable darray[u8] = []
+        starts: mutable darray[usize] = []
+        lens: mutable darray[usize] = []
+        rendered: mutable i64 = 0
+        total: i64 = table.diagnostics.count.i64()
+        i: mutable usize = 0
+        while i < table.diagnostics.count:
+            break if rendered >= MAX_DIAGNOSTICS
+            entry: darray[u8] = diagnostic_json(table.diagnostics[i], src, src_len, utf8)
+            dup: mutable bool = false
+            k: mutable usize = 0
+            while k < starts.count:
+                st: usize = starts[k]
+                ln: usize = lens[k]
+                if ln == entry.count:
+                    same: mutable bool = true
+                    j: mutable usize = 0
+                    while j < ln:
+                        if spans[st + j] != entry[j]:
+                            same <- false
+                            break
+                        j <- j + 1
+                    dup <- true if same
+                    break if dup
+                k <- k + 1
+            if not dup:
+                starts.push(spans.count)
+                lens.push(entry.count)
+                for b in entry:
+                    spans.push(b)
+                rendered <- rendered + 1
+            i <- i + 1
+        q: mutable usize = 0
+        while q < starts.count:
+            body.push_str(",") if q > 0
+            st: usize = starts[q]
+            ln: usize = lens[q]
+            j: mutable usize = 0
+            while j < ln:
+                body.push(spans[st + j])
+                j <- j + 1
+            q <- q + 1
+        if total > rendered:
+            body.push_str(",") if starts.count > 0
+            omitted: i64 = total - rendered
+            body.push_str("{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":0}},\"severity\":4,\"message\":\"and ")
+            body.push_int(omitted)
+            body.push_str(" more diagnostics omitted (showing first ")
+            body.push_int(rendered)
+            body.push_str(")\"}")
         body.push_str("]}}")
-        send_message(body)
+        return body

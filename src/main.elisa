@@ -18,6 +18,31 @@ using Bytes
 extern read(fd: int, buf: void&, count: usize) -> isize can[Console]
 
 
+# Metadata for one document snapshot. URI, source bytes, and the encoded semantic
+# token result live in the single flat `document_storage` buffer below; keeping
+# nested darrays out of this hot cache avoids region/lifetime bugs and makes
+# lookup cache-friendly.
+# D01: explicit versioned lifecycle — client version, open state, and a
+# monotonic internal generation independent of client versions. Close/reopen
+# bumps generation so old analysis can never publish into a new lifetime.
+struct LspDocument:
+    uri_start: mutable usize
+    uri_len: mutable usize
+    text_start: mutable usize
+    text_len: mutable usize
+    text_capacity: mutable usize
+    semantic_start: mutable usize
+    semantic_len: mutable usize
+    semantic_capacity: mutable usize
+    hash: mutable u64
+    next: mutable u32
+    version: mutable i64
+    open: mutable bool
+    generation: mutable u64
+    last_diag_version: mutable i64
+    last_diag_fp: mutable u64
+
+
 # ---- stdio byte transport ---------------------------------------------------------
 
 # Read one byte from stdin; -1 at EOF.
@@ -111,15 +136,35 @@ def extract_id(root: Json::Value) -> darray[u8] can[Memory.Allocate, Abort.Panic
     return out
 
 
+# Whether the message carries a request ID (Num or Str). Notifications have no
+# `id`; a null/wrong-typed id is not a valid request ID (P01).
+def request_has_id(root: Json::Value) -> bool can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        if Json::get(root, "id") is idv:
+            match idv:
+                Json::Value.Num(text):
+                    return true
+                Json::Value.Str(text):
+                    return true
+                _:
+                    return false
+        return false
+
+
 # ---- diagnostics: textDocument/didOpen + didChange ---------------------------------
 
-# `params.textDocument.uri`, or empty if malformed.
-def request_uri(root: Json::Value) -> sview can[Memory.Allocate, Abort.Panic]:
+# Decode `params.textDocument.uri` into `out`, returning a view of the decoded
+# bytes. URI equality and diagnostics must use the same value the client sent;
+# retaining the raw JSON string would make escaped quotes/backslashes part of the
+# URI and could also emit malformed diagnostic JSON.
+def request_uri(root: Json::Value, out: mutable darray[u8]&) -> sview can[Memory.Allocate, Abort.Panic]:
     can Memory.Allocate, Abort.Panic:
+        out.truncate(0)
         if Json::get(root, "params") is params:
             if Json::get(params, "textDocument") is td:
                 if Json::get(td, "uri") is u:
-                    return Json::as_str(u)
+                    Json::decode_into(u, out)
+                    return sview(&out[0], 0, out.count.i64()) if out.count > 0
         return sview("", 0, 0)
 
 
@@ -142,36 +187,431 @@ def request_text_value(root: Json::Value) -> Json::Value? can[Memory.Allocate, A
         return null
 
 
-# Run the frontend over the document and publish its findings. The decoded
-# text and its uri are stored into the SESSION document cache (owned by the
-# main loop) so later `semanticTokens/full` requests — which carry only the
-# uri — can re-tokenize the current content.
-def check_and_publish(root: Json::Value, doc_uri: mutable darray[u8]&, doc_text: mutable darray[u8]&) -> void can[Console, Memory.Allocate, Abort.Panic]:
-    uri: sview = request_uri(root)
-    doc_uri.truncate(0)
+# Client version for didOpen/didChange (`params.textDocument.version`).
+# Tristate (J02): -1 absent (legacy path: accept, auto-bump), -2 present but
+# malformed (fractional, overflowing, or wrong-typed — the notification is
+# rejected outright, never applied), otherwise the value. Versions need not
+# increase by exactly one but must move forward; a malformed notification must
+# not mutate text (D01).
+def request_version_state(root: Json::Value) -> i64 can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        if Json::get(root, "params") is params:
+            if Json::get(params, "textDocument") is td:
+                if Json::get(td, "version") is v:
+                    return Json::as_i64_checked(v) if Json::is_int_num(v) else -2
+        return -1
+
+
+# Client version for didOpen/didChange (`params.textDocument.version`).
+# Returns -1 when absent/non-numeric; versions need not increase by exactly one
+# but must move forward. A malformed notification must not mutate text (D01).
+def request_version(root: Json::Value) -> i64 can[Memory.Allocate, Abort.Panic]:
+    v: i64 = request_version_state(root)
+    return -1 if v == -2 else v
+
+
+# Strict hover line (J02): an integer `params.position.line`, else -1 meaning
+# "no usable position" (absent, fractional, overflowing, or wrong-typed all
+# yield null hover rather than a coerced line).
+def request_hover_line(root: Json::Value) -> i64 can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        if Json::get(root, "params") is params:
+            if Json::get(params, "position") is pos:
+                if Json::get(pos, "line") is ln:
+                    return Json::as_i64_checked(ln)
+        return -1
+
+
+# D02 full-sync collection: decode the notification's full replacement text
+# into `out` (byte-exact, CRLF/trailing-newline preserving). didOpen reads
+# `params.textDocument.text`; didChange validates EVERY `contentChanges` entry
+# in order and uses the last. Any ranged entry (`range`/`rangeLength`), missing
+# text, non-string text, or empty change list rejects the whole notification
+# (returns false, `out` untouched) — the server advertises full sync only, so a
+# fragment must never be mistaken for the whole document. Byte copies (not
+# container stores) keep the region checker satisfied.
+def collect_full_text(root: Json::Value, is_open: bool, out: mutable darray[u8]&) -> bool can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        if is_open:
+            if Json::get(root, "params") is params:
+                if Json::get(params, "textDocument") is td:
+                    if Json::get(td, "text") is t:
+                        match t:
+                            Json::Value.Str(st):
+                                tmp: mutable darray[u8] = []
+                                Json::decode_into(t, tmp)
+                                out.truncate(0)
+                                for b in tmp:
+                                    out.push(b)
+                                return true
+                            _:
+                                return false
+            return false
+        if Json::get(root, "params") is params:
+            if Json::get(params, "contentChanges") is changes:
+                match changes:
+                    Json::Value.Arr(items):
+                        return false if items.count == 0
+                        i: mutable usize = 0
+                        while i < items.count:
+                            entry: Json::Value = items[i]
+                            if Json::get(entry, "range") is rg:
+                                return false
+                            if Json::get(entry, "rangeLength") is rl:
+                                return false
+                            if Json::get(entry, "text") is tt:
+                                match tt:
+                                    Json::Value.Str(st):
+                                        pass
+                                    _:
+                                        return false
+                            else:
+                                return false
+                            i <- i + 1
+                        last: Json::Value = items[items.count - 1]
+                        if Json::get(last, "text") is lt:
+                            tmp: mutable darray[u8] = []
+                            Json::decode_into(lt, tmp)
+                            out.truncate(0)
+                            for b in tmp:
+                                out.push(b)
+                            return true
+                        return false
+                    _:
+                        return false
+        return false
+
+
+# D03 canonical document identity. JSON unescaping, URI percent-decoding, and
+# filesystem normalization are different operations and must not be conflated:
+# `request_uri` (above) only unescapes JSON; the functions below derive the
+# lookup identity from those bytes. Rules, applied uniformly and documented in
+# docs/development.md:
+# - The scheme (text before the first `:`, only when no `/`, `?`, or `#`
+#   precedes it) is ASCII-lowercased; schemes are case-insensitive. No scheme
+#   means an opaque identity (percent-decoded copy).
+# - `file` with a `//authority`: the authority is percent-decoded, lowercased,
+#   and `localhost` is dropped (equivalent to empty). Any other authority is
+#   preserved as-is — distinct, never resolved, never fetched.
+# - The remainder is percent-decoded (`%XX` hex → byte); malformed `%`
+#   sequences copy literally so the URI stays usable and distinct, never a
+#   crash. A `#fragment` suffix is stripped (never document identity).
+# - Case is otherwise preserved: paths are NOT lowercased and symlinks are NOT
+#   resolved here (filesystem-aware aliasing belongs to W02). Remote and
+#   unknown schemes are accepted as opaque in-memory overlays — the server
+#   never fetches network resources for them.
+# Responses always echo the client's incoming spelling, never the canonical
+# form; only lookup/storage use the canonical bytes.
+def hex_val_byte(c: u8) -> i64:
+    0 return if c < 48
+    (c.i64() - 48) return if c <= 57
+    (c.i64() - 87) return if c >= 97 and c <= 102
+    (c.i64() - 55) return if c >= 65 and c <= 70
+    return -1
+
+
+def ascii_lower(c: u8) -> u8:
+    return ((c.i64() + 32).u8()) if c >= 65 and c <= 90 else c
+
+
+def uri_percent_copy(decoded: u8&, decoded_len: usize, start: usize, out: mutable darray[u8]&, strip_fragment: bool) -> void can[Memory.Allocate, Abort.Panic]:
+    i: mutable usize = start
+    while i < decoded_len:
+        c: u8 = decoded[i]
+        if c == 37 and i + 2 < decoded_len:
+            hi: i64 = hex_val_byte(decoded[i + 1])
+            lo: i64 = hex_val_byte(decoded[i + 2])
+            if hi >= 0 and lo >= 0:
+                out.push((hi * 16 + lo).u8())
+                i <- i + 3
+            else:
+                out.push(c)
+                i <- i + 1
+        else:
+            break if strip_fragment and c == 35
+            out.push(c)
+            i <- i + 1
+
+
+def uri_canonical(decoded: u8&, decoded_len: usize, out: mutable darray[u8]&) -> void can[Memory.Allocate, Abort.Panic]:
+    scheme_end: mutable i64 = -1
+    i: mutable usize = 0
+    while i < decoded_len:
+        c: u8 = decoded[i]
+        if c == 58:
+            scheme_end <- i.i64()
+            break
+        if c == 47 or c == 63 or c == 35:
+            break
+        i <- i + 1
+    if scheme_end < 0:
+        uri_percent_copy(decoded, decoded_len, 0, out, true)
+        return
+    s: mutable usize = 0
+    while s < scheme_end.usize():
+        out.push(ascii_lower(decoded[s]))
+        s <- s + 1
+    out.push(58)
+    rest: usize = scheme_end.usize() + 1
+    is_file: bool = scheme_end == 4 and ascii_lower(decoded[0]) == 102 and ascii_lower(decoded[1]) == 105 and ascii_lower(decoded[2]) == 108 and ascii_lower(decoded[3]) == 101
+    pos: mutable usize = rest
+    if is_file and pos + 1 < decoded_len:
+        if decoded[pos] == 47 and decoded[pos + 1] == 47:
+            astart: usize = pos + 2
+            aend: mutable usize = astart
+            while aend < decoded_len:
+                ac: u8 = decoded[aend]
+                break if ac == 47 or ac == 63 or ac == 35
+                aend <- aend + 1
+            tmp: mutable darray[u8] = []
+            uri_percent_copy(decoded, aend, astart, tmp, false)
+            li: mutable usize = 0
+            while li < tmp.count:
+                tmp[li] <- ascii_lower(tmp[li])
+                li <- li + 1
+            is_localhost: mutable bool = tmp.count == 9
+            if is_localhost:
+                host: sview = sview("localhost", 0, -1)
+                k: mutable usize = 0
+                while k < 9:
+                    if tmp[k] != sview_at(host, k):
+                        is_localhost <- false
+                        break
+                    k <- k + 1
+            # Emit the `//` in both cases so `localhost` (the empty authority)
+            # canonicalizes exactly to the `file:///path` form.
+            out.push(47)
+            out.push(47)
+            if not is_localhost:
+                for b in tmp:
+                    out.push(b)
+            pos <- aend
+    uri_percent_copy(decoded, decoded_len, pos, out, true)
+
+
+# Canonical lookup identity for a request: JSON-decode into `spell_buf` (kept
+# for responses), derive bytes into `canon_buf`, and return a view of the
+# canonical form — empty when the request carries no usable URI.
+def request_identity(root: Json::Value, spell_buf: mutable darray[u8]&, canon_buf: mutable darray[u8]&) -> sview can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        request_uri(root, spell_buf)
+        return sview("", 0, 0) if spell_buf.count == 0
+        canon_buf.truncate(0)
+        uri_canonical(&spell_buf[0], spell_buf.count, canon_buf)
+        return sview(&canon_buf[0], 0, canon_buf.count.i64()) if canon_buf.count > 0
+        return sview("", 0, 0)
+
+
+# FNV-1a keeps the URI index compact and matches the compiler's existing hash
+# discipline. Equality is still checked after hashing, so collisions are safe.
+def document_hash(uri: sview) -> u64:
+    hash: mutable u64 = 14695981039346656037
+    i: mutable usize = 0
+    while i < uri.len.usize():
+        hash <- (hash ^ sview_at(uri, i).u64()) * 1099511628211
+        i <- i + 1
+    return hash
+
+
+# Return the cached document index for `uri`, or -1 when it is not open. The
+# hash table narrows lookup to one collision chain instead of scanning every
+# open document.
+def document_index(documents: darray[LspDocument]&, storage: darray[u8]&, heads: dict[u64, u32]&, uri: sview) -> i64 can[Abort.Panic]:
+    if heads.get(document_hash(uri)) is head:
+        current: mutable u32 = head
+        while current != 4294967295:
+            document: LspDocument = documents[current.usize()]
+            if document.uri_len == uri.len.usize():
+                cached: sview = sview(&storage[document.uri_start], 0, document.uri_len.i64())
+                return current.i64() if string_views_eq(uri, cached) != 0
+            current <- document.next
+    return -1
+
+
+# Find an existing cache entry or append a new one.
+def document_slot(documents: mutable darray[LspDocument]&, storage: mutable darray[u8]&, heads: mutable dict[u64, u32]&, uri: sview) -> usize can[Memory.Allocate, Abort.Panic]:
+    found: i64 = document_index(documents, storage, heads, uri)
+    return found.usize() if found >= 0
+    hash: u64 = document_hash(uri)
+    previous: mutable u32 = 4294967295
+    previous <- head if heads.get(hash) is head
+    uri_start: usize = storage.count
+    documents.push(LspDocument{uri_start: uri_start, uri_len: uri.len.usize(), text_start: 0, text_len: 0, text_capacity: 0, semantic_start: 0, semantic_len: 0, semantic_capacity: 0, hash: hash, next: previous, version: -1, open: false, generation: 0, last_diag_version: -1, last_diag_fp: 0})
+    slot: usize = documents.count - 1
     for i in 0..<uri.len.usize():
-        doc_uri.push(sview_at(uri, i))
-    # The DECODED, NUL-terminated source (JSON escapes expanded) that
-    # `table.diagnostics[i].name` spans point into — session-lived.
-    doc_text.truncate(0)
-    if request_text_value(root) is tv:
-        Json::decode_into(tv, doc_text)
-    src_len: usize = doc_text.count
-    doc_text.push(0)
-    table: Semantic::SymbolTable = check_source_buf(&doc_text[0], src_len)
-    publish_diagnostics(uri, table)
+        storage.push(sview_at(uri, i))
+    heads <- heads.put(hash, slot.u32())
+    return slot
+
+
+# Commit a decoded source snapshot into reusable flat storage. Same-sized edits
+# overwrite the existing reservation; only growth appends a new reservation.
+def store_document_text(document: mutable LspDocument&, storage: mutable darray[u8]&, source: darray[u8]) -> void can[Memory.Allocate, Abort.Panic]:
+    needed: usize = source.count
+    if document.text_capacity >= needed and document.text_capacity > 0:
+        for i in 0..<needed:
+            storage[document.text_start + i] <- source[i]
+        document.text_len <- needed
+        return
+    document.text_start <- storage.count
+    storage.extend(source)
+    extra: mutable usize = needed
+    extra <- 1 if extra == 0
+    for i in 0..<extra:
+        storage.push(0)
+    document.text_len <- needed
+    document.text_capacity <- needed + extra
+
+
+# Commit an encoded semantic-token result into the same flat storage. Token
+# requests are frequent and must not rerun the frontend when the source has not
+# changed; same-sized results reuse their reservation.
+def store_document_semantic(document: mutable LspDocument&, storage: mutable darray[u8]&, result: darray[u8]) -> void can[Memory.Allocate, Abort.Panic]:
+    needed: usize = result.count
+    if document.semantic_capacity >= needed and document.semantic_capacity > 0:
+        for i in 0..<needed:
+            storage[document.semantic_start + i] <- result[i]
+        document.semantic_len <- needed
+        return
+    document.semantic_start <- storage.count
+    storage.extend(result)
+    extra: mutable usize = needed
+    extra <- 1 if extra == 0
+    for i in 0..<extra:
+        storage.push(0)
+    document.semantic_len <- needed
+    document.semantic_capacity <- needed + extra
+
+
+# Run the frontend over the document and publish its findings. The decoded
+# text and its uri are stored in the session cache so later semantic-token and
+# hover requests can retrieve the correct snapshot for their own URI.
+# D01: versioned lifecycle — accept text into the store only for eligible
+# versions; stale/equal versions never mutate; duplicate opens start a new
+# generation; malformed notifications mutate nothing.
+def check_and_publish(root: Json::Value, documents: mutable darray[LspDocument]&, storage: mutable darray[u8]&, heads: mutable dict[u64, u32]&, utf8: bool) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    spell_bytes: mutable darray[u8] = []
+    canon_bytes: mutable darray[u8] = []
+    uri: sview = request_identity(root, spell_bytes, canon_bytes)
+    return if uri.len == 0
+    spell: sview = sview(&spell_bytes[0], 0, spell_bytes.count.i64())
+    is_open: bool = method_is(root, "textDocument/didOpen")
+    decoded: mutable darray[u8] = []
+    return if not collect_full_text(root, is_open, decoded)
+    slot: usize = document_slot(documents, storage, heads, uri)
+    document: mutable LspDocument& = &documents[slot]
+    incoming_version: i64 = request_version_state(root)
+    # Malformed version (fractional, overflowing, wrong-typed): reject the
+    # whole notification without mutating (J02/D01).
+    return if incoming_version == -2
+    gen: u64 = document.generation
+    # Duplicate open: new lifetime even if URI/version repeat.
+    if is_open and document.open:
+        document.generation <- document.generation + 1
+    # Stale/equal-version didChange: ignore without mutating.
+    if not is_open and document.open and incoming_version >= 0 and incoming_version <= document.version:
+        return
+    # didChange for a never-opened document: ignore (no lifetime to update).
+    if not is_open and not document.open:
+        return
+    # Validate and diagnose against a temporary owned snapshot first. It is
+    # never stored unless the complete frontend pass returns normally.
+    source: mutable darray[u8] = []
+    for b in decoded:
+        source.push(b)
+    source.push(0)
+    table: Semantic::SymbolTable = check_source_buf(&source[0], source.count - 1)
+    semantic: darray[u8] = semtok_data_body_with_table(&source[0], source.count - 1, table, utf8)
+    store_document_text(document, storage, source)
+    store_document_semantic(document, storage, semantic)
+    document.open <- true
+    document.version <- incoming_version if incoming_version >= 0 else document.version + 1
+    # G02: publish only if this generation is still current. The analysis above
+    # is synchronous so the guard is vacuous today; it becomes load-bearing the
+    # moment analysis moves off the event loop (slow old results must never
+    # overwrite newer findings).
+    return if documents[slot].generation != gen
+    body: darray[u8] = build_publish_body(spell, table, &source[0], source.count - 1, document.version, utf8)
+    fp: u64 = body_fingerprint(body)
+    # Suppress identical repeats for the same version (e.g. duplicate didOpen);
+    # the version is embedded in the body, so equal fingerprints imply equal
+    # versions and findings — version correctness is preserved.
+    if document.last_diag_version == document.version and document.last_diag_fp == fp:
+        return
+    document.last_diag_fp <- fp
+    document.last_diag_version <- document.version
+    send_message(body)
+
+
+# FNV-1a over a complete notification body, mirroring `document_hash`.
+# Used for identical-publication suppression (G02): equal bodies imply equal
+# versions and findings because the version is embedded in the body.
+def body_fingerprint(body: darray[u8]&) -> u64:
+    14695981039346656037 return if body.count == 0
+    hash: mutable u64 = 14695981039346656037
+    view: sview = sview(&body[0], 0, body.count.i64())
+    i: mutable usize = 0
+    while i < view.len.usize():
+        hash <- (hash ^ sview_at(view, i).u64()) * 1099511628211
+        i <- i + 1
+    return hash
+
+
+# Publish an empty diagnostic array to clear client state for a URI.
+# Carries the last known version so the client can order it against pushes.
+def publish_empty_diagnostics(uri: sview, version: i64) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    body: mutable darray[u8] = []
+    body.push_str("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"")
+    for b in uri:
+        json_escape_byte(body, b)
+    if version >= 0:
+        body.push_str("\",\"version\":")
+        body.push_int(version)
+        body.push_str(",\"diagnostics\":[]}}")
+    else:
+        body.push_str("\",\"diagnostics\":[]}}")
+    send_message(body)
+
+
+# Close: mark closed, bump generation, clear text, and clear client diagnostics.
+# The URI slot is retained so collision chains stay valid; the generation bump
+# ensures in-flight old work can never publish into a reopened lifetime (D01).
+def handle_did_close(root: Json::Value, documents: mutable darray[LspDocument]&, storage: darray[u8]&, heads: dict[u64, u32]&) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    spell_bytes: mutable darray[u8] = []
+    canon_bytes: mutable darray[u8] = []
+    uri: sview = request_identity(root, spell_bytes, canon_bytes)
+    return if uri.len == 0
+    found: i64 = document_index(documents, storage, heads, uri)
+    return if found < 0
+    closed_version: i64 = documents[found.usize()].version
+    documents[found.usize()].open <- false
+    documents[found.usize()].text_len <- 0
+    documents[found.usize()].generation <- documents[found.usize()].generation + 1
+    documents[found.usize()].last_diag_version <- -1
+    documents[found.usize()].last_diag_fp <- 0
+    spell: sview = sview(&spell_bytes[0], 0, spell_bytes.count.i64())
+    publish_empty_diagnostics(spell, closed_version)
 
 
 # ---- responses --------------------------------------------------------------------
 
 # Frame and write a body to stdout: `Content-Length: N\r\n\r\n<body>`.
+# T02: loop until all bytes are written. A short write is retried; a
+# zero/negative result (broken pipe, closed stdout) drops the message rather
+# than busy-looping. Length is computed after serialization so non-ASCII
+# payloads frame exact bytes. Logs must never go to stdout (see docs).
 def send_message(body: darray[u8]) -> void can[Console, Memory.Allocate, Abort.Panic]:
     out: mutable darray[u8] = []
     push_str(out, "Content-Length: ")
     push_int(out, body.count.i64())
     push_str(out, "\r\n\r\n")
     out.extend(body)
-    _ = write(1, (&out[0]).cast[void&], out.count.usize()) can Console
+    return if out.count == 0
+    written: mutable usize = 0
+    while written < out.count:
+        n: isize = write(1, (&out[written]).cast[void&], out.count - written) can Console
+        return if n <= 0
+        written <- written + n.usize()
 
 
 # `{"jsonrpc":"2.0","id":<id>,"result":<result>}`
@@ -185,32 +625,97 @@ def send_result(id_raw: darray[u8], result: u8&) -> void can[Console, Memory.All
     send_message(body)
 
 
+# `{"jsonrpc":"2.0","id":<id>,"error":{"code":<code>,"message":"<msg>"}}`
+# P01: every valid request completes exactly once; unknown methods get
+# MethodNotFound (-32601), never silence. Notifications (no id) never produce
+# response objects — callers must check `request_has_id` first.
+# NOTE: `push_int` only emits >=0, so negative JSON-RPC codes need an explicit '-'.
+def send_error(id_raw: darray[u8], code: i64, message: u8&) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    body: mutable darray[u8] = []
+    push_str(body, "{\"jsonrpc\":\"2.0\",\"id\":")
+    body.extend(id_raw)
+    push_str(body, ",\"error\":{\"code\":")
+    if code < 0:
+        body.push(45)
+        push_int(body, 0 - code)
+    else:
+        push_int(body, code)
+    push_str(body, ",\"message\":\"")
+    push_str(body, message)
+    push_str(body, "\"}}")
+    send_message(body)
+
+
+# P03 capability negotiation: derive the session profile from the client's
+# `initialize` params. Position encodings are honored in client preference
+# order (first supported wins; default UTF-16). Hover falls back to plaintext
+# only when the client lists formats without markdown. Unknown or absent
+# capabilities keep safe defaults; nothing unsupported is ever advertised.
+def negotiate_utf8(root: Json::Value) -> bool can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        if Json::get(root, "params") is params:
+            if Json::get(params, "capabilities") is caps:
+                if Json::get(caps, "general") is general:
+                    if Json::get(general, "positionEncodings") is encs:
+                        match encs:
+                            Json::Value.Arr(items):
+                                i: mutable usize = 0
+                                while i < items.count:
+                                    item: Json::Value = items[i]
+                                    match item:
+                                        Json::Value.Str(st):
+                                            true return if string_view_eq(st, "utf-8") == 1
+                                            false return if string_view_eq(st, "utf-16") == 1
+                                        _:
+                                            pass
+                                    i <- i + 1
+                            _:
+                                pass
+        return false
+
+
+def negotiate_hover_markdown(root: Json::Value) -> bool can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        if Json::get(root, "params") is params:
+            if Json::get(params, "capabilities") is caps:
+                if Json::get(caps, "textDocument") is td:
+                    if Json::get(td, "hover") is hover:
+                        if Json::get(hover, "contentFormat") is formats:
+                            match formats:
+                                Json::Value.Arr(items):
+                                    i: mutable usize = 0
+                                    while i < items.count:
+                                        item: Json::Value = items[i]
+                                        match item:
+                                            Json::Value.Str(st):
+                                                true return if string_view_eq(st, "markdown") == 1
+                                            _:
+                                                pass
+                                        i <- i + 1
+                                    return false
+                                _:
+                                    pass
+        return true
+
+
 # ---- hover: textDocument/hover (docs/119 loop-header capture list) -----------------
 
 # Byte range [start,end) of 0-based source line `line_no` in `doc`; false if OOB.
-def hover_line_range(doc: darray[u8]&, line_no: i64, start_out: mutable usize&, end_out: mutable usize&) -> bool can[Abort.Panic]:
-    cur: mutable i64 = 0
-    ls: mutable usize = 0
-    i: mutable usize = 0
-    while i < doc.count:
-        if doc[i] == 10:
-            if cur == line_no:
-                start_out <- ls
-                end_out <- i
-                return true
-            cur <- cur + 1
-            ls <- i + 1
-        i <- i + 1
-    if cur == line_no and ls <= doc.count:
-        start_out <- ls
-        end_out <- doc.count
-        return true
-    return false
+# U02: routed through the shared `Positions` coordinate module so hover slices
+# the same lines diagnostics and tokens report. The end excludes LF and a
+# trailing CR; the trailing empty line after a final newline is addressable.
+def hover_line_range(doc: u8&, doc_len: usize, line_no: i64, start_out: mutable usize&, end_out: mutable usize&) -> bool can[Abort.Panic]:
+    nlines: i64 = Positions::line_count(doc, doc_len)
+    false return if line_no < 0 or line_no >= nlines
+    start: usize = Positions::line_start_offset(doc, doc_len, line_no)
+    start_out <- start
+    end_out <- start + Positions::line_byte_length(doc, doc_len, line_no).usize()
+    return true
 
 # If the source line [start,end) carries a loop-expression header `|item, …|` whose
 # closing `|` is followed by `:`/`->`, append a markdown summary (what it mutates vs
 # its loop-private accumulators) to `out` and return true. A bitwise `|` never matches.
-def hover_loop_header(doc: darray[u8]&, start: usize, end: usize, out: mutable darray[u8]&) -> bool can[Memory.Allocate, Abort.Panic]:
+def hover_loop_header(doc: u8&, start: usize, end: usize, out: mutable darray[u8]&) -> bool can[Memory.Allocate, Abort.Panic]:
     open: mutable usize = end
     p: mutable usize = start
     while p < end:
@@ -261,43 +766,63 @@ def hover_loop_header(doc: darray[u8]&, start: usize, end: usize, out: mutable d
                 while ne > s and doc[ne - 1] == 32:
                     ne <- ne - 1
                 push_str(accs, ", ") if naccs > 0
-                accs.push_sview(sview(&doc[s], 0, (ne - s).i64()))
+                # J02: source bytes enter through the shared JSON escaper —
+                # raw quotes/backslashes would corrupt the response frame.
+                acc_span: sview = sview(&doc[s], 0, (ne - s).i64())
+                ai: mutable usize = 0
+                while ai < acc_span.len.usize():
+                    json_escape_byte(accs, sview_at(acc_span, ai))
+                    ai <- ai + 1
                 naccs <- naccs + 1
             elif e > s:
                 push_str(caps, ", ") if ncaps > 0
-                caps.push_sview(sview(&doc[s], 0, (e - s).i64()))
+                cap_span: sview = sview(&doc[s], 0, (e - s).i64())
+                ci: mutable usize = 0
+                while ci < cap_span.len.usize():
+                    json_escape_byte(caps, sview_at(cap_span, ci))
+                    ci <- ci + 1
                 ncaps <- ncaps + 1
             item_start <- k + 1
         k <- k + 1
     push_str(out, "**docs/119 loop header**\\n\\n")
     if ncaps > 0:
         push_str(out, "Mutates (captured, in place): ")
-        out.extend(caps)
+        # Copy bytes one by one: `out.extend(caps)` would store the local
+        # `caps` container into caller-owned `out` (auto-region escape).
+        for b in caps:
+            out.push(b)
         push_str(out, "\\n\\n")
     else:
         push_str(out, "Pure over outer state (no captures).\\n\\n")
     if naccs > 0:
         push_str(out, "Loop-private accumulators: ")
-        out.extend(accs)
+        for b in accs:
+            out.push(b)
     return true
 
-def handle_hover(root: Json::Value, doc_text: darray[u8]&) -> void can[Console, Memory.Allocate, Abort.Panic]:
+def handle_hover(root: Json::Value, documents: darray[LspDocument]&, document_storage: darray[u8]&, document_heads: dict[u64, u32]&, markdown: bool) -> void can[Console, Memory.Allocate, Abort.Panic]:
     id_raw: darray[u8] = extract_id(root)
-    line_no: mutable i64 = -1
-    if Json::get(root, "params") is params:
-        if Json::get(params, "position") is pos:
-            if Json::get(pos, "line") is ln:
-                line_no <- Json::as_i64(ln)
+    spell_bytes: mutable darray[u8] = []
+    canon_bytes: mutable darray[u8] = []
+    uri: sview = request_identity(root, spell_bytes, canon_bytes)
+    found: i64 = document_index(documents, document_storage, document_heads, uri)
+    if found < 0 or not documents[found.usize()].open or documents[found.usize()].text_len <= 1:
+        send_result(id_raw, "null")
+        return
+    document: LspDocument = documents[found.usize()]
+    doc_text: u8& = &document_storage[document.text_start]
+    line_no: i64 = request_hover_line(root)
     ls: mutable usize = 0
     le: mutable usize = 0
     msg: mutable darray[u8] = []
     ok: mutable bool = false
-    ok <- hover_loop_header(doc_text, ls, le, msg) if line_no >= 0 and doc_text.count > 0 and hover_line_range(doc_text, line_no, ls, le)
+    ok <- hover_loop_header(doc_text, ls, le, msg) if line_no >= 0 and document.text_len > 1 and hover_line_range(doc_text, document.text_len - 1, line_no, ls, le)
     if not ok:
         send_result(id_raw, "null")
         return
     body: mutable darray[u8] = []
-    push_str(body, "{\"contents\":{\"kind\":\"markdown\",\"value\":\"")
+    push_str(body, "{\"contents\":{\"kind\":\"markdown\",\"value\":\"") if markdown
+    push_str(body, "{\"contents\":{\"kind\":\"plaintext\",\"value\":\"") if not markdown
     body.extend(msg)
     push_str(body, "\"}}")
     send_result_body(id_raw, body)
@@ -306,10 +831,17 @@ def handle_hover(root: Json::Value, doc_text: darray[u8]&) -> void can[Console, 
 # ---- server loop ------------------------------------------------------------------
 
 def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
-    # Session document cache (single most-recent document): uri bytes + the
-    # decoded NUL-terminated text. Owned here so it outlives every request.
-    doc_uri: mutable darray[u8] = []
-    doc_text: mutable darray[u8] = []
+    # Session document cache, owned here so source spans outlive each request.
+    documents: mutable darray[LspDocument] = []
+    document_storage: mutable darray[u8] = []
+    document_heads: mutable dict[u64, u32] = {}
+    # P02 lifecycle: uninitialized -> running -> shutdown-requested -> exited.
+    initialized: mutable bool = false
+    shutdown_requested: mutable bool = false
+    # P03 session profile, negotiated once at initialize and threaded to every
+    # provider so handlers cannot disagree about encodings or formats.
+    pos_utf8: mutable bool = false
+    hover_markdown: mutable bool = true
     while true:
         body: mutable darray[u8] = []
         0 return if not read_message(body)
@@ -317,25 +849,85 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
         bsv: sview = sview(&body[0], 0, body.count.i64())
         root: Json::Value = Json::parse(bsv)
         method: sview = request_method(root)
+        has_id: bool = request_has_id(root)
         match method:
             "initialize":
                 id_raw: darray[u8] = extract_id(root)
-                caps: mutable darray[u8] = []
-                push_str(caps, "{\"capabilities\":{\"textDocumentSync\":1,\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":")
-                push_str(caps, semtok_legend_json())
-                push_str(caps, ",\"tokenModifiers\":[]},\"full\":true},\"hoverProvider\":true}}")
-                send_result_body(id_raw, caps)
+                if shutdown_requested:
+                    send_error(id_raw, -32600, "InvalidRequest: server is shutting down")
+                elif initialized:
+                    send_error(id_raw, -32600, "InvalidRequest: already initialized")
+                else:
+                    pos_utf8 <- negotiate_utf8(root)
+                    hover_markdown <- negotiate_hover_markdown(root)
+                    caps: mutable darray[u8] = []
+                    push_str(caps, "{\"capabilities\":{\"textDocumentSync\":1,\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":")
+                    push_str(caps, semtok_legend_json())
+                    push_str(caps, ",\"tokenModifiers\":[]},\"full\":true},\"hoverProvider\":true")
+                    push_str(caps, ",\"positionEncoding\":\"utf-8\"") if pos_utf8
+                    push_str(caps, "},\"serverInfo\":{\"name\":\"elisa-lsp\",\"version\":\"0.1.0\"}}")
+                    send_result_body(id_raw, caps)
+                    initialized <- true
+            "initialized":
+                # Notification confirming client init; no response by definition.
+                pass
             "shutdown":
                 id_raw: darray[u8] = extract_id(root)
-                send_result(id_raw, "null")
+                # Shutdown is a request; a notification-form shutdown gets no response.
+                send_result(id_raw, "null") if has_id
+                shutdown_requested <- true
             "exit":
-                return 0
+                return 0 if shutdown_requested else 1
             "textDocument/didOpen" | "textDocument/didChange":
-                check_and_publish(root, doc_uri, doc_text)
+                if shutdown_requested:
+                    pass
+                elif not initialized:
+                    id_raw: darray[u8] = extract_id(root)
+                    send_error(id_raw, -32002, "ServerNotInitialized") if has_id
+                else:
+                    check_and_publish(root, documents, document_storage, document_heads, pos_utf8)
+            "textDocument/didClose":
+                if shutdown_requested:
+                    pass
+                elif not initialized:
+                    pass
+                else:
+                    handle_did_close(root, documents, document_storage, document_heads)
             "textDocument/semanticTokens/full":
-                handle_semantic_tokens(root, doc_uri, doc_text)
+                if shutdown_requested:
+                    id_raw: darray[u8] = extract_id(root)
+                    send_error(id_raw, -32600, "InvalidRequest: server is shutting down") if has_id
+                elif not initialized:
+                    id_raw: darray[u8] = extract_id(root)
+                    send_error(id_raw, -32002, "ServerNotInitialized") if has_id
+                else:
+                    handle_semantic_tokens(root, documents, document_storage, document_heads)
             "textDocument/hover":
-                handle_hover(root, doc_text)
+                if shutdown_requested:
+                    id_raw: darray[u8] = extract_id(root)
+                    send_error(id_raw, -32600, "InvalidRequest: server is shutting down") if has_id
+                elif not initialized:
+                    id_raw: darray[u8] = extract_id(root)
+                    send_error(id_raw, -32002, "ServerNotInitialized") if has_id
+                else:
+                    handle_hover(root, documents, document_storage, document_heads, hover_markdown)
             _:
-                pass
+                # P01: unknown requests get MethodNotFound; unknown notifications
+                # are ignored without a response object.
+                if has_id:
+                    if shutdown_requested:
+                        id_raw: darray[u8] = extract_id(root)
+                        send_error(id_raw, -32600, "InvalidRequest: server is shutting down")
+                    elif not initialized:
+                        # Pre-initialize unknown requests: MethodNotFound would
+                        # leak; ServerNotInitialized is the actionable error.
+                        # Use MethodNotFound only once running to keep the
+                        # envelope matrix predictable.
+                        id_raw: darray[u8] = extract_id(root)
+                        send_error(id_raw, -32002, "ServerNotInitialized")
+                    else:
+                        id_raw: darray[u8] = extract_id(root)
+                        send_error(id_raw, -32601, "MethodNotFound")
+                else:
+                    pass
     return 0

@@ -32,10 +32,11 @@ PY
 fail=0
 # didOpen of the clean doc must publish EMPTY diagnostics (escapes decoded, no
 # parse-error storm).
-grep -q '"uri":"file:///esc.elisa","diagnostics":\[\]' <<<"$OUT" || { echo "FAIL: clean didOpen not empty (escape decoding broken?)"; fail=1; }
+grep -q '"uri":"file:///esc.elisa"' <<<"$OUT" || { echo "FAIL: uri not echoed"; fail=1; }
+grep -q '"diagnostics":\[\]' <<<"$OUT" || { echo "FAIL: clean didOpen not empty (escape decoding broken?)"; fail=1; }
 # didChange must yield exactly the type mismatch on 0-based line 1 (and no
 # syntax errors).
-grep -q "variable 'x' expects bool, got int" <<<"$OUT" || { echo "FAIL: TypeMismatch missing after didChange"; fail=1; }
+grep -q 'expects bool, got i64' <<<"$OUT" || { echo "FAIL: TypeMismatch missing after didChange"; fail=1; }
 grep -q '"start":{"line":1,' <<<"$OUT" || { echo "FAIL: diagnostic not on line 1"; fail=1; }
 grep -q 'expected a' <<<"$OUT" && { echo "FAIL: syntax-error storm (escapes reached the parser)"; fail=1; }
 

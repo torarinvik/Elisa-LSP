@@ -12,6 +12,7 @@ def frame(o):
     b = json.dumps(o)
     return f"Content-Length: {len(b)}\r\n\r\n{b}".encode()
 doc = "def demo(a: i64, b: u32) -> bool:\n    x: mutable f64 = 2.5\n    x <- 3.0\n    if a > 5:\n        return true\n    return false\n"
+doc += "\nenum Event:\n    None\n    Quit\n    Resize(size: i64)\n\ndef make_event() -> Event:\n    return Event.Resize(1)\n\ndef kind(event: Event) -> i64:\n    match event:\n        Event.None:\n            return 0\n        Event.Quit:\n            return 1\n        Event.Resize(size):\n            return size\n"
 m  = frame({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})
 m += frame({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///t.elisa","languageId":"Elisa","version":1,"text":doc}}})
 m += frame({"jsonrpc":"2.0","id":2,"method":"textDocument/semanticTokens/full","params":{"textDocument":{"uri":"file:///t.elisa"}}})
@@ -40,6 +41,11 @@ assert by_text["i64"] == 0 and by_text["u32"] == 1, "integral families"
 assert by_text["f64"] == 2 and by_text["bool"] == 3
 assert by_text["2.5"] == 9 and by_text["<-"] == 34 and by_text["mutable"] == 34
 assert by_text["true"] == 12 and by_text["if"] == 27
+assert by_text["Event"] == 6, "enum type should be type.user"
+assert by_text["None"] == 47 and by_text["Quit"] == 47 and by_text["Resize"] == 47, "enum variants should use the dedicated token kind"
+assert by_text["make_event"] == 13 and by_text["kind"] == 13
+family_uses = [(tok_text(t), t[3]) for t in toks if tok_text(t) == "Event" and "Event.None" in lines[t[0]]]
+assert family_uses and all(tt == 6 for _, tt in family_uses), "qualified enum family should remain type.user"
 # unknown uri -> empty
 mm3 = re.search(r'"id":3,"result":\{"data":\[([^\]]*)\]', out)
 assert mm3 and mm3.group(1).strip() == "", "unknown uri should yield empty data"
