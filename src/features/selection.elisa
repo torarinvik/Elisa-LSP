@@ -1,0 +1,209 @@
+# Selection ranges (E04 v2): nested word -> line -> enclosing block(s) ->
+# document, for every requested position, with a strict containment invariant.
+#
+# Derivation is purely syntactic (indentation), so it needs no symbol identity:
+# - innermost: the identifier/word under the cursor (a cursor at a token's end
+#   selects that token);
+# - then the full line;
+# - then each enclosing indentation block, innermost first (a block header is
+#   the nearest preceding less-indented line; blank lines are transparent);
+# - outermost: the whole document.
+# `parent` links child -> parent per LSP; ranges use 0-based lines and
+# negotiated-unit characters (UTF-16 by default) via the shared Positions layer.
+
+def sel_is_word_byte(b: u8) -> bool:
+    if b >= 48 and b <= 57:
+        return true
+    if b >= 65 and b <= 90:
+        return true
+    if b >= 97 and b <= 122:
+        return true
+    return b == 95 or b >= 128
+
+
+def sel_push_range(body: mutable darray[u8]&, sline: i64, scol: i64, eline: i64, ecol: i64) -> void can[Memory.Allocate, Abort.Panic]:
+    body.push_str("{\"start\":{\"line\":")
+    body.push_int(sline)
+    body.push_str(",\"character\":")
+    body.push_int(scol)
+    body.push_str("},\"end\":{\"line\":")
+    body.push_int(eline)
+    body.push_str(",\"character\":")
+    body.push_int(ecol)
+    # Close the end object AND the enclosing range object.
+    body.push_str("}}")
+
+
+# Word span at the cursor as 0-based byte columns; false in whitespace.
+def sel_word_span(src: u8&, src_len: usize, line0: i64, char_units: i64, utf8: bool, sbyte_out: mutable i64&, ebyte_out: mutable i64&) -> bool can[Abort.Panic]:
+    lstart: usize = Positions::line_start_offset(src, src_len, line0)
+    llen: i64 = Positions::line_byte_length(src, src_len, line0)
+    bcol: i64 = Positions::char_to_byte_col(src, src_len, line0, char_units, utf8)
+    s: mutable i64 = bcol
+    if s >= llen or not sel_is_word_byte(src[lstart + s.usize()]):
+        if s > 0 and sel_is_word_byte(src[lstart + (s - 1).usize()]):
+            s <- s - 1
+        else:
+            return false
+    e: mutable i64 = s
+    while e < llen and sel_is_word_byte(src[lstart + e.usize()]):
+        e <- e + 1
+    st: mutable i64 = s
+    while st > 0 and sel_is_word_byte(src[lstart + (st - 1).usize()]):
+        st <- st - 1
+    sbyte_out <- st
+    ebyte_out <- e
+    return true
+
+
+# Last line of the block opened at `header` (inclusive): the last more-indented
+# line before an equal-or-less-indented line.
+def sel_block_end(indent: darray[i64]&, nlines: i64, header: i64) -> i64:
+    hi: i64 = indent[header.usize()]
+    end: mutable i64 = header
+    j: mutable i64 = header + 1
+    while j < nlines:
+        ij: i64 = indent[j.usize()]
+        if ij >= 0:
+            break if ij <= hi
+            end <- j
+        j <- j + 1
+    return end
+
+
+def sel_range_at(body: mutable darray[u8]&, r_s: darray[i64]&, r_sc: darray[i64]&, r_e: darray[i64]&, r_ec: darray[i64]&, k: usize) -> void can[Memory.Allocate, Abort.Panic]:
+    sel_push_range(body, r_s[k], r_sc[k], r_e[k], r_ec[k])
+
+
+def sel_emit_position(out: mutable darray[u8]&, src: u8&, src_len: usize, indent: darray[i64]&, nlines: i64, last_line: i64, line0: i64, char_units: i64, utf8: bool) -> void can[Memory.Allocate, Abort.Panic]:
+    # Collect ranges innermost -> outermost, then build the LSP chain from the
+    # outside in: each object's `range` is a level and its `parent` is larger.
+    r_s: mutable darray[i64] = []
+    r_sc: mutable darray[i64] = []
+    r_e: mutable darray[i64] = []
+    r_ec: mutable darray[i64] = []
+    sbyte: mutable i64 = 0
+    ebyte: mutable i64 = 0
+    wfound: bool = sel_word_span(src, src_len, line0, char_units, utf8, sbyte, ebyte)
+    if wfound:
+        r_s.push(line0)
+        r_sc.push(Positions::byte_col_to_units(src, src_len, line0, sbyte, utf8))
+        r_e.push(line0)
+        r_ec.push(Positions::byte_col_to_units(src, src_len, line0, ebyte, utf8))
+    else:
+        r_s.push(line0)
+        r_sc.push(0)
+        r_e.push(line0)
+        r_ec.push(0)
+    # Line.
+    r_s.push(line0)
+    r_sc.push(0)
+    r_e.push(line0)
+    r_ec.push(Positions::line_unit_length(src, src_len, line0, utf8))
+    # Enclosing blocks, innermost first.
+    threshold: mutable i64 = indent[line0.usize()]
+    j: mutable i64 = line0 - 1
+    while j >= 0:
+        ij: i64 = indent[j.usize()]
+        if ij >= 0 and ij < threshold:
+            bend: i64 = sel_block_end(indent, nlines, j)
+            r_s.push(j)
+            r_sc.push(0)
+            r_e.push(bend)
+            r_ec.push(Positions::line_unit_length(src, src_len, bend, utf8))
+            threshold <- ij
+        j <- j - 1
+    # Document.
+    r_s.push(0)
+    r_sc.push(0)
+    r_e.push(last_line)
+    r_ec.push(Positions::line_unit_length(src, src_len, last_line, utf8))
+    # Build from the outermost inward: start at the document, wrap each smaller
+    # range as a new object whose parent is the accumulated one.
+    obj: mutable darray[u8] = []
+    last: usize = r_s.count - 1
+    obj.push_str("{\"range\":")
+    sel_range_at(obj, r_s, r_sc, r_e, r_ec, last)
+    obj.push_str("}")
+    k: mutable i64 = last.i64() - 1
+    while k >= 0:
+        wrap: mutable darray[u8] = []
+        wrap.push_str("{\"range\":")
+        sel_range_at(wrap, r_s, r_sc, r_e, r_ec, k.usize())
+        wrap.push_str(",\"parent\":")
+        for b in obj:
+            wrap.push(b)
+        wrap.push_str("}")
+        obj.truncate(0)
+        for b in wrap:
+            obj.push(b)
+        k <- k - 1
+    for b in obj:
+        out.push(b)
+
+
+def build_selection_body(src: u8&, src_len: usize, utf8: bool, positions: darray[Json::Value]) -> darray[u8]:
+    can Memory.Allocate, Abort.Panic:
+        nlines: i64 = Positions::line_count(src, src_len)
+        last_line: i64 = nlines - 1
+        # Per-line indentation (-1 = blank); computed once for all positions.
+        indent: mutable darray[i64] = []
+        line: mutable i64 = 0
+        start: mutable usize = 0
+        while line < nlines:
+            lend: mutable usize = start
+            while lend < src_len and src[lend] != 10:
+                lend <- lend + 1
+            cend: mutable usize = lend
+            if cend > start and src[cend - 1] == 13:
+                cend <- cend - 1
+            k: mutable usize = start
+            ind: mutable i64 = 0
+            while k < cend and (src[k] == 32 or src[k] == 9):
+                ind <- ind + 1
+                k <- k + 1
+            indent.push(-1 if k >= cend else ind)
+            start <- lend + 1
+            line <- line + 1
+        body: mutable darray[u8] = []
+        body.push_str("[")
+        i: mutable usize = 0
+        while i < positions.count:
+            body.push_str(",") if i > 0
+            line_v: mutable i64 = -1
+            char_v: mutable i64 = 0
+            if Json::get(positions[i], "line") is lv:
+                line_v <- Json::as_i64_checked(lv)
+            if Json::get(positions[i], "character") is cv:
+                char_v <- Json::as_i64_checked(cv)
+            line_v <- 0 if line_v < 0
+            line_v <- last_line if line_v > last_line
+            char_v <- 0 if char_v < 0
+            sel_emit_position(body, src, src_len, indent, nlines, last_line, line_v, char_v, utf8)
+            i <- i + 1
+        body.push_str("]")
+        return body
+
+
+def handle_selection_range(root: Json::Value, documents: darray[LspDocument]&, document_storage: darray[u8]&, document_heads: dict[u64, u32]&, utf8: bool) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    id_raw: darray[u8] = extract_id(root)
+    spell_bytes: mutable darray[u8] = []
+    canon_bytes: mutable darray[u8] = []
+    uri: sview = request_identity(root, spell_bytes, canon_bytes)
+    found: i64 = document_index(documents, document_storage, document_heads, uri)
+    if found < 0 or not documents[found.usize()].open or documents[found.usize()].text_len <= 1:
+        send_result(id_raw, "[]")
+        return
+    document: LspDocument = documents[found.usize()]
+    src: u8& = &document_storage[document.text_start]
+    empty: darray[Json::Value] = []
+    positions: mutable darray[Json::Value] = empty
+    if Json::get(root, "params") is params:
+        if Json::get(params, "positions") is pv:
+            match pv:
+                Json::Value.Arr(items):
+                    positions <- items
+                _:
+                    pass
+    result: darray[u8] = build_selection_body(src, document.text_len - 1, utf8, positions)
+    send_result_body(id_raw, result)

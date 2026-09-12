@@ -300,6 +300,16 @@ Unknown identifiers fall back to the loop-header hover. Name matching is
 display-only and never used as proof for an edit. Floor:
 `test/general_hover_test.sh`.
 
+## Selection ranges (E04)
+
+`src/features/selection.elisa` answers `textDocument/selectionRange` for every
+requested position with an innermost→outermost `parent` chain: the word under
+the cursor (boundary policy: a cursor at a token's end selects it), the full
+line, each enclosing indentation block, and the document. Blocks are derived
+from indentation exactly like folding (blank lines transparent); containment is
+asserted by the test. Ranges use negotiated units through `Positions`. Floor:
+`test/selection_test.sh`.
+
 ## Region/lifetime constraints
 
 The frontend's region system rejects storing a function-local container into

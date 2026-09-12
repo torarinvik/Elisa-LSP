@@ -125,6 +125,12 @@
       "test": "test/folding_test.sh",
       "module": "src/features/folding.elisa:handle_folding_range",
       "note": "indentation regions + comment runs + doc blocks; line-only; rangeLimit honored"
+    },
+    "textDocument/selectionRange": {
+      "implemented": true,
+      "test": "test/selection_test.sh",
+      "module": "src/features/selection.elisa:handle_selection_range",
+      "note": "word -> line -> enclosing indentation blocks -> document; strict containment; UTF-16/UTF-8 via Positions"
     }
   },
   "capabilities_advertised": {
@@ -155,6 +161,9 @@
       "shape": "line-only FoldingRange",
       "rangeLimit": "honored",
       "test": "test/folding_test.sh"
+    },
+    "selectionRangeProvider": {
+      "test": "test/selection_test.sh"
     }
   },
   "legend": {
