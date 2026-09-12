@@ -236,6 +236,21 @@ many-declaration file: 127 KB / 4.8k lines went from ~13.7s to ~3.1s at
 `-O2`. `python3 test/bench.py` reports per-size timings; do not gate CI on
 raw timings (see the plan's separate-perf policy).
 
+## Storage reclamation (D04)
+
+The session buffer is append-only, so growth appends a new reservation and
+leaves the old as dead space, and closed documents keep token/symbol bytes.
+`storage_reclaim` (in `src/main.elisa`) compacts it in place once it is at
+least twice the live size and above a 64 KiB floor: live documents' URI and
+(if open) text/token/symbol bytes are copied forward and offsets updated;
+closed documents keep only their URI so hash chains stay valid. It runs
+between messages, after open/change/close, when no request holds a view into
+the buffer. `test/storage_reclaim_test.sh` drives 120 escalating-growth
+open/close cycles, asserts the buffer stays within ~2× live, and that it
+reclaims to a few hundred bytes with features intact. The private
+`$/elisa/stats` request (never advertised as a capability) reports
+`storage_bytes`, `live_bytes`, `documents`, `open` for observability/soak.
+
 ## Region/lifetime constraints
 
 The frontend's region system rejects storing a function-local container into

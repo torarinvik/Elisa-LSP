@@ -39,6 +39,7 @@ run test/hover_escapes_test.sh
 run test/document_symbols_test.sh
 run test/multi_document_test.sh
 run test/documents_test.sh
+run test/storage_reclaim_test.sh
 run test/uri_test.sh
 run test/numerics_test.sh
 run test/sync_test.sh

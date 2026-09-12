@@ -677,6 +677,28 @@ def publish_empty_diagnostics(uri: sview, version: i64) -> void can[Console, Mem
     send_message(body)
 
 
+# D04/R05 self-description: report retained storage and document counts. A
+# private `$/` extension (never advertised as a capability); used by the soak
+# test to prove the flat buffer plateaus instead of growing without bound.
+def send_stats(id_raw: darray[u8], documents: darray[LspDocument]&, storage: darray[u8]&) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    open_count: mutable i64 = 0
+    i: mutable usize = 0
+    while i < documents.count:
+        open_count <- open_count + 1 if documents[i].open
+        i <- i + 1
+    body: mutable darray[u8] = []
+    push_str(body, "{\"storage_bytes\":")
+    push_int(body, storage.count.i64())
+    push_str(body, ",\"live_bytes\":")
+    push_int(body, storage_live_bytes(documents).i64())
+    push_str(body, ",\"documents\":")
+    push_int(body, documents.count.i64())
+    push_str(body, ",\"open\":")
+    push_int(body, open_count)
+    push_str(body, "}")
+    send_result_body(id_raw, body)
+
+
 # Close: mark closed, bump generation, clear text, and clear client diagnostics.
 # The URI slot is retained so collision chains stay valid; the generation bump
 # ensures in-flight old work can never publish into a reopened lifetime (D01).
@@ -690,11 +712,89 @@ def handle_did_close(root: Json::Value, documents: mutable darray[LspDocument]&,
     closed_version: i64 = documents[found.usize()].version
     documents[found.usize()].open <- false
     documents[found.usize()].text_len <- 0
+    documents[found.usize()].semantic_len <- 0
+    documents[found.usize()].symbols_len <- 0
     documents[found.usize()].generation <- documents[found.usize()].generation + 1
     documents[found.usize()].last_diag_version <- -1
     documents[found.usize()].last_diag_fp <- 0
     spell: sview = sview(&spell_bytes[0], 0, spell_bytes.count.i64())
     publish_empty_diagnostics(spell, closed_version)
+
+
+# D04 storage reclamation. The flat buffer is append-only: growth appends a new
+# reservation and leaves the old as dead space, and closed documents keep their
+# analysis/token bytes. `storage_reclaim` compacts the buffer in place when it
+# is at least twice the live size — copying every live document's URI, and (for
+# open documents) text/token/symbol bytes, updating their offsets. Closed
+# documents keep only their URI so hash chains stay valid. Safe to call between
+# messages: no request holds a view into the buffer once it has returned.
+const COMPACT_MIN_BYTES: usize = 65536
+
+
+def storage_live_bytes(documents: darray[LspDocument]&) -> usize:
+    live: mutable usize = 0
+    i: mutable usize = 0
+    while i < documents.count:
+        d: LspDocument = documents[i]
+        live <- live + d.uri_len
+        if d.open:
+            live <- live + d.text_len + d.semantic_len + d.symbols_len
+        i <- i + 1
+    return live
+
+
+def storage_reclaim(documents: mutable darray[LspDocument]&, storage: mutable darray[u8]&) -> void can[Memory.Allocate, Abort.Panic]:
+    if storage.count < COMPACT_MIN_BYTES:
+        return
+    live: usize = storage_live_bytes(documents)
+    if storage.count < live * 2:
+        return
+    temp: mutable darray[u8] = []
+    i: mutable usize = 0
+    while i < documents.count:
+        d: mutable LspDocument& = &documents[i]
+        old_uri: usize = d.uri_start
+        d.uri_start <- temp.count
+        j: mutable usize = 0
+        while j < d.uri_len:
+            temp.push(storage[old_uri + j])
+            j <- j + 1
+        if d.open:
+            old_text: usize = d.text_start
+            d.text_start <- temp.count
+            j <- 0
+            while j < d.text_len:
+                temp.push(storage[old_text + j])
+                j <- j + 1
+            d.text_capacity <- d.text_len
+            old_sem: usize = d.semantic_start
+            d.semantic_start <- temp.count
+            j <- 0
+            while j < d.semantic_len:
+                temp.push(storage[old_sem + j])
+                j <- j + 1
+            d.semantic_capacity <- d.semantic_len
+            old_sym: usize = d.symbols_start
+            d.symbols_start <- temp.count
+            j <- 0
+            while j < d.symbols_len:
+                temp.push(storage[old_sym + j])
+                j <- j + 1
+            d.symbols_capacity <- d.symbols_len
+        else:
+            d.text_start <- temp.count
+            d.text_len <- 0
+            d.text_capacity <- 0
+            d.semantic_start <- temp.count
+            d.semantic_len <- 0
+            d.semantic_capacity <- 0
+            d.symbols_start <- temp.count
+            d.symbols_len <- 0
+            d.symbols_capacity <- 0
+        i <- i + 1
+    storage.truncate(0)
+    for b in temp:
+        storage.push(b)
 
 
 # ---- responses --------------------------------------------------------------------
@@ -1065,6 +1165,7 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
                     send_error(id_raw, -32002, "ServerNotInitialized") if has_id
                 else:
                     check_and_publish(root, documents, document_storage, document_heads, pos_utf8, symbols_hier, allowed_kinds, diag_related)
+                    storage_reclaim(documents, document_storage)
             "textDocument/didClose":
                 if shutdown_requested:
                     pass
@@ -1072,6 +1173,7 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
                     pass
                 else:
                     handle_did_close(root, documents, document_storage, document_heads)
+                    storage_reclaim(documents, document_storage)
             "textDocument/semanticTokens/full":
                 if shutdown_requested:
                     id_raw: darray[u8] = extract_id(root)
@@ -1099,6 +1201,9 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
                     send_error(id_raw, -32002, "ServerNotInitialized") if has_id
                 else:
                     handle_document_symbols(root, documents, document_storage, document_heads)
+            "$/elisa/stats":
+                id_raw: darray[u8] = extract_id(root)
+                send_stats(id_raw, documents, document_storage) if has_id
             _:
                 # P01: unknown requests get MethodNotFound; unknown notifications
                 # are ignored without a response object.
