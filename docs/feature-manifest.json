@@ -117,6 +117,12 @@
     "window/workDoneProgress/create": {
       "implemented": false,
       "planned": "Q03"
+    },
+    "textDocument/foldingRange": {
+      "implemented": true,
+      "test": "test/folding_test.sh",
+      "module": "src/features/folding.elisa:handle_folding_range",
+      "note": "indentation regions + comment runs + doc blocks; line-only; rangeLimit honored"
     }
   },
   "capabilities_advertised": {
@@ -142,6 +148,11 @@
     "publishDiagnostics": {
       "relatedInformation": "emitted when the client advertises support and the compiler carries a secondary span",
       "test": "test/related_info_test.sh"
+    },
+    "foldingRangeProvider": {
+      "shape": "line-only FoldingRange",
+      "rangeLimit": "honored",
+      "test": "test/folding_test.sh"
     }
   },
   "legend": {

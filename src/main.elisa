@@ -11,6 +11,7 @@ include "frontend_adapter.elisa"
 include "json.elisa"
 include "semtokens.elisa"
 include "features/document_symbols.elisa"
+include "features/folding.elisa"
 
 # Byte-buffer builders (push_str/push_int/push_sview) come from the frontend's `module Bytes`
 # (inlined in Elisa-compiler semantic.elisa), pulled in transitively via diagnostics.elisa.
@@ -1050,6 +1051,19 @@ def negotiate_related_info(root: Json::Value) -> bool can[Memory.Allocate, Abort
         return false
 
 
+# The client's `foldingRange.rangeLimit`, or 0 for unlimited.
+def negotiate_fold_limit(root: Json::Value) -> i64 can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        if Json::get(root, "params") is params:
+            if Json::get(params, "capabilities") is caps:
+                if Json::get(caps, "textDocument") is td:
+                    if Json::get(td, "foldingRange") is fr:
+                        if Json::get(fr, "rangeLimit") is lim:
+                            v: i64 = Json::as_i64_checked(lim)
+                            return v if v >= 0 else 0
+        return 0
+
+
 # ---- hover: textDocument/hover (docs/119 loop-header capture list) -----------------
 # Byte range [start,end) of 0-based source line `line_no` in `doc`; false if OOB.
 # U02: routed through the shared `Positions` coordinate module so hover slices
@@ -1196,6 +1210,7 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
     symbols_hier: mutable bool = false
     allowed_kinds: mutable darray[i64] = []
     diag_related: mutable bool = false
+    fold_limit: mutable i64 = 0
     # T01 buffered input: bytes read ahead of the cursor survive across
     # messages, so pipelined frames and split UTF-8 sequences frame exactly.
     inbuf: mutable darray[u8] = []
@@ -1224,10 +1239,11 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
                     symbols_hier <- negotiate_symbols_hier(root)
                     allowed_kinds <- negotiate_symbol_kinds(root)
                     diag_related <- negotiate_related_info(root)
+                    fold_limit <- negotiate_fold_limit(root)
                     caps: mutable darray[u8] = []
                     push_str(caps, "{\"capabilities\":{\"textDocumentSync\":1,\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":")
                     push_str(caps, semtok_legend_json())
-                    push_str(caps, ",\"tokenModifiers\":[]},\"full\":true},\"hoverProvider\":true,\"documentSymbolProvider\":true")
+                    push_str(caps, ",\"tokenModifiers\":[]},\"full\":true},\"hoverProvider\":true,\"documentSymbolProvider\":true,\"foldingRangeProvider\":true")
                     push_str(caps, ",\"positionEncoding\":\"utf-8\"") if pos_utf8
                     push_str(caps, "},\"serverInfo\":{\"name\":\"elisa-lsp\",\"version\":\"0.1.0\"}}")
                     send_result_body(id_raw, caps)
@@ -1286,6 +1302,15 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
                     send_error(id_raw, -32002, "ServerNotInitialized") if has_id
                 else:
                     handle_document_symbols(root, documents, document_storage, document_heads)
+            "textDocument/foldingRange":
+                if shutdown_requested:
+                    id_raw: darray[u8] = extract_id(root)
+                    send_error(id_raw, -32600, "InvalidRequest: server is shutting down") if has_id
+                elif not initialized:
+                    id_raw: darray[u8] = extract_id(root)
+                    send_error(id_raw, -32002, "ServerNotInitialized") if has_id
+                else:
+                    handle_folding_range(root, documents, document_storage, document_heads, fold_limit)
             "$/elisa/stats":
                 id_raw: darray[u8] = extract_id(root)
                 send_stats(id_raw, documents, document_storage) if has_id

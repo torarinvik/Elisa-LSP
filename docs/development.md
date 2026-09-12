@@ -257,6 +257,15 @@ therefore stay bounded by peak concurrent opens, not by the number of distinct
 URIs touched. `test/storage_reclaim_test.sh` also drives 300 distinct URIs and
 asserts the peak slot count stays tiny.
 
+## Folding ranges (E04)
+
+`src/features/folding.elisa` derives folds from indentation (a line opens a
+region when later lines are more indented; blank lines are transparent),
+runs of `#` comment lines, and `"""` doc blocks. Output is line-only
+(`{startLine, endLine}`, optional `kind`), so `lineFoldingOnly` clients are
+satisfied with no character offsets; the client's `rangeLimit` is honored.
+Folds are always non-empty and in-bounds. Floors: `test/folding_test.sh`.
+
 ## Region/lifetime constraints
 
 The frontend's region system rejects storing a function-local container into

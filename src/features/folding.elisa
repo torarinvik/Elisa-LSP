@@ -1,0 +1,142 @@
+# Folding ranges (E04 v1): block regions from indentation plus comment blocks.
+#
+# Scope discipline (honest and documented):
+# - Regions come from indentation: a line opens a fold when one or more later
+#   lines are more indented, and the fold ends at the last such line. Blank
+#   lines are transparent (they neither open nor close a fold). This captures
+#   declarations, control flow, and nested blocks without a full parse, which
+#   keeps the feature independent of symbol identity (A02).
+# - A run of consecutive comment lines (trimmed `#`) is folded as a `comment`
+#   range; a `"""` doc block is folded too. Exact duplicates of an indentation
+#   fold are suppressed.
+# - Only line ranges are emitted, so line-only clients (`lineFoldingOnly`) are
+#   satisfied without character offsets; the negotiated position encoding is
+#   therefore irrelevant here.
+# - `rangeLimit` is honored: at most that many folds are returned.
+# - Folds always have startLine < endLine (never empty or inverted).
+
+const FOLD_INDENT: i64 = 0
+const FOLD_COMMENT: i64 = 1
+
+def fold_key(start: i64, end: i64) -> u64:
+    return (start.u64() << 32) | (end.u64() & 4294967295)
+
+
+def fold_push(body: mutable darray[u8]&, first: mutable bool&, start: i64, end: i64, kind: i64) -> void can[Memory.Allocate, Abort.Panic]:
+    body.push_str(",") if not first[0]
+    first[0] <- false
+    body.push_str("{\"startLine\":")
+    body.push_int(start)
+    body.push_str(",\"endLine\":")
+    body.push_int(end)
+    body.push_str(",\"kind\":\"comment\"") if kind == FOLD_COMMENT
+    body.push_str("}")
+
+
+def build_folding_body(src: u8&, src_len: usize, limit: i64) -> darray[u8]:
+    can Memory.Allocate, Abort.Panic:
+        nlines: i64 = Positions::line_count(src, src_len)
+        indent: mutable darray[i64] = []
+        is_comment: mutable darray[bool] = []
+        is_triple: mutable darray[bool] = []
+        line: mutable i64 = 0
+        start: mutable usize = 0
+        while line < nlines:
+            lend: mutable usize = start
+            while lend < src_len and src[lend] != 10:
+                lend <- lend + 1
+            cend: mutable usize = lend
+            if cend > start and src[cend - 1] == 13:
+                cend <- cend - 1
+            k: mutable usize = start
+            ind: mutable i64 = 0
+            while k < cend and (src[k] == 32 or src[k] == 9):
+                ind <- ind + 1
+                k <- k + 1
+            blank: bool = k >= cend
+            indent.push(-1 if blank else ind)
+            is_comment.push((not blank) and (src[k] == 35))
+            triple: mutable bool = false
+            if not blank and src[k] == 34 and k + 2 < cend and src[k + 1] == 34 and src[k + 2] == 34:
+                triple <- true
+            is_triple.push(triple)
+            start <- lend + 1
+            line <- line + 1
+        body: mutable darray[u8] = []
+        body.push_str("[")
+        first: mutable bool = true
+        seen: mutable dict[u64, i64] = {}
+        emitted: mutable i64 = 0
+        # Indentation regions.
+        i: mutable i64 = 0
+        while i < nlines and (limit <= 0 or emitted < limit):
+            ind: i64 = indent[i.usize()]
+            if ind >= 0:
+                e: mutable i64 = i
+                j: mutable i64 = i + 1
+                while j < nlines:
+                    ij: i64 = indent[j.usize()]
+                    if ij < 0:
+                        j <- j + 1
+                        continue
+                    break if ij <= ind
+                    e <- j
+                    j <- j + 1
+                if e > i:
+                    fold_push(body, first, i, e, FOLD_INDENT)
+                    seen <- seen.put(fold_key(i, e), 1)
+                    emitted <- emitted + 1
+            i <- i + 1
+        # Comment runs (consecutive `#` lines) not already covered.
+        c: mutable i64 = 0
+        while c < nlines and (limit <= 0 or emitted < limit):
+            if is_comment[c.usize()]:
+                e: mutable i64 = c
+                j: mutable i64 = c + 1
+                while j < nlines and is_comment[j.usize()]:
+                    e <- j
+                    j <- j + 1
+                if e > c:
+                    covered: mutable bool = false
+                    if seen.get(fold_key(c, e)) is existing:
+                        covered <- true
+                    if not covered:
+                        fold_push(body, first, c, e, FOLD_COMMENT)
+                        emitted <- emitted + 1
+                c <- e + 1
+            else:
+                c <- c + 1
+        # `"""` doc blocks.
+        t: mutable i64 = 0
+        while t < nlines and (limit <= 0 or emitted < limit):
+            if is_triple[t.usize()]:
+                e: mutable i64 = t + 1
+                while e < nlines and not is_triple[e.usize()]:
+                    e <- e + 1
+                if e < nlines and e > t:
+                    covered: mutable bool = false
+                    if seen.get(fold_key(t, e)) is existing:
+                        covered <- true
+                    if not covered:
+                        fold_push(body, first, t, e, FOLD_COMMENT)
+                        emitted <- emitted + 1
+                t <- e + 1
+            else:
+                t <- t + 1
+        body.push_str("]")
+        return body
+
+
+def handle_folding_range(root: Json::Value, documents: darray[LspDocument]&, document_storage: darray[u8]&, document_heads: dict[u64, u32]&, limit: i64) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    id_raw: darray[u8] = extract_id(root)
+    spell_bytes: mutable darray[u8] = []
+    canon_bytes: mutable darray[u8] = []
+    uri: sview = request_identity(root, spell_bytes, canon_bytes)
+    found: i64 = document_index(documents, document_storage, document_heads, uri)
+    if found < 0 or not documents[found.usize()].open or documents[found.usize()].text_len <= 1:
+        send_result(id_raw, "[]")
+        return
+    document: LspDocument = documents[found.usize()]
+    src: u8& = &document_storage[document.text_start]
+    result: darray[u8] = build_folding_body(src, document.text_len - 1, limit)
+    send_result_body(id_raw, result)
