@@ -1,0 +1,132 @@
+# Document symbols, flat outline (F02 v1).
+#
+# Renders the frontend's file symbol table (`Semantic::SymbolTable.symbols`)
+# as an LSP outline. Scope discipline, honest and documented:
+# - Only symbols WITH a source line (`line > 0`) are emitted. Line-0 entries
+#   are prelude/primitive scope, not file content — they must never appear as
+#   document symbols.
+# - The enclosing `range` is the declaration line's extent: the compiler does
+#   not yet expose declaration end lines, so no nesting is invented
+#   (`children: []` always). Declaration extents arrive with A02.
+# - `selectionRange` is the exact name span when the symbol carries a byte
+#   `offset` that validates inside its own line; otherwise it equals `range`.
+#   Offsets are trusted only after bounds checks, never blindly.
+# - Enum variants live in the frontend's parallel registries without lines and
+#   are omitted until A02 gives them identities.
+# - `Unknown` kinds are omitted rather than guessed at.
+# Shape follows the session: hierarchical clients get `DocumentSymbol`,
+# others get `SymbolInformation` (both spec-legal). Kinds clamp to the
+# client's `symbolKind.valueSet` when one was offered, via per-category
+# fallbacks; unrestricted otherwise. Table order (source order) is preserved.
+def docsym_allowed(allowed: darray[i64]&, k: i64) -> bool:
+    return true if allowed.count == 0
+    i: mutable usize = 0
+    while i < allowed.count:
+        true return if allowed[i] == k
+        i <- i + 1
+    return false
+
+
+def docsym_pick(c0: i64, c1: i64, allowed: darray[i64]&) -> i64:
+    return c0 if docsym_allowed(allowed, c0)
+    return c1 if docsym_allowed(allowed, c1)
+    return -1
+
+
+def docsym_select_kind(kind: Semantic::SymbolKind, allowed: darray[i64]&) -> i64:
+    return when kind:
+        Semantic::SymbolKind.Func | Semantic::SymbolKind.Extern -> docsym_pick(12, 6, allowed)
+        Semantic::SymbolKind.Struct -> docsym_pick(23, 5, allowed)
+        Semantic::SymbolKind.Enum -> docsym_pick(10, 5, allowed)
+        Semantic::SymbolKind.Alias -> docsym_pick(5, 23, allowed)
+        Semantic::SymbolKind.Const -> docsym_pick(14, 13, allowed)
+        Semantic::SymbolKind.Module | Semantic::SymbolKind.Import -> docsym_pick(2, 4, allowed)
+        Semantic::SymbolKind.Law -> docsym_pick(11, 5, allowed)
+        Semantic::SymbolKind.Unknown -> -1
+        _ -> -1
+
+
+def docsym_push_range(body: mutable darray[u8]&, line0: i64, scol: i64, ecol: i64) -> void can[Memory.Allocate, Abort.Panic]:
+    body.push_str("{\"start\":{\"line\":")
+    body.push_int(line0)
+    body.push_str(",\"character\":")
+    body.push_int(scol)
+    body.push_str("},\"end\":{\"line\":")
+    body.push_int(line0)
+    body.push_str(",\"character\":")
+    body.push_int(ecol)
+    # Close the end object AND the enclosing range object.
+    body.push_str("}}")
+
+
+def docsym_append(body: mutable darray[u8]&, uri: sview, sym: Semantic::Symbol, src: u8&, src_len: usize, utf8: bool, kind: i64, hier: bool) -> void can[Memory.Allocate, Abort.Panic]:
+    nlines: i64 = Positions::line_count(src, src_len)
+    last: i64 = nlines - 1
+    line0: mutable i64 = sym.line.i64() - 1 if sym.line > 0 else 0
+    line0 <- last if line0 > last
+    line0 <- 0 if line0 < 0
+    w: i64 = Positions::line_unit_length(src, src_len, line0, utf8)
+    # selectionRange: exact name span only when `offset` validates inside the
+    # symbol's own line; otherwise the line extent (never invented).
+    scol: mutable i64 = 0
+    ecol: mutable i64 = w
+    if sym.offset > 0:
+        lstart: usize = Positions::line_start_offset(src, src_len, line0)
+        llen_b: usize = Positions::line_byte_length(src, src_len, line0).usize()
+        off: usize = sym.offset.usize()
+        name_b: usize = sview_len(sym.name)
+        if off >= lstart and off + name_b <= lstart + llen_b:
+            scol <- Positions::byte_col_to_units(src, src_len, line0, (off - lstart).i64(), utf8)
+            ecol <- scol + Positions::sview_unit_length(sym.name)
+            ecol <- w if ecol > w
+    body.push_str("{\"name\":\"")
+    for b in sym.name:
+        json_escape_byte(body, b)
+    body.push_str("\",\"kind\":")
+    body.push_int(kind)
+    if hier:
+        body.push_str(",\"range\":")
+        docsym_push_range(body, line0, 0, w)
+        body.push_str(",\"selectionRange\":")
+        docsym_push_range(body, line0, scol, ecol)
+        body.push_str(",\"children\":[]}")
+    else:
+        body.push_str(",\"location\":{\"uri\":\"")
+        for b in uri:
+            json_escape_byte(body, b)
+        body.push_str("\",\"range\":")
+        docsym_push_range(body, line0, 0, w)
+        body.push_str("}}")
+
+
+def build_symbols_body(uri: sview, table: Semantic::SymbolTable, src: u8&, src_len: usize, utf8: bool, hier: bool, allowed: darray[i64]&) -> darray[u8]:
+    can Memory.Allocate, Abort.Panic:
+        body: mutable darray[u8] = []
+        body.push_str("[")
+        first: mutable bool = true
+        i: mutable usize = 0
+        while i < table.symbols.count:
+            sym: Semantic::Symbol = table.symbols[i]
+            # Prelude/primitive scope has no file line — never a document symbol.
+            if sym.line > 0:
+                kind: i64 = docsym_select_kind(sym.kind, allowed)
+                if kind >= 0:
+                    body.push_str(",") if not first
+                    docsym_append(body, uri, sym, src, src_len, utf8, kind, hier)
+                    first <- false
+            i <- i + 1
+        body.push_str("]")
+        return body
+
+
+def handle_document_symbols(root: Json::Value, documents: darray[LspDocument]&, document_storage: darray[u8]&, document_heads: dict[u64, u32]&) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    id_raw: darray[u8] = extract_id(root)
+    spell_bytes: mutable darray[u8] = []
+    canon_bytes: mutable darray[u8] = []
+    uri: sview = request_identity(root, spell_bytes, canon_bytes)
+    found: i64 = document_index(documents, document_storage, document_heads, uri)
+    if found < 0 or not documents[found.usize()].open or documents[found.usize()].text_len <= 1:
+        send_result(id_raw, "[]")
+        return
+    document: LspDocument = documents[found.usize()]
+    send_result_storage(id_raw, document_storage, document.symbols_start, document.symbols_len)

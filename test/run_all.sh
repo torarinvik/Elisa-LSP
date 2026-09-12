@@ -33,6 +33,7 @@ run test/semtokens_test.sh
 run test/fstring_semtokens_test.sh
 run test/hover_test.sh
 run test/hover_escapes_test.sh
+run test/document_symbols_test.sh
 run test/multi_document_test.sh
 run test/documents_test.sh
 run test/uri_test.sh

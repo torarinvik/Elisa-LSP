@@ -119,3 +119,19 @@ module Positions:
             avail: usize = src_len - start
             take: usize = avail if nbytes > avail else nbytes
             return take.i64() if utf8 else utf16_units_for_bytes(src, start, take)
+
+
+        # UTF-16 code units in a string view's bytes (identifier names,
+        # diagnostic words). Same decoder as the byte-span path.
+        def sview_unit_length(text: sview) -> i64:
+            units: mutable i64 = 0
+            i: mutable usize = 0
+            while i < text.len.usize():
+                seqlen: mutable usize = utf8_seq_length(sview_at(text, i))
+                seqlen <- text.len.usize() - i if seqlen > text.len.usize() - i
+                if seqlen == 4:
+                    units <- units + 2
+                else:
+                    units <- units + 1
+                i <- i + seqlen
+            return units

@@ -9,6 +9,7 @@
 include "diagnostics.elisa"
 include "json.elisa"
 include "semtokens.elisa"
+include "features/document_symbols.elisa"
 
 # Byte-buffer builders (push_str/push_int/push_sview) come from the frontend's `module Bytes`
 # (inlined in Elisa-compiler semantic.elisa), pulled in transitively via diagnostics.elisa.
@@ -34,6 +35,9 @@ struct LspDocument:
     semantic_start: mutable usize
     semantic_len: mutable usize
     semantic_capacity: mutable usize
+    symbols_start: mutable usize
+    symbols_len: mutable usize
+    symbols_capacity: mutable usize
     hash: mutable u64
     next: mutable u32
     version: mutable i64
@@ -436,7 +440,7 @@ def document_slot(documents: mutable darray[LspDocument]&, storage: mutable darr
     previous: mutable u32 = 4294967295
     previous <- head if heads.get(hash) is head
     uri_start: usize = storage.count
-    documents.push(LspDocument{uri_start: uri_start, uri_len: uri.len.usize(), text_start: 0, text_len: 0, text_capacity: 0, semantic_start: 0, semantic_len: 0, semantic_capacity: 0, hash: hash, next: previous, version: -1, open: false, generation: 0, last_diag_version: -1, last_diag_fp: 0})
+    documents.push(LspDocument{uri_start: uri_start, uri_len: uri.len.usize(), text_start: 0, text_len: 0, text_capacity: 0, semantic_start: 0, semantic_len: 0, semantic_capacity: 0, symbols_start: 0, symbols_len: 0, symbols_capacity: 0, hash: hash, next: previous, version: -1, open: false, generation: 0, last_diag_version: -1, last_diag_fp: 0})
     slot: usize = documents.count - 1
     for i in 0..<uri.len.usize():
         storage.push(sview_at(uri, i))
@@ -483,13 +487,34 @@ def store_document_semantic(document: mutable LspDocument&, storage: mutable dar
     document.semantic_capacity <- needed + extra
 
 
+# Commit an encoded document-symbol result into the same flat storage.
+# Outline requests must not rerun the frontend (F02); same-sized results reuse
+# their reservation. The encoded shape depends on the session's negotiated
+# symbol support, so the render is rebuilt only when the source changes.
+def store_document_symbols(document: mutable LspDocument&, storage: mutable darray[u8]&, result: darray[u8]) -> void can[Memory.Allocate, Abort.Panic]:
+    needed: usize = result.count
+    if document.symbols_capacity >= needed and document.symbols_capacity > 0:
+        for i in 0..<needed:
+            storage[document.symbols_start + i] <- result[i]
+        document.symbols_len <- needed
+        return
+    document.symbols_start <- storage.count
+    storage.extend(result)
+    extra: mutable usize = needed
+    extra <- 1 if extra == 0
+    for i in 0..<extra:
+        storage.push(0)
+    document.symbols_len <- needed
+    document.symbols_capacity <- needed + extra
+
+
 # Run the frontend over the document and publish its findings. The decoded
 # text and its uri are stored in the session cache so later semantic-token and
 # hover requests can retrieve the correct snapshot for their own URI.
 # D01: versioned lifecycle — accept text into the store only for eligible
 # versions; stale/equal versions never mutate; duplicate opens start a new
 # generation; malformed notifications mutate nothing.
-def check_and_publish(root: Json::Value, documents: mutable darray[LspDocument]&, storage: mutable darray[u8]&, heads: mutable dict[u64, u32]&, utf8: bool) -> void can[Console, Memory.Allocate, Abort.Panic]:
+def check_and_publish(root: Json::Value, documents: mutable darray[LspDocument]&, storage: mutable darray[u8]&, heads: mutable dict[u64, u32]&, utf8: bool, symbols_hier: bool, allowed_kinds: darray[i64]&) -> void can[Console, Memory.Allocate, Abort.Panic]:
     spell_bytes: mutable darray[u8] = []
     canon_bytes: mutable darray[u8] = []
     uri: sview = request_identity(root, spell_bytes, canon_bytes)
@@ -522,8 +547,10 @@ def check_and_publish(root: Json::Value, documents: mutable darray[LspDocument]&
     source.push(0)
     table: Semantic::SymbolTable = check_source_buf(&source[0], source.count - 1)
     semantic: darray[u8] = semtok_data_body_with_table(&source[0], source.count - 1, table, utf8)
+    symbols: darray[u8] = build_symbols_body(spell, table, &source[0], source.count - 1, utf8, symbols_hier, allowed_kinds)
     store_document_text(document, storage, source)
     store_document_semantic(document, storage, semantic)
+    store_document_symbols(document, storage, symbols)
     document.open <- true
     document.version <- incoming_version if incoming_version >= 0 else document.version + 1
     # G02: publish only if this generation is still current. The analysis above
@@ -698,8 +725,53 @@ def negotiate_hover_markdown(root: Json::Value) -> bool can[Memory.Allocate, Abo
         return true
 
 
-# ---- hover: textDocument/hover (docs/119 loop-header capture list) -----------------
+# Whether the client accepts hierarchical `DocumentSymbol` (with children).
+# Absent capability -> false: flat `SymbolInformation` is the universal shape.
+def negotiate_symbols_hier(root: Json::Value) -> bool can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        if Json::get(root, "params") is params:
+            if Json::get(params, "capabilities") is caps:
+                if Json::get(caps, "textDocument") is td:
+                    if Json::get(td, "documentSymbol") is ds:
+                        if Json::get(ds, "hierarchicalDocumentSymbolSupport") is h:
+                            match h:
+                                Json::Value.Bool(enabled):
+                                    return enabled
+                                _:
+                                    return false
+        return false
 
+
+# The client's `symbolKind.valueSet`, when offered: the only SymbolKinds it
+# accepts. An empty result means unrestricted (the common case); otherwise the
+# renderer clamps every kind through per-category fallbacks (never invents a
+# kind the client rejected).
+def negotiate_symbol_kinds(root: Json::Value) -> darray[i64] can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        out: mutable darray[i64] = []
+        if Json::get(root, "params") is params:
+            if Json::get(params, "capabilities") is caps:
+                if Json::get(caps, "textDocument") is td:
+                    if Json::get(td, "documentSymbol") is ds:
+                        if Json::get(ds, "symbolKind") is sk:
+                            if Json::get(sk, "valueSet") is vs:
+                                match vs:
+                                    Json::Value.Arr(items):
+                                        i: mutable usize = 0
+                                        while i < items.count:
+                                            item: Json::Value = items[i]
+                                            match item:
+                                                Json::Value.Num(text):
+                                                    out.push(Json::as_i64(item))
+                                                _:
+                                                    pass
+                                            i <- i + 1
+                                    _:
+                                        pass
+        return out
+
+
+# ---- hover: textDocument/hover (docs/119 loop-header capture list) -----------------
 # Byte range [start,end) of 0-based source line `line_no` in `doc`; false if OOB.
 # U02: routed through the shared `Positions` coordinate module so hover slices
 # the same lines diagnostics and tokens report. The end excludes LF and a
@@ -842,6 +914,8 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
     # provider so handlers cannot disagree about encodings or formats.
     pos_utf8: mutable bool = false
     hover_markdown: mutable bool = true
+    symbols_hier: mutable bool = false
+    allowed_kinds: mutable darray[i64] = []
     while true:
         body: mutable darray[u8] = []
         0 return if not read_message(body)
@@ -860,10 +934,12 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
                 else:
                     pos_utf8 <- negotiate_utf8(root)
                     hover_markdown <- negotiate_hover_markdown(root)
+                    symbols_hier <- negotiate_symbols_hier(root)
+                    allowed_kinds <- negotiate_symbol_kinds(root)
                     caps: mutable darray[u8] = []
                     push_str(caps, "{\"capabilities\":{\"textDocumentSync\":1,\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":")
                     push_str(caps, semtok_legend_json())
-                    push_str(caps, ",\"tokenModifiers\":[]},\"full\":true},\"hoverProvider\":true")
+                    push_str(caps, ",\"tokenModifiers\":[]},\"full\":true},\"hoverProvider\":true,\"documentSymbolProvider\":true")
                     push_str(caps, ",\"positionEncoding\":\"utf-8\"") if pos_utf8
                     push_str(caps, "},\"serverInfo\":{\"name\":\"elisa-lsp\",\"version\":\"0.1.0\"}}")
                     send_result_body(id_raw, caps)
@@ -885,7 +961,7 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
                     id_raw: darray[u8] = extract_id(root)
                     send_error(id_raw, -32002, "ServerNotInitialized") if has_id
                 else:
-                    check_and_publish(root, documents, document_storage, document_heads, pos_utf8)
+                    check_and_publish(root, documents, document_storage, document_heads, pos_utf8, symbols_hier, allowed_kinds)
             "textDocument/didClose":
                 if shutdown_requested:
                     pass
@@ -911,6 +987,15 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
                     send_error(id_raw, -32002, "ServerNotInitialized") if has_id
                 else:
                     handle_hover(root, documents, document_storage, document_heads, hover_markdown)
+            "textDocument/documentSymbol":
+                if shutdown_requested:
+                    id_raw: darray[u8] = extract_id(root)
+                    send_error(id_raw, -32600, "InvalidRequest: server is shutting down") if has_id
+                elif not initialized:
+                    id_raw: darray[u8] = extract_id(root)
+                    send_error(id_raw, -32002, "ServerNotInitialized") if has_id
+                else:
+                    handle_document_symbols(root, documents, document_storage, document_heads)
             _:
                 # P01: unknown requests get MethodNotFound; unknown notifications
                 # are ignored without a response object.

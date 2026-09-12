@@ -28,9 +28,9 @@
     },
     "textDocument/didChange": {
       "implemented": true,
-      "test": "test/escapes_test.sh",
+      "test": "test/sync_test.sh",
       "module": "src/main.elisa:check_and_publish",
-      "note": "full-sync entry zero only; multi-change + incremental pending (D02)"
+      "note": "full-sync only (all change entries validated in order, last wins); incremental sync not advertised"
     },
     "textDocument/didClose": {
       "implemented": true,
@@ -63,8 +63,10 @@
       "note": "not handled"
     },
     "textDocument/documentSymbol": {
-      "implemented": false,
-      "planned": "F02"
+      "implemented": true,
+      "test": "test/document_symbols_test.sh",
+      "module": "src/features/document_symbols.elisa:handle_document_symbols",
+      "note": "flat SymbolInformation by default; hierarchical DocumentSymbol when supported; line-range outline (declaration end lines + enum variants pending A02); symbolKind.valueSet respected"
     },
     "textDocument/definition": {
       "implemented": false,
@@ -121,6 +123,11 @@
     "positionEncoding": {
       "negotiated": "utf-8 only when the client offers it first; otherwise UTF-16 (default, field omitted)",
       "test": "test/capabilities_test.sh"
+    },
+    "documentSymbolProvider": {
+      "shapes": "flat SymbolInformation; hierarchical when hierarchicalDocumentSymbolSupport",
+      "valueSet": "honored via per-category fallbacks",
+      "test": "test/document_symbols_test.sh"
     }
   },
   "legend": {

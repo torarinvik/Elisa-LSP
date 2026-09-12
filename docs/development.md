@@ -152,6 +152,20 @@ overflows can never masquerade as unversioned. Hover lines use the same
 checked parse (anything non-integer hovers null). `test/numerics_test.sh`
 pins rejection plus post-reject recovery.
 
+## Document symbols (F02)
+
+`src/features/document_symbols.elisa` renders the frontend's file symbol
+table as an outline. Only symbols with `line > 0` (real file content) are
+emitted — prelude/primitive scope is excluded. Shape follows the session:
+flat `SymbolInformation` by default, hierarchical `DocumentSymbol` (with
+`children`) only when the client sets
+`hierarchicalDocumentSymbolSupport`. `selectionRange` is the exact name span
+when the symbol's byte `offset` validates inside its own line, else the line
+extent; the enclosing `range` is the declaration line (declaration end lines
+and enum variants await A02). The client's `symbolKind.valueSet` is honored by
+clamping each category through fallbacks, and `Unknown` kinds are omitted
+rather than guessed. Floors: `test/document_symbols_test.sh`.
+
 ## Region/lifetime constraints
 
 The frontend's region system rejects storing a function-local container into
