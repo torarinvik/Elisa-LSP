@@ -131,13 +131,20 @@
       "test": "test/selection_test.sh",
       "module": "src/features/selection.elisa:handle_selection_range",
       "note": "word -> line -> enclosing indentation blocks -> document; strict containment; UTF-16/UTF-8 via Positions"
+    },
+    "textDocument/semanticTokens/range": {
+      "implemented": true,
+      "test": "test/semantic_range_test.sh",
+      "module": "src/semtokens.elisa:handle_semantic_tokens_range",
+      "note": "filters the cached full result; re-encodes from document zero"
     }
   },
   "capabilities_advertised": {
     "textDocumentSync": 1,
     "semanticTokensProvider": {
       "legend": "src/semtokens.elisa:semtok_legend_json (48 custom types)",
-      "full": true
+      "full": true,
+      "range": true
     },
     "hoverProvider": {
       "markdown": "default",

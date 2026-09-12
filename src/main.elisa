@@ -1389,7 +1389,7 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
                     caps: mutable darray[u8] = []
                     push_str(caps, "{\"capabilities\":{\"textDocumentSync\":1,\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":")
                     push_str(caps, semtok_legend_json())
-                    push_str(caps, ",\"tokenModifiers\":[]},\"full\":true},\"hoverProvider\":true,\"documentSymbolProvider\":true,\"foldingRangeProvider\":true,\"selectionRangeProvider\":true")
+                    push_str(caps, ",\"tokenModifiers\":[]},\"full\":true,\"range\":true},\"hoverProvider\":true,\"documentSymbolProvider\":true,\"foldingRangeProvider\":true,\"selectionRangeProvider\":true")
                     push_str(caps, ",\"positionEncoding\":\"utf-8\"") if pos_utf8
                     push_str(caps, "},\"serverInfo\":{\"name\":\"elisa-lsp\",\"version\":\"0.1.0\"}}")
                     send_result_body(id_raw, caps)
@@ -1430,6 +1430,15 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
                     send_error(id_raw, -32002, "ServerNotInitialized") if has_id
                 else:
                     handle_semantic_tokens(root, documents, document_storage, document_heads)
+            "textDocument/semanticTokens/range":
+                if shutdown_requested:
+                    id_raw: darray[u8] = extract_id(root)
+                    send_error(id_raw, -32600, "InvalidRequest: server is shutting down") if has_id
+                elif not initialized:
+                    id_raw: darray[u8] = extract_id(root)
+                    send_error(id_raw, -32002, "ServerNotInitialized") if has_id
+                else:
+                    handle_semantic_tokens_range(root, documents, document_storage, document_heads)
             "textDocument/hover":
                 if shutdown_requested:
                     id_raw: darray[u8] = extract_id(root)

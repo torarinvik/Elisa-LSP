@@ -323,6 +323,15 @@ bodies) through every provider. Note: this covers the embedded frontend; a
 process-level frontend crash/hang (the plan's worker-containment option) is
 not yet isolated.
 
+## Semantic token ranges (H05)
+
+`textDocument/semanticTokens/range` filters the cached full result instead of
+re-analyzing: `semtok_filter_range` decodes the delta-encoded array, keeps
+entries intersecting the requested range, and re-encodes from document zero
+(never the range start), so the output is a position-compatible subset of the
+full result. Malformed/negative ranges clamp to the document; unknown URIs and
+empty ranges return `{"data":[]}`. Floors: `test/semantic_range_test.sh`.
+
 ## Region/lifetime constraints
 
 The frontend's region system rejects storing a function-local container into

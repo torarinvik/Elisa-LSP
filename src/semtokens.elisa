@@ -610,3 +610,129 @@ def send_result_storage(id_raw: darray[u8], storage: darray[u8]&, start: usize, 
         body.push(storage[start + i])
     push_str(body, "}")
     send_message(body)
+
+
+# ---- H05: semanticTokens/range ------------------------------------------------
+#
+# The cached full result is a delta-encoded `{"data":[...]}` array in document
+# coordinates. A range request decodes it, keeps entries intersecting the
+# requested range, and re-encodes with the SAME document-zero baseline (per LSP,
+# the first token is relative to line/character zero, not the range start), so
+# the filtered array is a valid prefix-compatible subset of the full one.
+# Modifiers are always 0 here and are preserved positionally.
+
+def semtok_parse_int(data: sview, pos: mutable usize&) -> i64:
+    n: mutable i64 = 0
+    neg: mutable bool = false
+    if pos[0] < data.len.usize() and sview_at(data, pos[0]) == 45:
+        neg <- true
+        pos[0] <- pos[0] + 1
+    while pos[0] < data.len.usize():
+        d: u8 = sview_at(data, pos[0])
+        break if d < 48 or d > 57
+        n <- n * 10 + (d.i64() - 48)
+        pos[0] <- pos[0] + 1
+    return (0 - n) if neg else n
+
+
+def semtok_filter_range(cached: sview, sline: i64, schar: i64, eline: i64, echar: i64) -> darray[u8]:
+    can Memory.Allocate, Abort.Panic:
+        # Locate `[` .. `]` of the data array.
+        lb: mutable i64 = -1
+        rb: mutable i64 = -1
+        j: mutable usize = 0
+        while j < cached.len.usize():
+            c: u8 = sview_at(cached, j)
+            lb <- j.i64() if c == 91 and lb < 0
+            rb <- j.i64() if c == 93
+            j <- j + 1
+        body: mutable darray[u8] = []
+        push_str(body, "{\"data\":[")
+        if lb < 0 or rb <= lb:
+            push_str(body, "]}")
+            return body
+        data: sview = string_view_slice(cached, lb + 1, rb)
+        pos: mutable usize = 0
+        cur_line: mutable i64 = 0
+        cur_col: mutable i64 = 0
+        # Baseline for the filtered output (document zero), independent of the
+        # requested range start.
+        prev_line: mutable i64 = 0
+        prev_col: mutable i64 = 0
+        first: mutable bool = true
+        while pos < data.len.usize():
+            dl: i64 = semtok_parse_int(data, pos)
+            pos <- pos + 1 if pos < data.len.usize() and sview_at(data, pos) == 44
+            dc: i64 = semtok_parse_int(data, pos)
+            pos <- pos + 1 if pos < data.len.usize() and sview_at(data, pos) == 44
+            ln: i64 = semtok_parse_int(data, pos)
+            pos <- pos + 1 if pos < data.len.usize() and sview_at(data, pos) == 44
+            tt: i64 = semtok_parse_int(data, pos)
+            pos <- pos + 1 if pos < data.len.usize() and sview_at(data, pos) == 44
+            _mods: i64 = semtok_parse_int(data, pos)
+            pos <- pos + 1 if pos < data.len.usize() and sview_at(data, pos) == 44
+            cur_line <- cur_line + dl
+            if dl == 0:
+                cur_col <- cur_col + dc
+            else:
+                cur_col <- dc
+            # Intersect [cur_col, cur_col+ln) on cur_line with the range.
+            if cur_line >= sline and cur_line <= eline:
+                starts_before_end: bool = cur_line < eline or cur_col < echar
+                ends_after_start: bool = cur_line > sline or cur_col + ln > schar
+                if starts_before_end and ends_after_start:
+                    odl: i64 = cur_line - prev_line
+                    odc: mutable i64 = cur_col
+                    odc <- cur_col - prev_col if odl == 0
+                    body.push(44) if not first
+                    push_int(body, odl)
+                    body.push(44)
+                    push_int(body, odc)
+                    body.push(44)
+                    push_int(body, ln)
+                    body.push(44)
+                    push_int(body, tt)
+                    push_str(body, ",0")
+                    first <- false
+                    prev_line <- cur_line
+                    prev_col <- cur_col
+        push_str(body, "]}")
+        return body
+
+
+def handle_semantic_tokens_range(root: Json::Value, documents: darray[LspDocument]&, document_storage: darray[u8]&, document_heads: dict[u64, u32]&) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    id_raw: darray[u8] = extract_id(root)
+    uri_bytes: mutable darray[u8] = []
+    canon_bytes: mutable darray[u8] = []
+    uri: sview = request_identity(root, uri_bytes, canon_bytes)
+    found: i64 = document_index(documents, document_storage, document_heads, uri)
+    if found < 0 or not documents[found.usize()].open or documents[found.usize()].text_len <= 1:
+        send_result(id_raw, "{\"data\":[]}")
+        return
+    sline: mutable i64 = 0
+    schar: mutable i64 = 0
+    eline: mutable i64 = 0
+    echar: mutable i64 = 0
+    if Json::get(root, "params") is params:
+        if Json::get(params, "range") is rng:
+            if Json::get(rng, "start") is s:
+                if Json::get(s, "line") is v:
+                    sline <- Json::as_i64_checked(v)
+                if Json::get(s, "character") is v:
+                    schar <- Json::as_i64_checked(v)
+            if Json::get(rng, "end") is e:
+                if Json::get(e, "line") is v:
+                    eline <- Json::as_i64_checked(v)
+                if Json::get(e, "character") is v:
+                    echar <- Json::as_i64_checked(v)
+    sline <- 0 if sline < 0
+    schar <- 0 if schar < 0
+    eline <- 0 if eline < 0
+    echar <- 0 if echar < 0
+    if eline < sline or (eline == sline and echar < schar):
+        eline <- sline
+        echar <- schar
+    document: LspDocument = documents[found.usize()]
+    cached: sview = sview(&document_storage[document.semantic_start], 0, document.semantic_len.i64())
+    result: darray[u8] = semtok_filter_range(cached, sline, schar, eline, echar)
+    send_result_body(id_raw, result)
