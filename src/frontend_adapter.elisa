@@ -27,6 +27,17 @@ def frontend_contract_version() -> i64:
     return 1
 
 
+# FNV-1a over a name; the symbol-index bucket key. Self-contained so the
+# adapter (and its contract fixture) does not depend on other LSP modules.
+def adapter_name_hash(name: sview) -> u64:
+    hash: mutable u64 = 14695981039346656037
+    i: mutable usize = 0
+    while i < name.len.usize():
+        hash <- (hash ^ sview_at(name, i).u64()) * 1099511628211
+        i <- i + 1
+    return hash
+
+
 # Iterate the file's declaration symbols without exposing the storage field.
 def symbol_count(table: Semantic::SymbolTable&) -> usize:
     return table.symbols.count
@@ -55,6 +66,64 @@ def occurrence_kind_at(table: Semantic::SymbolTable&, line: u32, name: sview) ->
             return table.ref_kind[i].i64()
         i <- i + 1
     return OCC_UNKNOWN
+
+
+# H04 occurrence index: hash-chain the frontend's occurrence log by source line
+# so a lookup touches only the entries on that line instead of every entry in
+# the file. Built once per analysis; the linear `occurrence_kind_at` remains the
+# reference implementation (and the contract fixture's oracle).
+def occurrence_index_build(table: Semantic::SymbolTable&, line_heads: mutable dict[i64, i64]&, ref_next: mutable darray[i64]&) -> void:
+    can Memory.Allocate, Abort.Panic:
+        i: mutable usize = 0
+        while i < table.ref_line.count:
+            ref_next.push(-1)
+            i <- i + 1
+        i <- 0
+        while i < table.ref_line.count:
+            key: i64 = table.ref_line[i].i64()
+            previous: mutable i64 = -1
+            previous <- head if line_heads.get(key) is head
+            ref_next[i] <- previous
+            line_heads <- line_heads.put(key, i.i64())
+            i <- i + 1
+
+
+def occurrence_kind_indexed(table: Semantic::SymbolTable&, line_heads: dict[i64, i64]&, ref_next: darray[i64]&, line: u32, name: sview) -> i64:
+    if line_heads.get(line.i64()) is head:
+        current: mutable i64 = head
+        while current >= 0:
+            index: usize = current.usize()
+            return table.ref_kind[index].i64() if string_views_eq(table.ref_name[index], name) != 0
+            current <- ref_next[index]
+    return OCC_UNKNOWN
+
+
+# H04 symbol index: hash-chain file symbols by name. `symbol_index_of`'s linear
+# scan is the reference; this makes a repeated unknown/type lookup O(1) average.
+def symbol_index_build(table: Semantic::SymbolTable&, name_heads: mutable dict[u64, i64]&, sym_next: mutable darray[i64]&) -> void:
+    can Memory.Allocate, Abort.Panic:
+        i: mutable usize = 0
+        while i < table.symbols.count:
+            sym_next.push(-1)
+            i <- i + 1
+        i <- 0
+        while i < table.symbols.count:
+            key: u64 = adapter_name_hash(table.symbols[i].name)
+            previous: mutable i64 = -1
+            previous <- head if name_heads.get(key) is head
+            sym_next[i] <- previous
+            name_heads <- name_heads.put(key, i.i64())
+            i <- i + 1
+
+
+def symbol_index_of_indexed(table: Semantic::SymbolTable&, name_heads: dict[u64, i64]&, sym_next: darray[i64]&, name: sview) -> i64:
+    if name_heads.get(adapter_name_hash(name)) is head:
+        current: mutable i64 = head
+        while current >= 0:
+            index: usize = current.usize()
+            return current if string_views_eq(table.symbols[index].name, name) != 0
+            current <- sym_next[index]
+    return -1
 
 
 # Enum variants live in parallel registries, not ordinary Symbol rows.

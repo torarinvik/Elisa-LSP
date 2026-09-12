@@ -59,24 +59,18 @@ def docsym_push_range(body: mutable darray[u8]&, line0: i64, scol: i64, ecol: i6
     body.push_str("}}")
 
 
-def docsym_append(body: mutable darray[u8]&, uri: sview, sym: Semantic::Symbol, src: u8&, src_len: usize, utf8: bool, kind: i64, hier: bool) -> void can[Memory.Allocate, Abort.Panic]:
-    nlines: i64 = Positions::line_count(src, src_len)
-    last: i64 = nlines - 1
-    line0: mutable i64 = sym.line.i64() - 1 if sym.line > 0 else 0
-    line0 <- last if line0 > last
-    line0 <- 0 if line0 < 0
-    w: i64 = Positions::line_unit_length(src, src_len, line0, utf8)
+def docsym_append(body: mutable darray[u8]&, uri: sview, sym: Semantic::Symbol, src: u8&, utf8: bool, kind: i64, hier: bool, line0: i64, lstart: usize, llen: i64, w: i64) -> void can[Memory.Allocate, Abort.Panic]:
     # selectionRange: exact name span only when `offset` validates inside the
-    # symbol's own line; otherwise the line extent (never invented).
+    # symbol's own line; otherwise the line extent (never invented). The line
+    # cursor is supplied by the caller (H04) so no per-symbol file rescan.
     scol: mutable i64 = 0
     ecol: mutable i64 = w
     if sym.offset > 0:
-        lstart: usize = Positions::line_start_offset(src, src_len, line0)
-        llen_b: usize = Positions::line_byte_length(src, src_len, line0).usize()
         off: usize = sym.offset.usize()
         name_b: usize = sview_len(sym.name)
-        if off >= lstart and off + name_b <= lstart + llen_b:
-            scol <- Positions::byte_col_to_units(src, src_len, line0, (off - lstart).i64(), utf8)
+        if off >= lstart and off + name_b <= lstart + llen.usize():
+            scol_bytes: usize = off - lstart
+            scol <- scol_bytes.i64() if utf8 else Positions::utf16_units_for_bytes(src, lstart, scol_bytes)
             ecol <- scol + Positions::sview_unit_length(sym.name)
             ecol <- w if ecol > w
     body.push_str("{\"name\":\"")
@@ -103,7 +97,14 @@ def build_symbols_body(uri: sview, table: Semantic::SymbolTable, src: u8&, src_l
     can Memory.Allocate, Abort.Panic:
         body: mutable darray[u8] = []
         body.push_str("[")
+        nlines: i64 = Positions::line_count(src, src_len)
+        last: i64 = nlines - 1
         first: mutable bool = true
+        # H04: symbols are in definition order, so stream a line cursor rather
+        # than rescanning to each line from offset 0. A backward jump (rare)
+        # falls back to the direct lookup.
+        cur_line: mutable i64 = 0
+        cur_start: mutable usize = 0
         i: mutable usize = 0
         while i < symbol_count(table):
             sym: Semantic::Symbol = symbol_at(table, i)
@@ -111,8 +112,27 @@ def build_symbols_body(uri: sview, table: Semantic::SymbolTable, src: u8&, src_l
             if sym.line > 0:
                 kind: i64 = docsym_select_kind(sym.kind, allowed)
                 if kind >= 0:
+                    line0: mutable i64 = sym.line.i64() - 1
+                    line0 <- last if line0 > last
+                    line0 <- 0 if line0 < 0
+                    lstart: mutable usize = 0
+                    if line0 >= cur_line:
+                        while cur_line < line0:
+                            while cur_start < src_len and src[cur_start] != 10:
+                                cur_start <- cur_start + 1
+                            cur_start <- cur_start + 1 if cur_start < src_len
+                            cur_line <- cur_line + 1
+                        lstart <- cur_start
+                    else:
+                        lstart <- Positions::line_start_offset(src, src_len, line0)
+                    lend: mutable usize = lstart
+                    while lend < src_len and src[lend] != 10:
+                        lend <- lend + 1
+                    lend <- lend - 1 if lend > lstart and src[lend - 1] == 13
+                    llen: i64 = (lend - lstart).i64()
+                    w: i64 = llen if utf8 else Positions::utf16_units_for_bytes(src, lstart, llen.usize())
                     body.push_str(",") if not first
-                    docsym_append(body, uri, sym, src, src_len, utf8, kind, hier)
+                    docsym_append(body, uri, sym, src, utf8, kind, hier, line0, lstart, llen, w)
                     first <- false
             i <- i + 1
         body.push_str("]")

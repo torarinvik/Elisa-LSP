@@ -106,8 +106,8 @@ def semtok_ident_class(text: sview) -> i64 can[Memory.Allocate, Abort.Panic]:
 # [S] layer: map a name to the token type implied by its top-level declaration
 # (Struct/Enum/Alias→type.user, Func/Extern→fn.use, Const→global, Module→module,
 # Law→decl). -1 = no match. Declaration lookup goes through the frontend adapter.
-def symbol_ttype(table: Semantic::SymbolTable&, name: sview) -> i64:
-    idx: i64 = symbol_index_of(table, name)
+def symbol_ttype(table: Semantic::SymbolTable&, name_heads: dict[u64, i64]&, sym_next: darray[i64]&, name: sview) -> i64:
+    idx: i64 = symbol_index_of_indexed(table, name_heads, sym_next, name)
     return -1 if idx < 0
     k: Semantic::SymbolKind = symbol_at(table, idx.usize()).kind
     return when k:
@@ -119,9 +119,10 @@ def symbol_ttype(table: Semantic::SymbolTable&, name: sview) -> i64:
         _ -> -1
 
 
-# Resolve a param/local occurrence through the adapter's named roles.
-def occurrence_ttype(table: Semantic::SymbolTable&, line: u32, name: sview) -> i64:
-    occ: i64 = occurrence_kind_at(table, line, name)
+# Resolve a param/local occurrence through the adapter's named roles (H04:
+# indexed by line, not a full scan per identifier).
+def occurrence_ttype(table: Semantic::SymbolTable&, line_heads: dict[i64, i64]&, ref_next: darray[i64]&, line: u32, name: sview) -> i64:
+    occ: i64 = occurrence_kind_indexed(table, line_heads, ref_next, line, name)
     if occ == OCC_PARAM:
         return 1
     if occ == OCC_LOCAL:
@@ -132,7 +133,7 @@ def occurrence_ttype(table: Semantic::SymbolTable&, line: u32, name: sview) -> i
 # Classify one token; -1 = no token emitted (IDE default styling). `prev`/`next`
 # are the neighboring token kinds; `table` is the real symbol table so bare
 # references take their declared kind ([S] layer) rather than a lexical guess.
-def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: Lexer::TokenKind, in_effect: bool, table: Semantic::SymbolTable&, qualified_owner: sview, shorthand_member: bool) -> i64 can[Memory.Allocate, Abort.Panic]:
+def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: Lexer::TokenKind, in_effect: bool, table: Semantic::SymbolTable&, qualified_owner: sview, shorthand_member: bool, name_heads: dict[u64, i64]&, sym_next: darray[i64]&, line_heads: dict[i64, i64]&, ref_next: darray[i64]&) -> i64 can[Memory.Allocate, Abort.Panic]:
     can Memory.Allocate, Abort.Panic:
         kind: Lexer::TokenKind = tok.kind
         match kind:
@@ -155,7 +156,7 @@ def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: L
                 # named `can`, `move`, or `type` is a binding, not its keyword
                 # meaning. Consulted before the text classifier and the symbol
                 # table, so shadowing a top-level name also wins.
-                occ: i64 = occurrence_ttype(table, tok.line, text)
+                occ: i64 = occurrence_ttype(table, line_heads, ref_next, tok.line, text)
                 ST_BIND_PARAM return if occ == 1
                 ST_BIND_LOCAL return if occ == 2
                 by_text: i64 = semtok_ident_class(text)
@@ -168,7 +169,7 @@ def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: L
                 # [S] layer: a bare reference matching a real top-level declaration
                 # takes that declaration's kind (so `Point(...)` is a type, a bare
                 # function value is fn.use, a const is a global, …).
-                by_symbol: i64 = symbol_ttype(table, text)
+                by_symbol: i64 = symbol_ttype(table, name_heads, sym_next, text)
                 by_symbol return if by_symbol >= 0
                 # Bare variants (including bare match arms) are registry-resolved,
                 # not guessed from case.
@@ -287,7 +288,7 @@ struct SemTok:
 # `{d.name}` colours its identifiers, operators, and nested literals. Mirrors the
 # parser's scan (parser_expr.elisa `fstring_expr`) so the highlighted spans match
 # what actually parses. Single-line; columns are byte-based (as elsewhere here).
-def semtok_fstring_spans(entries: mutable darray[SemTok]&, tok: Lexer::Token, src: u8&, src_len: usize, table: Semantic::SymbolTable&) -> void can[Memory.Allocate, Abort.Panic]:
+def semtok_fstring_spans(entries: mutable darray[SemTok]&, tok: Lexer::Token, src: u8&, src_len: usize, table: Semantic::SymbolTable&, name_heads: dict[u64, i64]&, sym_next: darray[i64]&, line_heads: dict[i64, i64]&, ref_next: darray[i64]&) -> void can[Memory.Allocate, Abort.Panic]:
     can Memory.Allocate, Abort.Panic:
         line: i64 = tok.line.i64() - 1
         base_col: i64 = tok.column.i64() - 1     # 0-based column of the `f`
@@ -353,7 +354,7 @@ def semtok_fstring_spans(entries: mutable darray[SemTok]&, tok: Lexer::Token, sr
                                 qualified_owner <- Lexer::text_or_empty(subtoks[s - 2], src)
                             else:
                                 shorthand_member <- true
-                        stt: i64 = semtok_classify(st, src, sp, sn, false, table, qualified_owner, shorthand_member)
+                        stt: i64 = semtok_classify(st, src, sp, sn, false, table, qualified_owner, shorthand_member, name_heads, sym_next, line_heads, ref_next)
                         sln: i64 = semtok_display_length(st, src, src_len)
                         if stt >= 0 and sln > 0:
                             sub_col: i64 = base_col + 2 + (st.start.usize() - lo).i64()
@@ -379,7 +380,7 @@ def semtok_fstring_spans(entries: mutable darray[SemTok]&, tok: Lexer::Token, sr
 
 # Classify the main token stream into absolute-position entries, tracking the
 # `can[…]` / `trusted …` effect-list context so effect names colour correctly.
-def semtok_main_entries(src: u8&, src_len: usize, table: Semantic::SymbolTable&) -> darray[SemTok]:
+def semtok_main_entries(src: u8&, src_len: usize, table: Semantic::SymbolTable&, name_heads: dict[u64, i64]&, sym_next: darray[i64]&, line_heads: dict[i64, i64]&, ref_next: darray[i64]&) -> darray[SemTok]:
     can Memory.Allocate, Abort.Panic:
         tokens: darray[Lexer::Token] = Lexer::frontend_tokenize_with_length(src, src, src_len)
         entries: mutable darray[SemTok] = []
@@ -401,7 +402,7 @@ def semtok_main_entries(src: u8&, src_len: usize, table: Semantic::SymbolTable&)
             if tok.kind == Lexer::TokenKind.FString:
                 # F-strings expand into multiple spans (literal chunks + coloured
                 # `{EXPR}` interpolations) rather than one whole-token span.
-                semtok_fstring_spans(entries, tok, src, src_len, table)
+                semtok_fstring_spans(entries, tok, src, src_len, table, name_heads, sym_next, line_heads, ref_next)
             else:
                 qualified_owner: mutable sview = sview("", 0, 0)
                 shorthand_member: mutable bool = false
@@ -410,7 +411,7 @@ def semtok_main_entries(src: u8&, src_len: usize, table: Semantic::SymbolTable&)
                         qualified_owner <- Lexer::text_or_empty(tokens[i - 2], src)
                     else:
                         shorthand_member <- true
-                ttype: i64 = semtok_classify(tok, src, prev_kind, next_kind, in_effect, table, qualified_owner, shorthand_member)
+                ttype: i64 = semtok_classify(tok, src, prev_kind, next_kind, in_effect, table, qualified_owner, shorthand_member, name_heads, sym_next, line_heads, ref_next)
                 emit_len: i64 = semtok_display_length(tok, src, src_len)
                 entries.push(SemTok{line: tok.line.i64() - 1, col: tok.column.i64() - 1, length: emit_len, ttype: ttype}) if ttype >= 0 and emit_len > 0
             # Advance the effect-list state machine for the NEXT token.
@@ -500,7 +501,15 @@ def semtok_normalize(list: darray[SemTok], src: u8&, src_len: usize) -> darray[S
 # frontend pass per source update.
 def semtok_data_body_with_table(src: u8&, src_len: usize, table: Semantic::SymbolTable&, utf8: bool) -> darray[u8]:
     can Memory.Allocate, Abort.Panic:
-        entries: darray[SemTok] = semtok_normalize(semtok_main_entries(src, src_len, table), src, src_len)
+        # H04: build name/line indexes once per analysis so classification is
+        # O(1) average instead of a full scan per identifier.
+        name_heads: mutable dict[u64, i64] = {}
+        sym_next: mutable darray[i64] = []
+        line_heads: mutable dict[i64, i64] = {}
+        ref_next: mutable darray[i64] = []
+        symbol_index_build(table, name_heads, sym_next)
+        occurrence_index_build(table, line_heads, ref_next)
+        entries: darray[SemTok] = semtok_normalize(semtok_main_entries(src, src_len, table, name_heads, sym_next, line_heads, ref_next), src, src_len)
         comments: darray[SemTok] = semtok_normalize(semtok_comment_entries(src, src_len), src, src_len)
         body: mutable darray[u8] = []
         push_str(body, "{\"data\":[")
@@ -509,6 +518,11 @@ def semtok_data_body_with_table(src: u8&, src_len: usize, table: Semantic::Symbo
         first: mutable bool = true
         a: mutable usize = 0
         b: mutable usize = 0
+        # H04/U01: tokens are in source order, so advance a single line cursor
+        # instead of re-scanning to each line start from offset 0 (which made
+        # encoding O(tokens x file size)).
+        cur_line: mutable i64 = 0
+        cur_start: mutable usize = 0
         while a < entries.count or b < comments.count:
             take_a: mutable bool = true
             take_a <- false if a >= entries.count
@@ -523,10 +537,19 @@ def semtok_data_body_with_table(src: u8&, src_len: usize, table: Semantic::Symbo
             else:
                 e <- comments[b]
                 b <- b + 1
-            lstart: usize = Positions::line_start_offset(src, src_len, e.line)
-            llen: i64 = Positions::line_byte_length(src, src_len, e.line)
+            while cur_line < e.line:
+                while cur_start < src_len and src[cur_start] != 10:
+                    cur_start <- cur_start + 1
+                cur_start <- cur_start + 1 if cur_start < src_len
+                cur_line <- cur_line + 1
+            lstart: usize = cur_start
+            lend: mutable usize = cur_start
+            while lend < src_len and src[lend] != 10:
+                lend <- lend + 1
+            lend <- lend - 1 if lend > lstart and src[lend - 1] == 13
+            llen: i64 = (lend - lstart).i64()
             bcol: i64 = 0 if e.col < 0 else (llen if e.col > llen else e.col)
-            ucol: i64 = Positions::byte_col_to_units(src, src_len, e.line, e.col, utf8)
+            ucol: i64 = bcol if utf8 else Positions::utf16_units_for_bytes(src, lstart, bcol.usize())
             ulen: i64 = Positions::span_unit_length(src, src_len, lstart + bcol.usize(), e.length.usize(), utf8)
             dl: i64 = e.line - prev_line
             dc: mutable i64 = ucol
