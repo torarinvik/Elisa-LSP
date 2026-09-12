@@ -213,6 +213,16 @@ splits any span wider than its start line (multiline comments/strings) into
 valid per-line pieces that preserve order, never overlap, and exclude a CRLF's
 CR. Floors: `test/multiline_tokens_test.sh` (LF, CRLF, and Unicode cases).
 
+## Semantic precedence (H02)
+
+A resolved param/local binding (from the frontend occurrence log, via the
+adapter) is authoritative for an identifier and is consulted before the
+keyword/type spelling classifier, so a contextual keyword legally used as a
+name (`get`, `of`, `at`) keeps its binding kind, and a local that shadows a
+top-level type is tinted as that local. Member access after `.` remains a
+field/method decision (also fixed before spelling). Effect-list identifiers
+and real keyword tokens are unaffected. Floors: `test/precedence_test.sh`.
+
 ## Region/lifetime constraints
 
 The frontend's region system rejects storing a function-local container into

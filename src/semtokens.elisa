@@ -140,13 +140,6 @@ def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: L
                 # `def NAME` — function definition name (reliable lexically).
                 ST_FN_DEF return if prev == Lexer::TokenKind.Def
                 text: sview = Lexer::text_or_empty(tok, src)
-                by_text: i64 = semtok_ident_class(text)
-                # Known keyword/type/effect text wins first, so e.g. `Unsafe` keeps
-                # its red-shifted effect color even inside an effect list.
-                by_text return if by_text >= 0
-                # Inside a `can[...]`/`trusted …` list every remaining identifier
-                # names an effect (Memory.Allocate, Console, …) — tint the family.
-                ST_EFFECT_NAME return if in_effect
                 # Decorator name right after `@` (the At token colors too).
                 ST_META_DECORATOR return if prev == Lexer::TokenKind.At
                 # A qualified enum member is a variant selector, not a field/function.
@@ -157,12 +150,21 @@ def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: L
                 # for that declaration.
                 ST_FN_USE return if prev == Lexer::TokenKind.Dot and next == Lexer::TokenKind.LParen
                 ST_BIND_FIELD return if prev == Lexer::TokenKind.Dot
-                # [S] per-occurrence: a param or local binding, from the resolver's
-                # log. Consulted BEFORE the global symbol table, so a local that
-                # shadows a top-level name correctly wins.
+                # H02 precedence: a RESOLVED param/local binding is authoritative
+                # and must beat keyword/type/effect spelling. A binding legally
+                # named `can`, `move`, or `type` is a binding, not its keyword
+                # meaning. Consulted before the text classifier and the symbol
+                # table, so shadowing a top-level name also wins.
                 occ: i64 = occurrence_ttype(table, tok.line, text)
                 ST_BIND_PARAM return if occ == 1
                 ST_BIND_LOCAL return if occ == 2
+                by_text: i64 = semtok_ident_class(text)
+                # Known keyword/type/effect text wins next, so e.g. `Unsafe` keeps
+                # its red-shifted effect color even inside an effect list.
+                by_text return if by_text >= 0
+                # Inside a `can[...]`/`trusted …` list every remaining identifier
+                # names an effect (Memory.Allocate, Console, …) — tint the family.
+                ST_EFFECT_NAME return if in_effect
                 # [S] layer: a bare reference matching a real top-level declaration
                 # takes that declaration's kind (so `Point(...)` is a type, a bare
                 # function value is fn.use, a const is a global, …).
