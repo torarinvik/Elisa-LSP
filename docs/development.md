@@ -78,14 +78,24 @@ to accommodate its gaps.
 
 ## Sync policy (D02)
 
-The server advertises full synchronization (`textDocumentSync: 1`) and means
-it: `didChange` validates **every** `contentChanges` entry in order and uses
-the last. Any entry carrying `range`/`rangeLength`, a missing/non-string
-`text`, or an empty change list rejects the whole notification without
-mutating the store. Stale/equal versions are likewise ignored (D01), and
-`didChange` for a never-opened URI is dropped. Incremental sync is **not**
-advertised until the reference-model tests for it pass — a fragment must
-never be mistaken for the whole document.
+`textDocumentSync` advertises `{openClose, change: 2}`: full **and**
+incremental edits. `apply_content_changes` (in `src/main.elisa`) applies a
+notification's `contentChanges` in order to a working copy — each ranged entry
+is converted against the text produced by the preceding one — and the whole
+list is committed only if every entry is well-formed. Entries without a `range`
+are full replacements, so full-sync clients still work. An inverted or
+out-of-bounds range rejects the notification without mutating the document.
+`test/incremental_sync_test.sh` is the reference model: a sequenced edit
+session must converge to the same analysis as opening the final text fresh.
+
+## Malformed-output guard
+
+`json_escape_utf8` (in `src/diagnostics.elisa`) is the shared escaper for every
+source-derived string: ASCII goes through `json_escape_byte`, while multi-byte
+UTF-8 is copied only when well-formed (valid continuations, no overlong form,
+no surrogate, ≤ U+10FFFF) and otherwise replaced with U+FFFD. This guarantees a
+malformed source span (e.g. an identifier cutting an emoji) can never make an
+outgoing frame invalid UTF-8/JSON.
 
 ## Diagnostic ranges (G01)
 

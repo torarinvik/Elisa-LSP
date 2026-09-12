@@ -244,8 +244,7 @@ def general_hover_body(document: LspDocument, storage: darray[u8]&, line_no: i64
         body: mutable darray[u8] = []
         push_str(body, "{\"contents\":{\"kind\":\"markdown\",\"value\":\"") if markdown
         push_str(body, "{\"contents\":{\"kind\":\"plaintext\",\"value\":\"") if not markdown
-        for b in value:
-            json_escape_byte(body, b)
+        json_escape_utf8(body, sview(&value[0], 0, value.count.i64()))
         push_str(body, "\"},\"range\":")
         docsym_push_range(body, line_no, scol, ecol)
         push_str(body, "}")

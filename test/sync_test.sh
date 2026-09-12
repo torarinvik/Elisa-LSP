@@ -49,7 +49,8 @@ assert res[2] and res[2].get("data"), "last full replacement must win"
 diags = [n for n in notifs if n.get("method")=="textDocument/publishDiagnostics" and n["params"]["uri"]==uri]
 assert diags and diags[-1]["params"]["diagnostics"] == [], f"GOOD tail must be clean: {diags[-1] if diags else None}"
 
-# 2. Ranged change while only full sync is advertised: rejected, no mutation.
+# 2. Ranged change (incremental sync, advertised): applied against the current
+#    text; renaming the declared function changes its tokens.
 m = frame({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})
 m += frame({"jsonrpc":"2.0","method":"textDocument/didOpen",
             "params":{"textDocument":{"uri":uri,"languageId":"Elisa","version":1,"text":GOOD}}})
@@ -57,13 +58,18 @@ m += frame({"jsonrpc":"2.0","id":2,"method":"textDocument/semanticTokens/full",
             "params":{"textDocument":{"uri":uri}}})
 m += frame({"jsonrpc":"2.0","method":"textDocument/didChange",
             "params":{"textDocument":{"uri":uri,"version":2},
-                      "contentChanges":[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}},"text":BAD}]}})
-m += frame({"jsonrpc":"2.0","id":3,"method":"textDocument/semanticTokens/full",
+                      "contentChanges":[{"range":{"start":{"line":0,"character":4},"end":{"line":0,"character":7}},"text":"longer"}]}})
+m += frame({"jsonrpc":"2.0","id":3,"method":"textDocument/documentSymbol",
+            "params":{"textDocument":{"uri":uri}}})
+m += frame({"jsonrpc":"2.0","id":4,"method":"textDocument/semanticTokens/full",
             "params":{"textDocument":{"uri":uri}}})
 m += frame({"jsonrpc":"2.0","id":9,"method":"shutdown"})
 m += frame({"jsonrpc":"2.0","method":"exit"})
 res, _ = parse(run(m))
-assert res[3] == res[2] and res[2].get("data"), "ranged change must not mutate full-sync document"
+assert res[4] and res[4].get("data"), "ranged edit must keep the document analyzable"
+assert res[4] != res[2], "ranged rename must change the token stream"
+names = [s["name"] for s in (res[3] or [])]
+assert "longer" in names, f"ranged rename must reach the symbol table: {names}"
 
 # 3. CRLF fidelity: bytes preserved exactly (the frontend itself reports the
 # CR as a token, which proves the \r reached analysis intact, not normalized).
@@ -101,5 +107,5 @@ m += frame({"jsonrpc":"2.0","method":"exit"})
 res, _ = parse(run(m))
 assert res[3] == res[2], "malformed changes must not mutate"
 
-print("sync OK: order, ranged rejection, CRLF fidelity, malformed safety")
+print("sync OK: order, incremental apply, CRLF fidelity, malformed safety")
 PY

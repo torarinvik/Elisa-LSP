@@ -77,6 +77,60 @@ def hex_digit(n: i64) -> u8:
     return (48 + n).u8() if n < 10 else (87 + n).u8()
 
 
+# Escape a whole source-derived span as a JSON string body. Every byte < 0x80
+# goes through `json_escape_byte`; multi-byte UTF-8 is copied only when it is a
+# WELL-FORMED sequence (correct continuation bytes, no overlong form, no
+# surrogate, <= U+10FFFF). Anything invalid becomes U+FFFD. This is the
+# protocol-integrity guarantee that malformed source (e.g. an identifier span
+# cutting an emoji) can never make an outgoing frame invalid UTF-8/JSON.
+def json_escape_utf8(buffer: mutable darray[u8]&, text: sview) -> void can[Memory.Allocate, Abort.Panic]:
+    i: mutable usize = 0
+    while i < text.len.usize():
+        b: u8 = sview_at(text, i)
+        if b < 128:
+            json_escape_byte(buffer, b)
+            i <- i + 1
+            continue
+        seqlen: usize = Positions::utf8_seq_length(b)
+        valid: mutable bool = seqlen >= 2 and i + seqlen <= text.len.usize()
+        cp: mutable u32 = 0
+        if valid:
+            if seqlen == 2:
+                c1: u8 = sview_at(text, i + 1)
+                valid <- c1 >= 128 and c1 <= 191
+                cp <- ((b.u32() & 31) << 6) | (c1.u32() & 63)
+            elif seqlen == 3:
+                c1: u8 = sview_at(text, i + 1)
+                c2: u8 = sview_at(text, i + 2)
+                valid <- c1 >= 128 and c1 <= 191 and c2 >= 128 and c2 <= 191
+                cp <- ((b.u32() & 15) << 12) | ((c1.u32() & 63) << 6) | (c2.u32() & 63)
+            elif seqlen == 4:
+                c1: u8 = sview_at(text, i + 1)
+                c2: u8 = sview_at(text, i + 2)
+                c3: u8 = sview_at(text, i + 3)
+                valid <- c1 >= 128 and c1 <= 191 and c2 >= 128 and c2 <= 191 and c3 >= 128 and c3 <= 191
+                cp <- ((b.u32() & 7) << 18) | ((c1.u32() & 63) << 12) | ((c2.u32() & 63) << 6) | (c3.u32() & 63)
+            else:
+                valid <- false
+        # Reject overlong encodings, UTF-16 surrogates, and out-of-range points.
+        if valid:
+            if cp < 128:
+                valid <- false
+            elif cp >= 0xD800 and cp <= 0xDFFF:
+                valid <- false
+            elif cp > 0x10FFFF:
+                valid <- false
+        if valid:
+            k: mutable usize = 0
+            while k < seqlen:
+                buffer.push(sview_at(text, i + k))
+                k <- k + 1
+            i <- i + seqlen
+        else:
+            push_str(buffer, "\\ufffd")
+            i <- i + 1
+
+
 # Render one diagnostic as an LSP `Diagnostic` JSON object. The message text and severity
 # come straight from the frontend (`Semantic::diagnostic_message` / `diagnostic_severity`) —
 # the LSP does NOT re-derive per-kind wording or severity, so the two stay in sync as the
@@ -132,8 +186,9 @@ def diagnostic_json(d: Semantic::Diagnostic, src: u8&, src_len: usize, utf8: boo
         buffer.push_str("}},\"severity\":")
         buffer.push_int(Semantic::diagnostic_severity(d).i64())
         buffer.push_str(",\"message\":\"")
-        for b in Semantic::diagnostic_message(d):
-            json_escape_byte(buffer, b)
+        msg_bytes: darray[u8] = Semantic::diagnostic_message(d)
+        if msg_bytes.count > 0:
+            json_escape_utf8(buffer, sview(&msg_bytes[0], 0, msg_bytes.count.i64()))
         buffer.push_str("\"")
         # G03: expose the compiler's structured secondary location as LSP
         # `relatedInformation` (a duplicate declaration points at the original).
@@ -152,8 +207,7 @@ def diagnostic_json(d: Semantic::Diagnostic, src: u8&, src_len: usize, utf8: boo
                 rel_e <- byte_col_to_units(src, src_len, srel0, recol, utf8)
                 rel_e <- rel_s if rel_e < rel_s
             buffer.push_str(",\"relatedInformation\":[{\"location\":{\"uri\":\"")
-            for b in uri:
-                json_escape_byte(buffer, b)
+            json_escape_utf8(buffer, uri)
             buffer.push_str("\",\"range\":{\"start\":{\"line\":")
             buffer.push_int(srel0)
             buffer.push_str(",\"character\":")
@@ -181,8 +235,7 @@ def build_publish_body(uri: sview, table: Semantic::SymbolTable, src: u8&, src_l
     can Memory.Allocate, Abort.Panic:
         body: mutable darray[u8] = []
         body.push_str("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"")
-        for b in uri:
-            json_escape_byte(body, b)
+        json_escape_utf8(body, uri)
         if version >= 0:
             body.push_str("\",\"version\":")
             body.push_int(version)

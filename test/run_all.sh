@@ -49,6 +49,7 @@ run test/storage_reclaim_test.sh
 run test/uri_test.sh
 run test/numerics_test.sh
 run test/sync_test.sh
+run test/incremental_sync_test.sh
 run test/positions_test.sh
 run test/diagnostic_ranges_test.sh
 run test/related_info_test.sh

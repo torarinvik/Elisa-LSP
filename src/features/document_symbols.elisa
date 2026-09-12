@@ -74,8 +74,7 @@ def docsym_append(body: mutable darray[u8]&, uri: sview, sym: Semantic::Symbol, 
             ecol <- scol + Positions::sview_unit_length(sym.name)
             ecol <- w if ecol > w
     body.push_str("{\"name\":\"")
-    for b in sym.name:
-        json_escape_byte(body, b)
+    json_escape_utf8(body, sym.name)
     body.push_str("\",\"kind\":")
     body.push_int(kind)
     if hier:
@@ -86,8 +85,7 @@ def docsym_append(body: mutable darray[u8]&, uri: sview, sym: Semantic::Symbol, 
         body.push_str(",\"children\":[]}")
     else:
         body.push_str(",\"location\":{\"uri\":\"")
-        for b in uri:
-            json_escape_byte(body, b)
+        json_escape_utf8(body, uri)
         body.push_str("\",\"range\":")
         docsym_push_range(body, line0, 0, w)
         body.push_str("}}")

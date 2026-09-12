@@ -38,9 +38,9 @@
     },
     "textDocument/didChange": {
       "implemented": true,
-      "test": "test/sync_test.sh",
-      "module": "src/main.elisa:check_and_publish",
-      "note": "full-sync only (all change entries validated in order, last wins); incremental sync not advertised"
+      "test": "test/incremental_sync_test.sh",
+      "module": "src/main.elisa:apply_content_changes",
+      "note": "incremental (2) + full replacements; multi-change lists applied in order; invalid ranges reject the notification"
     },
     "textDocument/didClose": {
       "implemented": true,
@@ -140,7 +140,10 @@
     }
   },
   "capabilities_advertised": {
-    "textDocumentSync": 1,
+    "textDocumentSync": {
+      "openClose": true,
+      "change": 2
+    },
     "semanticTokensProvider": {
       "legend": "src/semtokens.elisa:semtok_legend_json (48 custom types)",
       "full": true,

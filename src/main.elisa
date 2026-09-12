@@ -685,6 +685,90 @@ def store_document_hover(document: mutable LspDocument&, storage: mutable darray
     document.hover_capacity <- needed + extra
 
 
+# D02 incremental change application. An LSP range is converted against the
+# text produced by the PRECEDING change in the same notification, so a change
+# list is applied to a working copy iteration by iteration and committed only if
+# every entry is well-formed. A ranged entry is rejected (whole notification
+# discarded) when its range is inverted or out of bounds; entries without a
+# `range` are full replacements (the old full-sync behaviour still works).
+def range_change_offsets(src: u8&, src_len: usize, range: Json::Value, utf8: bool, sbyte_out: mutable usize&, ebyte_out: mutable usize&) -> bool can[Memory.Allocate, Abort.Panic]:
+    sl: mutable i64 = -1
+    sc: mutable i64 = -1
+    el: mutable i64 = -1
+    ec: mutable i64 = -1
+    if Json::get(range, "start") is s:
+        if Json::get(s, "line") is v:
+            sl <- Json::as_i64_checked(v)
+        if Json::get(s, "character") is v:
+            sc <- Json::as_i64_checked(v)
+    if Json::get(range, "end") is e:
+        if Json::get(e, "line") is v:
+            el <- Json::as_i64_checked(v)
+        if Json::get(e, "character") is v:
+            ec <- Json::as_i64_checked(v)
+    return false if sl < 0 or sc < 0 or el < 0 or ec < 0
+    nlines: i64 = Positions::line_count(src, src_len)
+    last: i64 = nlines - 1
+    sl <- last if sl > last
+    el <- last if el > last
+    sbyte: usize = Positions::line_start_offset(src, src_len, sl) + Positions::char_to_byte_col(src, src_len, sl, sc, utf8).usize()
+    ebyte: usize = Positions::line_start_offset(src, src_len, el) + Positions::char_to_byte_col(src, src_len, el, ec, utf8).usize()
+    return false if sbyte > ebyte or ebyte > src_len
+    sbyte_out <- sbyte
+    ebyte_out <- ebyte
+    return true
+
+
+def apply_content_changes(current: sview, changes: darray[Json::Value], utf8: bool, out: mutable darray[u8]&) -> bool can[Memory.Allocate, Abort.Panic]:
+    working: mutable darray[u8] = []
+    i: mutable usize = 0
+    while i < current.len.usize():
+        working.push(sview_at(current, i))
+        i <- i + 1
+    sentinel: mutable darray[u8] = [0]
+    i <- 0
+    while i < changes.count:
+        entry: Json::Value = changes[i]
+        txt: mutable darray[u8] = []
+        if Json::get(entry, "text") is tv:
+            match tv:
+                Json::Value.Str(_):
+                    Json::decode_into(tv, txt)
+                _:
+                    return false
+        else:
+            return false
+        if Json::get(entry, "range") is rg:
+            base: u8& = &working[0] if working.count > 0 else &sentinel[0]
+            sbyte: mutable usize = 0
+            ebyte: mutable usize = 0
+            if not range_change_offsets(base, working.count, rg, utf8, sbyte, ebyte):
+                return false
+            nxt: mutable darray[u8] = []
+            j: mutable usize = 0
+            while j < sbyte:
+                nxt.push(working[j])
+                j <- j + 1
+            for b in txt:
+                nxt.push(b)
+            j <- ebyte
+            while j < working.count:
+                nxt.push(working[j])
+                j <- j + 1
+            working.truncate(0)
+            for b in nxt:
+                working.push(b)
+        else:
+            working.truncate(0)
+            for b in txt:
+                working.push(b)
+        i <- i + 1
+    out.truncate(0)
+    for b in working:
+        out.push(b)
+    return true
+
+
 # Run the frontend over the document and publish its findings. The decoded
 # text and its uri are stored in the session cache so later semantic-token and
 # hover requests can retrieve the correct snapshot for their own URI.
@@ -699,25 +783,38 @@ def check_and_publish(root: Json::Value, documents: mutable darray[LspDocument]&
     spell: sview = sview(&spell_bytes[0], 0, spell_bytes.count.i64())
     is_open: bool = method_is(root, "textDocument/didOpen")
     decoded: mutable darray[u8] = []
-    return if not collect_full_text(root, is_open, decoded)
+    if is_open:
+        # Full text first: a malformed open must not allocate a slot.
+        return if not collect_full_text(root, true, decoded)
     slot: usize = document_slot(documents, storage, heads, uri)
     document: mutable LspDocument& = &documents[slot]
     incoming_version: i64 = request_version_state(root)
     # Malformed version (fractional, overflowing, wrong-typed): reject the
     # whole notification without mutating (J02/D01).
     return if incoming_version == -2
-    # Duplicate open: new lifetime even if URI/version repeat.
-    if is_open and document.open:
-        document.generation <- document.generation + 1
+    if is_open:
+        # Duplicate open: new lifetime even if URI/version repeat.
+        if document.open:
+            document.generation <- document.generation + 1
+    else:
+        # didChange for a never-opened document: ignore (no lifetime to update).
+        return if not document.open
+        # Stale/equal-version didChange: ignore without mutating.
+        return if incoming_version >= 0 and incoming_version <= document.version
+        changes: mutable darray[Json::Value] = []
+        if Json::get(root, "params") is params:
+            if Json::get(params, "contentChanges") is cv:
+                match cv:
+                    Json::Value.Arr(items):
+                        changes <- items
+                    _:
+                        return
+        return if changes.count == 0
+        current: sview = sview(&storage[document.text_start], 0, document.text_len.i64() - 1) if document.text_len > 0 else sview("", 0, 0)
+        return if not apply_content_changes(current, changes, utf8, decoded)
     # Snapshot generation for the publish guard, captured AFTER this update's
     # lifetime bump so it reflects the revision actually being analyzed.
     gen: u64 = document.generation
-    # Stale/equal-version didChange: ignore without mutating.
-    if not is_open and document.open and incoming_version >= 0 and incoming_version <= document.version:
-        return
-    # didChange for a never-opened document: ignore (no lifetime to update).
-    if not is_open and not document.open:
-        return
     # Validate and diagnose against a temporary owned snapshot first. It is
     # never stored unless the complete frontend pass returns normally.
     source: mutable darray[u8] = []
@@ -770,8 +867,7 @@ def body_fingerprint(body: darray[u8]&) -> u64:
 def publish_empty_diagnostics(uri: sview, version: i64) -> void can[Console, Memory.Allocate, Abort.Panic]:
     body: mutable darray[u8] = []
     body.push_str("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"")
-    for b in uri:
-        json_escape_byte(body, b)
+    json_escape_utf8(body, uri)
     if version >= 0:
         body.push_str("\",\"version\":")
         body.push_int(version)
@@ -1260,18 +1356,12 @@ def hover_loop_header(doc: u8&, start: usize, end: usize, out: mutable darray[u8
                 # J02: source bytes enter through the shared JSON escaper —
                 # raw quotes/backslashes would corrupt the response frame.
                 acc_span: sview = sview(&doc[s], 0, (ne - s).i64())
-                ai: mutable usize = 0
-                while ai < acc_span.len.usize():
-                    json_escape_byte(accs, sview_at(acc_span, ai))
-                    ai <- ai + 1
+                json_escape_utf8(accs, acc_span)
                 naccs <- naccs + 1
             elif e > s:
                 push_str(caps, ", ") if ncaps > 0
                 cap_span: sview = sview(&doc[s], 0, (e - s).i64())
-                ci: mutable usize = 0
-                while ci < cap_span.len.usize():
-                    json_escape_byte(caps, sview_at(cap_span, ci))
-                    ci <- ci + 1
+                json_escape_utf8(caps, cap_span)
                 ncaps <- ncaps + 1
             item_start <- k + 1
         k <- k + 1
@@ -1387,7 +1477,7 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
                     diag_related <- negotiate_related_info(root)
                     fold_limit <- negotiate_fold_limit(root)
                     caps: mutable darray[u8] = []
-                    push_str(caps, "{\"capabilities\":{\"textDocumentSync\":1,\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":")
+                    push_str(caps, "{\"capabilities\":{\"textDocumentSync\":{\"openClose\":true,\"change\":2},\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":")
                     push_str(caps, semtok_legend_json())
                     push_str(caps, ",\"tokenModifiers\":[]},\"full\":true,\"range\":true},\"hoverProvider\":true,\"documentSymbolProvider\":true,\"foldingRangeProvider\":true,\"selectionRangeProvider\":true")
                     push_str(caps, ",\"positionEncoding\":\"utf-8\"") if pos_utf8

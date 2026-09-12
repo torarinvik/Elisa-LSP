@@ -42,7 +42,8 @@ for method, spec in manifest["methods"].items():
 
 # 3. Capabilities advertised must be exactly those in the manifest.
 caps = resp["result"]["capabilities"]
-assert caps.get("textDocumentSync") == 1
+sync = caps.get("textDocumentSync")
+assert sync == {"openClose": True, "change": 2}, f"sync capability drift: {sync}"
 assert "semanticTokensProvider" in caps and caps.get("hoverProvider") is True
 print(f"manifest OK: 48 legend entries, {sum(1 for s in manifest['methods'].values() if s.get('implemented'))} implemented methods")
 PY
