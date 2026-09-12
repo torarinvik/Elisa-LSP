@@ -447,8 +447,49 @@ def semtok_comment_entries(src: u8&, src_len: usize) -> darray[SemTok]:
         return entries
 
 
-# Build the LSP delta-encoded `{"data":[...]}` payload from a frontend result.
-# Main tokens and comments are both in source order, so they are merged by
+# H03: split any span that crosses a line into valid per-line spans. The LSP
+# semantic-token format has no multiline tokens — a token's `length` applies to
+# its start line only — so a multiline comment/string emitted as one entry is
+# invalid (and hides every intermediate line). Pieces preserve order, never
+# overlap, and exclude a CRLF's CR. Line-bounded entries pass through unchanged.
+def semtok_append_normalized(out: mutable darray[SemTok]&, e: SemTok, src: u8&, src_len: usize) -> void can[Memory.Allocate, Abort.Panic]:
+    return if e.length <= 0
+    llen: i64 = Positions::line_byte_length(src, src_len, e.line)
+    if e.col + e.length <= llen:
+        out.push(e)
+        return
+    start: usize = Positions::line_start_offset(src, src_len, e.line) + e.col.usize()
+    end: usize = start + e.length.usize()
+    line: mutable i64 = e.line
+    seg: mutable usize = start
+    col: mutable i64 = e.col
+    i: mutable usize = start
+    while i < end:
+        if src[i] == 10:
+            seg_end: mutable usize = i
+            if seg_end > seg and src[seg_end - 1] == 13:
+                seg_end <- seg_end - 1
+            out.push(SemTok{line: line, col: col, length: (seg_end - seg).i64(), ttype: e.ttype}) if seg_end > seg
+            line <- line + 1
+            col <- 0
+            seg <- i + 1
+        i <- i + 1
+    fin: mutable usize = end
+    if fin > seg and src[fin - 1] == 13:
+        fin <- fin - 1
+    out.push(SemTok{line: line, col: col, length: (fin - seg).i64(), ttype: e.ttype}) if fin > seg
+
+
+def semtok_normalize(list: darray[SemTok], src: u8&, src_len: usize) -> darray[SemTok]:
+    can Memory.Allocate, Abort.Panic:
+        out: mutable darray[SemTok] = []
+        i: mutable usize = 0
+        while i < list.count:
+            semtok_append_normalized(out, list[i], src, src_len)
+            i <- i + 1
+        return out
+
+
 # (line, byte-col) — a linear merge, no sort — before delta-encoding. Starts
 # and lengths convert from bytes to UTF-16 code units here, at the protocol
 # boundary, through the shared `Positions` module (U02); the merge order is
@@ -457,8 +498,8 @@ def semtok_comment_entries(src: u8&, src_len: usize) -> darray[SemTok]:
 # frontend pass per source update.
 def semtok_data_body_with_table(src: u8&, src_len: usize, table: Semantic::SymbolTable&, utf8: bool) -> darray[u8]:
     can Memory.Allocate, Abort.Panic:
-        entries: darray[SemTok] = semtok_main_entries(src, src_len, table)
-        comments: darray[SemTok] = semtok_comment_entries(src, src_len)
+        entries: darray[SemTok] = semtok_normalize(semtok_main_entries(src, src_len, table), src, src_len)
+        comments: darray[SemTok] = semtok_normalize(semtok_comment_entries(src, src_len), src, src_len)
         body: mutable darray[u8] = []
         push_str(body, "{\"data\":[")
         prev_line: mutable i64 = 0

@@ -205,6 +205,14 @@ localized contract break rather than scattered feature regressions. Token
 presentation, diagnostic wording, and JSON framing deliberately stay outside
 the adapter.
 
+## Multiline tokens (H03)
+
+The LSP semantic-token format has no multiline tokens: a token's `length`
+applies to its start line only. `semtok_normalize` in `src/semtokens.elisa`
+splits any span wider than its start line (multiline comments/strings) into
+valid per-line pieces that preserve order, never overlap, and exclude a CRLF's
+CR. Floors: `test/multiline_tokens_test.sh` (LF, CRLF, and Unicode cases).
+
 ## Region/lifetime constraints
 
 The frontend's region system rejects storing a function-local container into
