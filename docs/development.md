@@ -277,6 +277,16 @@ and is never dispatched; valid-but-wrong-shape messages still go through
 P01's `InvalidRequest`/`MethodNotFound` paths. The permissive value parser
 remains for dispatch. Floors: `test/json_strict_test.sh`.
 
+## Cancellation (Q02 v1)
+
+`$/cancelRequest` records the target id as its raw JSON token (so numeric `1`
+and string `"1"` stay distinct) in a bounded (128-entry) newline-separated
+buffer. A request whose id was cancelled before dispatch completes exactly
+once with `RequestCancelled` (`-32800`) and never runs; unmatched/unknown
+cancellations are harmless. Analysis is synchronous, so cancellation is
+honored for pipelined requests today and becomes load-bearing when analysis
+moves off the loop. Floor: `test/cancel_test.sh`.
+
 ## Region/lifetime constraints
 
 The frontend's region system rejects storing a function-local container into

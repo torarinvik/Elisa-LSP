@@ -943,6 +943,70 @@ def send_parse_error() -> void can[Console, Memory.Allocate, Abort.Panic]:
     send_message(body)
 
 
+# `params.id` as a raw JSON token, for `$/cancelRequest`.
+def extract_params_id(root: Json::Value) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+    out: mutable darray[u8] = []
+    if Json::get(root, "params") is params:
+        if Json::get(params, "id") is idv:
+            match idv:
+                Json::Value.Num(text):
+                    push_sview(out, text)
+                Json::Value.Str(text):
+                    out.push(34)
+                    push_sview(out, text)
+                    out.push(34)
+                _:
+                    pass
+    return out
+
+
+# Q02 cancellation set. `$/cancelRequest` can only cancel work that has not yet
+# completed; analysis is synchronous today, so a cancellation is honored when it
+# is pipelined ahead of its request. Ids are stored as their raw JSON token
+# (e.g. `1` vs `"1"` stay distinct) newline-separated, bounded to CANCEL_CAP so
+# a hostile client cannot grow it without limit.
+const CANCEL_CAP: i64 = 128
+
+
+def cancel_add(buf: mutable darray[u8]&, raw_id: darray[u8]) -> void can[Memory.Allocate, Abort.Panic]:
+    lines: mutable i64 = 0
+    i: mutable usize = 0
+    while i < buf.count:
+        lines <- lines + 1 if buf[i] == 10
+        i <- i + 1
+    return if lines >= CANCEL_CAP
+    for b in raw_id:
+        buf.push(b)
+    buf.push(10)
+
+
+def cancel_take(buf: mutable darray[u8]&, raw_id: darray[u8]) -> bool can[Memory.Allocate, Abort.Panic]:
+    start: mutable usize = 0
+    i: mutable usize = 0
+    while i <= buf.count:
+        if i == buf.count or buf[i] == 10:
+            same: mutable bool = (i - start) == raw_id.count
+            if same:
+                j: mutable usize = 0
+                while j < raw_id.count:
+                    if buf[start + j] != raw_id[j]:
+                        same <- false
+                        break
+                    j <- j + 1
+            if same:
+                rest: mutable usize = i + 1
+                k: mutable usize = start
+                while rest < buf.count:
+                    buf[k] <- buf[rest]
+                    k <- k + 1
+                    rest <- rest + 1
+                buf.truncate(k)
+                return true
+            start <- i + 1
+        i <- i + 1
+    return false
+
+
 # P03 capability negotiation: derive the session profile from the client's
 # `initialize` params. Position encodings are honored in client preference
 # order (first supported wins; default UTF-16). Hover falls back to plaintext
@@ -1222,6 +1286,8 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
     # messages, so pipelined frames and split UTF-8 sequences frame exactly.
     inbuf: mutable darray[u8] = []
     inpos: mutable usize = 0
+    # Q02 pending cancellations, stored as raw id tokens (typed-distinct).
+    cancelled: mutable darray[u8] = []
     while true:
         body: mutable darray[u8] = []
         status: i64 = read_message(body, inbuf, inpos)
@@ -1238,6 +1304,13 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
         root: Json::Value = Json::parse(bsv)
         method: sview = request_method(root)
         has_id: bool = request_has_id(root)
+        # Q02: a request whose id was cancelled before dispatch completes once
+        # with RequestCancelled instead of running.
+        if has_id:
+            id_raw_all: darray[u8] = extract_id(root)
+            if cancel_take(cancelled, id_raw_all):
+                send_error(id_raw_all, -32800, "RequestCancelled")
+                continue
         match method:
             "initialize":
                 id_raw: darray[u8] = extract_id(root)
@@ -1326,6 +1399,10 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
             "$/elisa/stats":
                 id_raw: darray[u8] = extract_id(root)
                 send_stats(id_raw, documents, document_storage) if has_id
+            "$/cancelRequest":
+                # Notification: record the id; no response is produced.
+                cid: darray[u8] = extract_params_id(root)
+                cancel_add(cancelled, cid) if cid.count > 0
             _:
                 # P01: unknown requests get MethodNotFound; unknown notifications
                 # are ignored without a response object.

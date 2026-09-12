@@ -111,8 +111,10 @@
       "note": "no commands advertised"
     },
     "$/cancelRequest": {
-      "implemented": false,
-      "planned": "Q02"
+      "implemented": true,
+      "test": "test/cancel_test.sh",
+      "module": "src/main.elisa:main",
+      "note": "bounded typed-id set; pipelined cancellation completes with RequestCancelled -32800"
     },
     "window/workDoneProgress/create": {
       "implemented": false,
