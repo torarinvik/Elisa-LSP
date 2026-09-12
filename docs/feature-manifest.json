@@ -1,6 +1,12 @@
 {
   "spec_baseline": "LSP 3.17",
   "server": "elisa-lsp",
+  "transport": {
+    "framing": "buffered Content-Length framing (case-insensitive header, strict digit value, overflow-checked)",
+    "bounds": {"max_header_bytes": 16384, "max_header_lines": 64, "max_body_bytes": 16777216},
+    "failure": "malformed/conflicting/missing/zero/truncated/oversized frames are controlled nonzero exits with no output frame; clean EOF is exit 0",
+    "test": "test/transport_test.sh"
+  },
   "methods": {
     "initialize": {
       "implemented": true,

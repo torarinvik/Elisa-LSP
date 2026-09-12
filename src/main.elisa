@@ -48,61 +48,137 @@ struct LspDocument:
 
 
 # ---- stdio byte transport ---------------------------------------------------------
+#
+# T01: buffered, bounded input framing. One reusable read buffer holds bytes
+# read ahead of the current cursor, so a single `read` may deliver several
+# messages, part of a message, or a multibyte UTF-8 sequence that the cursor
+# must not split. Frames are read only from this buffer; consumed prefixes are
+# reclaimed on refill. Limits are conservative and documented; a violation is
+# a controlled session failure (main returns nonzero) rather than an unbounded
+# allocation or a silent mis-frame.
+const TRANSPORT_CHUNK: usize = 8192
+const MAX_HEADER_BYTES: i64 = 16384
+const MAX_HEADER_LINES: i64 = 64
+const MAX_BODY_BYTES: i64 = 16777216
 
-# Read one byte from stdin; -1 at EOF.
-def read_byte() -> int can[Console, Memory.Allocate, Abort.Panic]:
-    b: mutable darray[u8] = [0]
-    n: isize = read(0, (&b[0]).cast[void&], 1) can Console
-    -1 return if n <= 0
-    return b[0].int()
+
+# Ensure at least one unconsumed byte is available. False only at clean EOF
+# with nothing buffered.
+def transport_fill(buf: mutable darray[u8]&, pos: mutable usize&) -> bool can[Console, Memory.Allocate, Abort.Panic]:
+    true return if pos[0] < buf.count
+    # Cursor reached the end: the whole buffer is consumed; reclaim it.
+    buf.truncate(0)
+    pos[0] <- 0
+    start: usize = buf.count
+    i: mutable usize = 0
+    while i < TRANSPORT_CHUNK:
+        buf.push(0)
+        i <- i + 1
+    got: isize = read(0, (&buf[start]).cast[void&], TRANSPORT_CHUNK) can Console
+    if got <= 0:
+        buf.truncate(start)
+        return false
+    buf.truncate(start + got.usize())
+    return true
 
 
-# Read a header line (up to LF), stripping a trailing CR. Sets `eof` at end of stream.
-def read_line(eof: mutable bool&) -> darray[u8] can[Console, Memory.Allocate, Abort.Panic]:
+# Read one header line (through LF), stripping a trailing CR. `eof` is set only
+# when the stream ended before LF was seen; a genuinely empty line is a real
+# line (header terminator) with `eof` false.
+def transport_read_line(buf: mutable darray[u8]&, pos: mutable usize&, eof: mutable bool&) -> darray[u8] can[Console, Memory.Allocate, Abort.Panic]:
     out: mutable darray[u8] = []
     while true:
-        c: int = read_byte()
-        if c < 0:
+        if not transport_fill(buf, pos):
             eof[0] <- true
             return out
-        out return if c == 10
-        out.push(c.u8()) if c != 13
+        b: u8 = buf[pos[0]]
+        pos[0] <- pos[0] + 1
+        out return if b == 10
+        out.push(b) if b != 13
     return out
 
 
-# Parse a `Content-Length: N` header line, or -1 if it isn't one.
+# Parse a `Content-Length:` header line strictly.
+#   >= 0  the length
+#   -1    not a Content-Length header (ignored)
+#   -2    malformed Content-Length (non-digit, empty, or i64 overflow) — fatal
+# Header names are case-insensitive; the value admits surrounding spaces but no
+# other characters, so `Content-Length: 5x` and `Content-Length:` are rejected
+# instead of silently parsing as 5 and 0.
 def content_length_of(line: darray[u8]) -> i64 can[Memory.Allocate, Abort.Panic]:
-    prefix: sview = sview("Content-Length:", 0, -1)
-    -1 return if line.count.i64() < prefix.len
-    head: sview = sview(&line[0], 0, prefix.len)
-    -1 return if string_views_eq(head, prefix) == 0
+    name: sview = sview("content-length:", 0, -1)
+    -1 return if line.count.i64() < name.len
+    i: mutable usize = 0
+    while i < name.len.usize():
+        if ascii_lower(line[i]) != sview_at(name, i):
+            return -1
+        i <- i + 1
+    while i < line.count and line[i] == 32:
+        i <- i + 1
+    -2 return if i >= line.count
     n: mutable i64 = 0
-    i: mutable usize = prefix.len.usize()
+    limit: i64 = 922337203685477580
     while i < line.count:
         ch: u8 = line[i]
-        n <- n * 10 + (ch.i64() - 48) if ch >= 48 and ch <= 57
+        -2 return if ch < 48 or ch > 57
+        d: i64 = ch.i64() - 48
+        -2 return if n > limit or (n == limit and d > 7)
+        n <- n * 10 + d
         i <- i + 1
     return n
 
 
-# Read one full LSP message body. Returns false at end of stream.
-def read_message(body: mutable darray[u8]&) -> bool can[Console, Memory.Allocate, Abort.Panic]:
+# Read one full LSP message body from the shared buffer.
+#   0   clean EOF between messages (nothing buffered)
+#   1   a complete frame was read into `body`
+#   -1  framing error: truncated header/body, malformed or conflicting
+#       Content-Length, missing length, oversized header/body, or a zero-byte
+#       body (never treated as a successful exit)
+def read_message(body: mutable darray[u8]&, buf: mutable darray[u8]&, pos: mutable usize&) -> i64 can[Console, Memory.Allocate, Abort.Panic]:
     content_length: mutable i64 = -1
+    header_bytes: mutable i64 = 0
+    header_lines: mutable i64 = 0
+    first: mutable bool = true
     while true:
         eof: mutable bool = false
-        line: darray[u8] = read_line(eof)
-        false return if eof
-        break if line.count == 0
+        line: darray[u8] = transport_read_line(buf, pos, eof)
+        if eof:
+            # Nothing consumed yet at message start: clean EOF. Otherwise the
+            # header was cut off mid-message.
+            return 0 if first and line.count == 0 else -1
+        first <- false
+        header_bytes <- header_bytes + line.count.i64() + 2
+        header_lines <- header_lines + 1
+        if header_bytes > MAX_HEADER_BYTES or header_lines > MAX_HEADER_LINES:
+            return -1
+        if line.count == 0:
+            break
         cl: i64 = content_length_of(line)
-        content_length <- cl if cl >= 0
-    false return if content_length < 0
-    i: mutable i64 = 0
-    while i < content_length:
-        c: int = read_byte()
-        false return if c < 0
-        body.push(c.u8())
-        i <- i + 1
-    return true
+        if cl == -2:
+            return -1
+        if cl >= 0:
+            # Conflicting duplicate lengths are ambiguous; identical repeats are
+            # tolerated. A duplicate may not contradict the first.
+            return -1 if content_length >= 0 and content_length != cl
+            content_length <- cl
+    if content_length <= 0:
+        return -1
+    if content_length > MAX_BODY_BYTES:
+        return -1
+    body.truncate(0)
+    remaining: mutable i64 = content_length
+    while remaining > 0:
+        if not transport_fill(buf, pos):
+            return -1
+        available: i64 = (buf.count - pos[0]).i64()
+        take: i64 = available if available < remaining else remaining
+        i: mutable usize = 0
+        while i < take.usize():
+            body.push(buf[pos[0] + i])
+            i <- i + 1
+        pos[0] <- pos[0] + take.usize()
+        remaining <- remaining - take
+    return 1
 
 
 # ---- request inspection (Json module) ----------------------------------------------
@@ -916,10 +992,17 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
     hover_markdown: mutable bool = true
     symbols_hier: mutable bool = false
     allowed_kinds: mutable darray[i64] = []
+    # T01 buffered input: bytes read ahead of the cursor survive across
+    # messages, so pipelined frames and split UTF-8 sequences frame exactly.
+    inbuf: mutable darray[u8] = []
+    inpos: mutable usize = 0
     while true:
         body: mutable darray[u8] = []
-        0 return if not read_message(body)
-        0 return if body.count == 0
+        status: i64 = read_message(body, inbuf, inpos)
+        # Clean EOF between messages is an orderly stop. Any framing error is a
+        # controlled nonzero exit — resynchronizing on arbitrary bytes is unsafe.
+        0 return if status == 0
+        1 return if status < 0
         bsv: sview = sview(&body[0], 0, body.count.i64())
         root: Json::Value = Json::parse(bsv)
         method: sview = request_method(root)

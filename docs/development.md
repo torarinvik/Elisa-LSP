@@ -166,6 +166,20 @@ and enum variants await A02). The client's `symbolKind.valueSet` is honored by
 clamping each category through fallbacks, and `Unknown` kinds are omitted
 rather than guessed. Floors: `test/document_symbols_test.sh`.
 
+## Transport framing (T01)
+
+Input is buffered, not read one byte per syscall. `transport_fill` keeps a
+reusable read buffer whose unconsumed tail survives across messages, so a
+single `read` may deliver several frames, part of a frame, or a split
+multibyte UTF-8 sequence without mis-framing (`read_message` in
+`src/main.elisa`). Bounds and strictness: header names are case-insensitive,
+`Content-Length` values must be pure digits (no `5x`, no empty value) and are
+overflow-checked; conflicting duplicate lengths, missing lengths, zero-length
+bodies, truncated headers/bodies, and oversized headers/bodies (16 KiB
+header / 64 lines / 16 MiB body) are controlled nonzero exits with no output
+frame. Clean EOF between messages is exit 0. Floors: `test/transport_test.sh`
+(split at every byte, pipelining, malformed-length matrix, large-body refill).
+
 ## Region/lifetime constraints
 
 The frontend's region system rejects storing a function-local container into
