@@ -47,9 +47,9 @@ if "captured, in place): total" not in r2 or "accumulators: acc" not in r2:
 r3 = res.get(3, "")
 if "Pure over outer state" not in r3:
     fail(f"no-capture header hover wrong: {r3}")
-if res.get(4, "").strip() != "null":
-    fail(f"bitwise | must not hover: {res.get(4)}")
-if res.get(5, "").strip() != "null":
-    fail(f"ordinary line must not hover: {res.get(5)}")
-print("hover smoke OK: capture list, pure-over-outer, bitwise-| safe, null off-header")
+if "loop header" in res.get(4, ""):
+    fail(f"bitwise | must not show a loop-header hover: {res.get(4)}")
+if "loop header" in res.get(5, ""):
+    fail(f"ordinary line must not show a loop-header hover: {res.get(5)}")
+print("hover smoke OK: capture list, pure-over-outer, bitwise-| safe, no header off-header")
 PY

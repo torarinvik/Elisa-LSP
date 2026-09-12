@@ -11,6 +11,7 @@ include "frontend_adapter.elisa"
 include "json.elisa"
 include "semtokens.elisa"
 include "features/document_symbols.elisa"
+include "features/hover.elisa"
 include "features/folding.elisa"
 
 # Byte-buffer builders (push_str/push_int/push_sview) come from the frontend's `module Bytes`
@@ -40,6 +41,9 @@ struct LspDocument:
     symbols_start: mutable usize
     symbols_len: mutable usize
     symbols_capacity: mutable usize
+    hover_start: mutable usize
+    hover_len: mutable usize
+    hover_capacity: mutable usize
     hash: mutable u64
     next: mutable u32
     version: mutable i64
@@ -305,6 +309,17 @@ def request_hover_line(root: Json::Value) -> i64 can[Memory.Allocate, Abort.Pani
         return -1
 
 
+# Strict hover character (J02), in negotiated units; -1 when absent/invalid.
+def request_hover_char(root: Json::Value) -> i64 can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        if Json::get(root, "params") is params:
+            if Json::get(params, "position") is pos:
+                if Json::get(pos, "character") is ch:
+                    v: i64 = Json::as_i64_checked(ch)
+                    return v if v >= 0 else -1
+        return -1
+
+
 # D02 full-sync collection: decode the notification's full replacement text
 # into `out` (byte-exact, CRLF/trailing-newline preserving). didOpen reads
 # `params.textDocument.text`; didChange validates EVERY `contentChanges` entry
@@ -542,6 +557,9 @@ def document_slot(documents: mutable darray[LspDocument]&, storage: mutable darr
         d.symbols_start <- 0
         d.symbols_len <- 0
         d.symbols_capacity <- 0
+        d.hover_start <- 0
+        d.hover_len <- 0
+        d.hover_capacity <- 0
         d.hash <- hash
         d.next <- previous
         d.version <- -1
@@ -556,7 +574,7 @@ def document_slot(documents: mutable darray[LspDocument]&, storage: mutable darr
         heads <- heads.put(hash, slot.u32())
         return slot
     uri_start: usize = storage.count
-    documents.push(LspDocument{uri_start: uri_start, uri_len: uri.len.usize(), text_start: 0, text_len: 0, text_capacity: 0, semantic_start: 0, semantic_len: 0, semantic_capacity: 0, symbols_start: 0, symbols_len: 0, symbols_capacity: 0, hash: hash, next: previous, version: -1, open: false, generation: 0, last_diag_version: -1, last_diag_fp: 0, free: false})
+    documents.push(LspDocument{uri_start: uri_start, uri_len: uri.len.usize(), text_start: 0, text_len: 0, text_capacity: 0, semantic_start: 0, semantic_len: 0, semantic_capacity: 0, symbols_start: 0, symbols_len: 0, symbols_capacity: 0, hover_start: 0, hover_len: 0, hover_capacity: 0, hash: hash, next: previous, version: -1, open: false, generation: 0, last_diag_version: -1, last_diag_fp: 0, free: false})
     slot: usize = documents.count - 1
     for i in 0..<uri.len.usize():
         storage.push(sview_at(uri, i))
@@ -647,6 +665,25 @@ def store_document_symbols(document: mutable LspDocument&, storage: mutable darr
     document.symbols_capacity <- needed + extra
 
 
+# Commit the retained hover index (A03). Owned bytes in the same flat storage,
+# so it survives compaction and hover never re-runs the frontend.
+def store_document_hover(document: mutable LspDocument&, storage: mutable darray[u8]&, result: darray[u8]) -> void can[Memory.Allocate, Abort.Panic]:
+    needed: usize = result.count
+    if document.hover_capacity >= needed and document.hover_capacity > 0:
+        for i in 0..<needed:
+            storage[document.hover_start + i] <- result[i]
+        document.hover_len <- needed
+        return
+    document.hover_start <- storage.count
+    storage.extend(result)
+    extra: mutable usize = needed
+    extra <- 1 if extra == 0
+    for i in 0..<extra:
+        storage.push(0)
+    document.hover_len <- needed
+    document.hover_capacity <- needed + extra
+
+
 # Run the frontend over the document and publish its findings. The decoded
 # text and its uri are stored in the session cache so later semantic-token and
 # hover requests can retrieve the correct snapshot for their own URI.
@@ -689,9 +726,11 @@ def check_and_publish(root: Json::Value, documents: mutable darray[LspDocument]&
     table: Semantic::SymbolTable = check_source_buf(&source[0], source.count - 1)
     semantic: darray[u8] = semtok_data_body_with_table(&source[0], source.count - 1, table, utf8)
     symbols: darray[u8] = build_symbols_body(spell, table, &source[0], source.count - 1, utf8, symbols_hier, allowed_kinds)
+    hover: darray[u8] = build_hover_index(table)
     store_document_text(document, storage, source)
     store_document_semantic(document, storage, semantic)
     store_document_symbols(document, storage, symbols)
+    store_document_hover(document, storage, hover)
     document.open <- true
     document.version <- incoming_version if incoming_version >= 0 else document.version + 1
     # G02: publish only if this generation is still current. The analysis above
@@ -784,6 +823,8 @@ def handle_did_close(root: Json::Value, documents: mutable darray[LspDocument]&,
     documents[found.usize()].semantic_capacity <- 0
     documents[found.usize()].symbols_len <- 0
     documents[found.usize()].symbols_capacity <- 0
+    documents[found.usize()].hover_len <- 0
+    documents[found.usize()].hover_capacity <- 0
     documents[found.usize()].generation <- documents[found.usize()].generation + 1
     documents[found.usize()].last_diag_version <- -1
     documents[found.usize()].last_diag_fp <- 0
@@ -809,7 +850,7 @@ def storage_live_bytes(documents: darray[LspDocument]&) -> usize:
         if not d.free:
             live <- live + d.uri_len
             if d.open:
-                live <- live + d.text_len + d.semantic_len + d.symbols_len
+                live <- live + d.text_len + d.semantic_len + d.symbols_len + d.hover_len
         i <- i + 1
     return live
 
@@ -837,6 +878,9 @@ def storage_reclaim(documents: mutable darray[LspDocument]&, storage: mutable da
             d.symbols_start <- temp.count
             d.symbols_len <- 0
             d.symbols_capacity <- 0
+            d.hover_start <- temp.count
+            d.hover_len <- 0
+            d.hover_capacity <- 0
             i <- i + 1
             continue
         old_uri: usize = d.uri_start
@@ -867,6 +911,13 @@ def storage_reclaim(documents: mutable darray[LspDocument]&, storage: mutable da
                 temp.push(storage[old_sym + j])
                 j <- j + 1
             d.symbols_capacity <- d.symbols_len
+            old_hov: usize = d.hover_start
+            d.hover_start <- temp.count
+            j <- 0
+            while j < d.hover_len:
+                temp.push(storage[old_hov + j])
+                j <- j + 1
+            d.hover_capacity <- d.hover_len
         else:
             d.text_start <- temp.count
             d.text_len <- 0
@@ -877,6 +928,9 @@ def storage_reclaim(documents: mutable darray[LspDocument]&, storage: mutable da
             d.symbols_start <- temp.count
             d.symbols_len <- 0
             d.symbols_capacity <- 0
+            d.hover_start <- temp.count
+            d.hover_len <- 0
+            d.hover_capacity <- 0
         i <- i + 1
     storage.truncate(0)
     for b in temp:
@@ -1236,7 +1290,7 @@ def hover_loop_header(doc: u8&, start: usize, end: usize, out: mutable darray[u8
             out.push(b)
     return true
 
-def handle_hover(root: Json::Value, documents: darray[LspDocument]&, document_storage: darray[u8]&, document_heads: dict[u64, u32]&, markdown: bool) -> void can[Console, Memory.Allocate, Abort.Panic]:
+def handle_hover(root: Json::Value, documents: darray[LspDocument]&, document_storage: darray[u8]&, document_heads: dict[u64, u32]&, markdown: bool, utf8: bool) -> void can[Console, Memory.Allocate, Abort.Panic]:
     id_raw: darray[u8] = extract_id(root)
     spell_bytes: mutable darray[u8] = []
     canon_bytes: mutable darray[u8] = []
@@ -1254,6 +1308,12 @@ def handle_hover(root: Json::Value, documents: darray[LspDocument]&, document_st
     ok: mutable bool = false
     ok <- hover_loop_header(doc_text, ls, le, msg) if line_no >= 0 and document.text_len > 1 and hover_line_range(doc_text, document.text_len - 1, line_no, ls, le)
     if not ok:
+        # F01: general hover from the retained summary; null when nothing resolves.
+        char_no: i64 = request_hover_char(root)
+        extra: darray[u8] = general_hover_body(document, document_storage, line_no, char_no, markdown, utf8)
+        if extra.count > 0:
+            send_result_body(id_raw, extra)
+            return
         send_result(id_raw, "null")
         return
     body: mutable darray[u8] = []
@@ -1377,7 +1437,7 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
                     id_raw: darray[u8] = extract_id(root)
                     send_error(id_raw, -32002, "ServerNotInitialized") if has_id
                 else:
-                    handle_hover(root, documents, document_storage, document_heads, hover_markdown)
+                    handle_hover(root, documents, document_storage, document_heads, hover_markdown, pos_utf8)
             "textDocument/documentSymbol":
                 if shutdown_requested:
                     id_raw: darray[u8] = extract_id(root)

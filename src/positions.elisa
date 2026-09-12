@@ -114,6 +114,31 @@ module Positions:
             return clamped if utf8 else utf16_units_for_bytes(src, start, clamped.usize())
 
 
+        # Inverse of byte_col_to_units (F01): a negotiated-unit column back to a
+        # byte column on the line, clamped to the line's byte length. A column
+        # landing mid-sequence resolves to the sequence's start byte.
+        def char_to_byte_col(src: u8&, src_len: usize, line0: i64, char_units: i64, utf8: bool) -> i64:
+            start: usize = line_start_offset(src, src_len, line0)
+            llen: i64 = line_byte_length(src, src_len, line0)
+            clamped: i64 = 0 if char_units < 0 else (llen if char_units > llen else char_units)
+            return clamped if utf8 else char_to_byte_col_u16(src, start, llen, clamped)
+
+
+        def char_to_byte_col_u16(src: u8&, start: usize, llen: i64, char_units: i64) -> i64:
+            i: mutable usize = 0
+            units: mutable i64 = 0
+            limit: usize = llen.usize()
+            while i < limit and units < char_units:
+                seqlen: mutable usize = utf8_seq_length(src[start + i])
+                seqlen <- limit - i if seqlen > limit - i
+                if seqlen == 4:
+                    units <- units + 2
+                else:
+                    units <- units + 1
+                i <- i + seqlen
+            return i.i64()
+
+
         def span_unit_length(src: u8&, src_len: usize, start_off: usize, nbytes: usize, utf8: bool) -> i64:
             start: usize = src_len if start_off > src_len else start_off
             avail: usize = src_len - start

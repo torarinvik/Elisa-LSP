@@ -150,3 +150,21 @@ def diagnostic_count(table: Semantic::SymbolTable&) -> usize:
 
 def diagnostic_at(table: Semantic::SymbolTable&, index: usize) -> Semantic::Diagnostic:
     return table.diagnostics[index]
+
+
+# Occurrence-log entries, exposed for A03 serialization (a retained analysis
+# summary). The raw `ref_kind` stays encoded behind OCC_*.
+def occurrence_count(table: Semantic::SymbolTable&) -> usize:
+    return table.ref_line.count
+
+
+def occurrence_line(table: Semantic::SymbolTable&, index: usize) -> u32:
+    return table.ref_line[index]
+
+
+def occurrence_name(table: Semantic::SymbolTable&, index: usize) -> sview:
+    return table.ref_name[index]
+
+
+def occurrence_kind_index(table: Semantic::SymbolTable&, index: usize) -> i64:
+    return table.ref_kind[index].i64()

@@ -1,0 +1,251 @@
+# General hover (F01 v1), backed by a retained analysis summary (A03).
+#
+# At analysis time `build_hover_index` serializes the compiler's file symbols
+# and param/local occurrences into a compact record stream stored in the
+# document's flat storage. Hover later scans that stream (not the live
+# SymbolTable, whose sviews would dangle after storage compaction) and resolves
+# the identifier under the cursor:
+#   1. a param/local occurrence on the same line wins (H02 precedence) —
+#      `(parameter) name` / `(local) name`;
+#   2. otherwise a file-level declaration matched by name — its category plus
+#      the declared return type when the frontend carries one.
+# Unknown identifiers or no document summary yield empty (the caller then falls
+# back to the loop-header hover). Display-only: name matching is not used as
+# proof for any editing operation.
+#
+# Record stream: each record starts with REC (0x1e); the first byte is `s`
+# (symbol: name, category, line, return-type) or `o` (occurrence: line, name,
+# ref-kind); fields are FS-separated (0x1f). Identifier/type tokens never
+# contain control bytes, so the encoding is unambiguous.
+
+const HOVER_REC: u8 = 30
+const HOVER_FS: u8 = 31
+
+
+def hover_symbol_category(kind: Semantic::SymbolKind) -> sview:
+    return when kind:
+        Semantic::SymbolKind.Func -> "fn"
+        Semantic::SymbolKind.Extern -> "fn"
+        Semantic::SymbolKind.Struct -> "struct"
+        Semantic::SymbolKind.Enum -> "enum"
+        Semantic::SymbolKind.Alias -> "alias"
+        Semantic::SymbolKind.Const -> "const"
+        Semantic::SymbolKind.Module -> "module"
+        Semantic::SymbolKind.Import -> "import"
+        Semantic::SymbolKind.Law -> "law"
+        _ -> ""
+
+
+def hover_push(out: mutable darray[u8]&, text: sview) -> void can[Memory.Allocate, Abort.Panic]:
+    for b in text:
+        out.push(b)
+
+
+def build_hover_index(table: Semantic::SymbolTable&) -> darray[u8]:
+    can Memory.Allocate, Abort.Panic:
+        body: mutable darray[u8] = []
+        i: mutable usize = 0
+        while i < symbol_count(table):
+            sym: Semantic::Symbol = symbol_at(table, i)
+            if sym.line > 0:
+                cat: sview = hover_symbol_category(sym.kind)
+                if cat.len > 0:
+                    body.push(HOVER_REC)
+                    body.push(115)
+                    body.push(HOVER_FS)
+                    hover_push(body, sym.name)
+                    body.push(HOVER_FS)
+                    hover_push(body, cat)
+                    body.push(HOVER_FS)
+                    push_int(body, sym.line.i64())
+                    body.push(HOVER_FS)
+                    hover_push(body, sym.return_type)
+            i <- i + 1
+        i <- 0
+        while i < occurrence_count(table):
+            body.push(HOVER_REC)
+            body.push(111)
+            body.push(HOVER_FS)
+            push_int(body, occurrence_line(table, i).i64())
+            body.push(HOVER_FS)
+            hover_push(body, occurrence_name(table, i))
+            body.push(HOVER_FS)
+            push_int(body, occurrence_kind_index(table, i))
+            i <- i + 1
+        return body
+
+
+# [start,end) bounds of field `index` within a record; false past the last.
+def hover_field(blob: sview, rec_start: usize, rec_end: usize, index: i64, out: mutable sview&) -> bool:
+    f: mutable i64 = 0
+    i: mutable usize = rec_start
+    fstart: mutable usize = rec_start
+    while i <= rec_end:
+        if i == rec_end or sview_at(blob, i) == HOVER_FS:
+            if f == index:
+                out <- string_view_slice(blob, fstart.i64(), i.i64())
+                return true
+            f <- f + 1
+            fstart <- i + 1
+        i <- i + 1
+    return false
+
+
+def hover_parse_i64(text: sview) -> i64:
+    n: mutable i64 = 0
+    neg: mutable bool = false
+    i: mutable usize = 0
+    if text.len > 0 and sview_at(text, 0) == 45:
+        neg <- true
+        i <- 1
+    while i < text.len.usize():
+        d: u8 = sview_at(text, i)
+        n <- n * 10 + (d.i64() - 48) if d >= 48 and d <= 57
+        i <- i + 1
+    return (0 - n) if neg else n
+
+
+# ref_kind of an occurrence matching (line, name), or -1.
+def hover_occ_kind(blob: sview, line: i64, name: sview) -> i64:
+    rec_start: mutable usize = 0
+    i: mutable usize = 0
+    n: usize = blob.len.usize()
+    while i <= n:
+        if i == n or sview_at(blob, i) == HOVER_REC:
+            if i > rec_start and sview_at(blob, rec_start) == 111:
+                fl: mutable sview = zeroed
+                fn: mutable sview = zeroed
+                fk: mutable sview = zeroed
+                if hover_field(blob, rec_start, i, 1, fl) and hover_field(blob, rec_start, i, 2, fn) and hover_field(blob, rec_start, i, 3, fk):
+                    if hover_parse_i64(fl) == line and string_views_eq(fn, name) != 0:
+                        return hover_parse_i64(fk)
+            rec_start <- i + 1
+        i <- i + 1
+    return -1
+
+
+def hover_symbol_info(blob: sview, name: sview, cat_out: mutable sview&, ret_out: mutable sview&) -> bool:
+    rec_start: mutable usize = 0
+    i: mutable usize = 0
+    n: usize = blob.len.usize()
+    while i <= n:
+        if i == n or sview_at(blob, i) == HOVER_REC:
+            if i > rec_start and sview_at(blob, rec_start) == 115:
+                fn: mutable sview = zeroed
+                fc: mutable sview = zeroed
+                fr: mutable sview = zeroed
+                if hover_field(blob, rec_start, i, 1, fn) and hover_field(blob, rec_start, i, 2, fc) and hover_field(blob, rec_start, i, 4, fr):
+                    if string_views_eq(fn, name) != 0:
+                        cat_out <- fc
+                        ret_out <- fr
+                        return true
+            rec_start <- i + 1
+        i <- i + 1
+    return false
+
+
+def hover_is_ident_byte(b: u8) -> bool:
+    if b >= 48 and b <= 57:
+        return true
+    if b >= 65 and b <= 90:
+        return true
+    if b >= 97 and b <= 122:
+        return true
+    return b == 95 or b >= 128
+
+
+# The identifier at the cursor. Boundary policy: if the byte at the cursor is
+# not an identifier byte, the token immediately to its left is selected (so a
+# cursor at a token's end still hovers it); if neither side is an identifier,
+# returns false. `scol`/`ecol` are negotiated-unit columns of the span.
+def hover_ident_at(src: u8&, src_len: usize, line0: i64, char_units: i64, utf8: bool, name_out: mutable sview&, scol_out: mutable i64&, ecol_out: mutable i64&) -> bool can[Abort.Panic]:
+    lstart: usize = Positions::line_start_offset(src, src_len, line0)
+    llen: i64 = Positions::line_byte_length(src, src_len, line0)
+    bcol: i64 = Positions::char_to_byte_col(src, src_len, line0, char_units, utf8)
+    s: mutable i64 = bcol
+    if s >= llen or not hover_is_ident_byte(src[lstart + s.usize()]):
+        if s > 0 and hover_is_ident_byte(src[lstart + (s - 1).usize()]):
+            s <- s - 1
+        else:
+            return false
+    e: mutable i64 = s
+    while e < llen and hover_is_ident_byte(src[lstart + e.usize()]):
+        e <- e + 1
+    st: mutable i64 = s
+    while st > 0 and hover_is_ident_byte(src[lstart + (st - 1).usize()]):
+        st <- st - 1
+    name_out <- string_view_slice(sview(&src[0], 0, src_len.i64()), (lstart.i64() + st), (lstart.i64() + e))
+    scol_out <- Positions::byte_col_to_units(src, src_len, line0, st, utf8)
+    ecol_out <- Positions::byte_col_to_units(src, src_len, line0, e, utf8)
+    return true
+
+
+def hover_label_from(cat: sview, name: sview, ret: sview) -> darray[u8]:
+    can Memory.Allocate, Abort.Panic:
+        out: mutable darray[u8] = []
+        if string_view_eq(cat, "fn") == 1:
+            push_str(out, "def ")
+            hover_push(out, name)
+            if ret.len > 0:
+                push_str(out, " -> ")
+                hover_push(out, ret)
+        elif string_view_eq(cat, "struct") == 1:
+            push_str(out, "struct ")
+            hover_push(out, name)
+        elif string_view_eq(cat, "enum") == 1:
+            push_str(out, "enum ")
+            hover_push(out, name)
+        elif string_view_eq(cat, "alias") == 1:
+            push_str(out, "alias ")
+            hover_push(out, name)
+        elif string_view_eq(cat, "const") == 1:
+            push_str(out, "const ")
+            hover_push(out, name)
+        elif string_view_eq(cat, "module") == 1:
+            push_str(out, "module ")
+            hover_push(out, name)
+        elif string_view_eq(cat, "law") == 1:
+            push_str(out, "law ")
+            hover_push(out, name)
+        return out
+
+
+# Returns the full hover result body, or empty when nothing resolves.
+def general_hover_body(document: LspDocument, storage: darray[u8]&, line_no: i64, char_no: i64, markdown: bool, utf8: bool) -> darray[u8]:
+    can Memory.Allocate, Abort.Panic:
+        if document.hover_len == 0 or line_no < 0 or char_no < 0:
+            return []
+        src: u8& = &storage[document.text_start]
+        src_len: usize = document.text_len - 1
+        name: mutable sview = zeroed
+        scol: mutable i64 = 0
+        ecol: mutable i64 = 0
+        if not hover_ident_at(src, src_len, line_no, char_no, utf8, name, scol, ecol):
+            return []
+        if document.hover_start + document.hover_len > storage.count:
+            return []
+        blob: sview = sview(&storage[document.hover_start], 0, document.hover_len.i64())
+        value: mutable darray[u8] = []
+        occ: i64 = hover_occ_kind(blob, line_no, name)
+        if occ == OCC_PARAM:
+            push_str(value, "(parameter) ")
+            hover_push(value, name)
+        elif occ == OCC_LOCAL:
+            push_str(value, "(local) ")
+            hover_push(value, name)
+        else:
+            cat: mutable sview = zeroed
+            ret: mutable sview = zeroed
+            if hover_symbol_info(blob, name, cat, ret):
+                value <- hover_label_from(cat, name, ret)
+        if value.count == 0:
+            return []
+        body: mutable darray[u8] = []
+        push_str(body, "{\"contents\":{\"kind\":\"markdown\",\"value\":\"") if markdown
+        push_str(body, "{\"contents\":{\"kind\":\"plaintext\",\"value\":\"") if not markdown
+        for b in value:
+            json_escape_byte(body, b)
+        push_str(body, "\"},\"range\":")
+        docsym_push_range(body, line_no, scol, ecol)
+        push_str(body, "}")
+        return body
