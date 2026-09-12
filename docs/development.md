@@ -223,6 +223,19 @@ top-level type is tinted as that local. Member access after `.` remains a
 field/method decision (also fixed before spelling). Effect-list identifiers
 and real keyword tokens are unaffected. Floors: `test/precedence_test.sh`.
 
+## Performance pipeline (H04)
+
+Token encoding and document-symbol generation stream a **line cursor** in
+source order instead of re-scanning to each line start from offset 0 (which
+made them O(tokens × file size)). Identifier resolution uses per-analysis hash
+indexes exposed by the frontend adapter — `symbol_index_build` /
+`symbol_index_of_indexed` (name→symbol) and `occurrence_index_build` /
+`occurrence_kind_indexed` (line→occurrence chain) — so classification is O(1)
+average per identifier rather than a full scan. Measured on a synthetic
+many-declaration file: 127 KB / 4.8k lines went from ~13.7s to ~3.1s at
+`-O2`. `python3 test/bench.py` reports per-size timings; do not gate CI on
+raw timings (see the plan's separate-perf policy).
+
 ## Region/lifetime constraints
 
 The frontend's region system rejects storing a function-local container into
