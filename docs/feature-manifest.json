@@ -183,5 +183,8 @@
     "on_failure": "ParseError -32700 with id null",
     "nesting_limit": 256,
     "test": "test/json_strict_test.sh"
+  },
+  "containment": {
+    "incomplete_source": "providers stay alive and recover after malformed edits; see test/incomplete_source_test.sh"
   }
 }

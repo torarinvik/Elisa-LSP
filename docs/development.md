@@ -310,6 +310,19 @@ from indentation exactly like folding (blank lines transparent); containment is
 asserted by the test. Ranges use negotiated units through `Positions`. Floor:
 `test/selection_test.sh`.
 
+## Incomplete-source containment (A04)
+
+Malformed and half-written source never ends the session. The frontend is
+already tolerant enough that every provider (tokens, symbols, folding,
+selection, hover) answers during broken states and diagnostics are still
+published; a later valid edit recovers with clean diagnostics and fresh
+tokens. `test/incomplete_source_test.sh` drives 13 adversarial states
+(unfinished declarations, dangling delimiters/selectors, half-written
+generics, incomplete interpolation, unterminated literals/comments, deep
+bodies) through every provider. Note: this covers the embedded frontend; a
+process-level frontend crash/hang (the plan's worker-containment option) is
+not yet isolated.
+
 ## Region/lifetime constraints
 
 The frontend's region system rejects storing a function-local container into
