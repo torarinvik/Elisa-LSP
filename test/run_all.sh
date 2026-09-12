@@ -45,6 +45,7 @@ run test/diagnostic_ranges_test.sh
 run test/related_info_test.sh
 run test/diagnostics_version_test.sh
 run test/json_smoke.sh
+run test/frontend_contract_test.sh
 run test/manifest_test.sh
 
 echo "----"

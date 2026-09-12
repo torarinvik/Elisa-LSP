@@ -192,6 +192,19 @@ fabricate related info. The compiler remains the source of the relation and
 the diagnostic wording; the server owns only the LSP framing and a short
 presentation label. Floor: `test/related_info_test.sh`.
 
+## Frontend adapter (A01)
+
+`src/frontend_adapter.elisa` is the only module that reaches into the
+compiler's `Semantic::SymbolTable` storage layout. It exposes named accessors
+(`symbol_count`/`symbol_at`/`symbol_index_of`, `occurrence_kind_at` with named
+`OCC_PARAM`/`OCC_LOCAL` roles decoded from `ref_kind`, enum-variant lookups,
+`diagnostic_count`/`diagnostic_at`) and a `frontend_contract_version`. A
+frontend upgrade that renames a field, changes a parallel-array shape, or
+renumbers `ref_kind` fails here or in `test/frontend_contract_test.sh` — a
+localized contract break rather than scattered feature regressions. Token
+presentation, diagnostic wording, and JSON framing deliberately stay outside
+the adapter.
+
 ## Region/lifetime constraints
 
 The frontend's region system rejects storing a function-local container into

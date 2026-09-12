@@ -7,6 +7,7 @@
 # Runtime is pulled in transitively via diagnostics.elisa -> Elisa-compiler's parser,
 # which carries its own copy of elisacore_std (a second copy would duplicate-declare).
 include "diagnostics.elisa"
+include "frontend_adapter.elisa"
 include "json.elisa"
 include "semtokens.elisa"
 include "features/document_symbols.elisa"

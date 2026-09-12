@@ -1,0 +1,83 @@
+# Frontend adapter (A01): the ONLY module that reaches into the compiler's
+# `Semantic::SymbolTable` storage layout. Everything else — diagnostics,
+# semantic tokens, document symbols, and future providers — goes through these
+# named accessors, so a frontend upgrade that renames a field, changes a
+# parallel-array shape, or renumbers `ref_kind` fails here (or in
+# `test/frontend_contract.sh`) with a localized error instead of silently
+# changing behavior across the server.
+#
+# Contract version: bump `frontend_contract_version` whenever the assumptions
+# below about the frontend surface change. The contract fixture compiles and
+# exercises these accessors against the pinned frontend; a mismatch is a
+# contract break, not a feature regression.
+#
+# Explicitly NOT in this module: token-type/presentation mapping (semtokens),
+# diagnostic wording/severity (the frontend keeps `diagnostic_message` /
+# `diagnostic_severity` authoritative), JSON framing, and range conversion.
+
+# Occurrence roles, decoded from the frontend's `ref_kind` scalar. The frontend
+# documents these as 1 = parameter and 2 = local; naming them here keeps that
+# numeric encoding out of every provider.
+const OCC_UNKNOWN: i64 = -1
+const OCC_PARAM: i64 = 1
+const OCC_LOCAL: i64 = 2
+
+# The frontend contract revision this adapter is written against.
+def frontend_contract_version() -> i64:
+    return 1
+
+
+# Iterate the file's declaration symbols without exposing the storage field.
+def symbol_count(table: Semantic::SymbolTable&) -> usize:
+    return table.symbols.count
+
+
+def symbol_at(table: Semantic::SymbolTable&, index: usize) -> Semantic::Symbol:
+    return table.symbols[index]
+
+
+# Index of the first declaration whose name matches exactly, or -1. A scan is
+# correct at per-file scale; an index arrives with A02.
+def symbol_index_of(table: Semantic::SymbolTable&, name: sview) -> i64:
+    i: mutable usize = 0
+    while i < table.symbols.count:
+        return i.i64() if string_views_eq(table.symbols[i].name, name) != 0
+        i <- i + 1
+    return -1
+
+
+# A parameter/local occurrence on `line` with `name`, decoded to OCC_*. The
+# frontend logs these in parallel arrays; any renumbering surfaces here.
+def occurrence_kind_at(table: Semantic::SymbolTable&, line: u32, name: sview) -> i64:
+    i: mutable usize = 0
+    while i < table.ref_line.count:
+        if table.ref_line[i] == line and string_views_eq(table.ref_name[i], name) != 0:
+            return table.ref_kind[i].i64()
+        i <- i + 1
+    return OCC_UNKNOWN
+
+
+# Enum variants live in parallel registries, not ordinary Symbol rows.
+def enum_variant_for_owner(table: Semantic::SymbolTable&, owner: sview, name: sview) -> bool:
+    i: mutable usize = 0
+    while i < table.enum_variant_owner.count:
+        return true if string_views_eq(table.enum_variant_owner[i], owner) != 0 and string_views_eq(table.enum_variant_name[i], name) != 0
+        i <- i + 1
+    return false
+
+
+def enum_variant_anywhere(table: Semantic::SymbolTable&, name: sview) -> bool:
+    i: mutable usize = 0
+    while i < table.enum_variant_name.count:
+        return true if string_views_eq(table.enum_variant_name[i], name) != 0
+        i <- i + 1
+    return false
+
+
+# The frontend's located findings. Wording/severity stay frontend-owned.
+def diagnostic_count(table: Semantic::SymbolTable&) -> usize:
+    return table.diagnostics.count
+
+
+def diagnostic_at(table: Semantic::SymbolTable&, index: usize) -> Semantic::Diagnostic:
+    return table.diagnostics[index]

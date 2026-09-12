@@ -196,11 +196,11 @@ def build_publish_body(uri: sview, table: Semantic::SymbolTable, src: u8&, src_l
         starts: mutable darray[usize] = []
         lens: mutable darray[usize] = []
         rendered: mutable i64 = 0
-        total: i64 = table.diagnostics.count.i64()
+        total: i64 = diagnostic_count(table).i64()
         i: mutable usize = 0
-        while i < table.diagnostics.count:
+        while i < diagnostic_count(table):
             break if rendered >= MAX_DIAGNOSTICS
-            entry: darray[u8] = diagnostic_json(table.diagnostics[i], src, src_len, utf8, related, uri)
+            entry: darray[u8] = diagnostic_json(diagnostic_at(table, i), src, src_len, utf8, related, uri)
             dup: mutable bool = false
             k: mutable usize = 0
             while k < starts.count:

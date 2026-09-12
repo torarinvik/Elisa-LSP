@@ -105,8 +105,8 @@ def build_symbols_body(uri: sview, table: Semantic::SymbolTable, src: u8&, src_l
         body.push_str("[")
         first: mutable bool = true
         i: mutable usize = 0
-        while i < table.symbols.count:
-            sym: Semantic::Symbol = table.symbols[i]
+        while i < symbol_count(table):
+            sym: Semantic::Symbol = symbol_at(table, i)
             # Prelude/primitive scope has no file line — never a document symbol.
             if sym.line > 0:
                 kind: i64 = docsym_select_kind(sym.kind, allowed)

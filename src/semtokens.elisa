@@ -105,48 +105,27 @@ def semtok_ident_class(text: sview) -> i64 can[Memory.Allocate, Abort.Panic]:
 
 # [S] layer: map a name to the token type implied by its top-level declaration
 # (Struct/Enum/Alias→type.user, Func/Extern→fn.use, Const→global, Module→module,
-# Law→decl). Linear scan of the symbol table (per-file scale). -1 = no match.
+# Law→decl). -1 = no match. Declaration lookup goes through the frontend adapter.
 def symbol_ttype(table: Semantic::SymbolTable&, name: sview) -> i64:
-    for sym in table.symbols:
-        if string_views_eq(sym.name, name) != 0:
-            k: Semantic::SymbolKind = sym.kind
-            return when k:
-                Semantic::SymbolKind.Func | Semantic::SymbolKind.Extern -> ST_FN_USE
-                Semantic::SymbolKind.Struct | Semantic::SymbolKind.Enum | Semantic::SymbolKind.Alias -> ST_TYPE_USER
-                Semantic::SymbolKind.Const -> ST_BIND_GLOBAL
-                Semantic::SymbolKind.Module | Semantic::SymbolKind.Import -> ST_META_MODULE
-                Semantic::SymbolKind.Law -> ST_DECL_SKELETON
-                _ -> -1
-    return -1
+    idx: i64 = symbol_index_of(table, name)
+    return -1 if idx < 0
+    k: Semantic::SymbolKind = symbol_at(table, idx.usize()).kind
+    return when k:
+        Semantic::SymbolKind.Func | Semantic::SymbolKind.Extern -> ST_FN_USE
+        Semantic::SymbolKind.Struct | Semantic::SymbolKind.Enum | Semantic::SymbolKind.Alias -> ST_TYPE_USER
+        Semantic::SymbolKind.Const -> ST_BIND_GLOBAL
+        Semantic::SymbolKind.Module | Semantic::SymbolKind.Import -> ST_META_MODULE
+        Semantic::SymbolKind.Law -> ST_DECL_SKELETON
+        _ -> -1
 
 
-# Enum variants are kept in parallel registry arrays, not ordinary Symbol rows.
-def enum_variant_for_owner(table: Semantic::SymbolTable&, owner: sview, name: sview) -> bool:
-    i: mutable usize = 0
-    while i < table.enum_variant_owner.count:
-        return true if string_views_eq(table.enum_variant_owner[i], owner) != 0 and string_views_eq(table.enum_variant_name[i], name) != 0
-        i <- i + 1
-    return false
-
-
-def enum_variant_anywhere(table: Semantic::SymbolTable&, name: sview) -> bool:
-    i: mutable usize = 0
-    while i < table.enum_variant_name.count:
-        return true if string_views_eq(table.enum_variant_name[i], name) != 0
-        i <- i + 1
-    return false
-
-
-# Resolve a param/local occurrence from the frontend's current tooling log.
-# The compiler stores this as parallel arrays rather than exposing a helper API;
-# its documented ref_kind values are 1 (parameter) and 2 (local). Keep the
-# lookup here so the LSP stays buildable as the semantic module evolves.
+# Resolve a param/local occurrence through the adapter's named roles.
 def occurrence_ttype(table: Semantic::SymbolTable&, line: u32, name: sview) -> i64:
-    i: mutable usize = 0
-    while i < table.ref_line.count:
-        if table.ref_line[i] == line and string_views_eq(table.ref_name[i], name) != 0:
-            return table.ref_kind[i].i64()
-        i <- i + 1
+    occ: i64 = occurrence_kind_at(table, line, name)
+    if occ == OCC_PARAM:
+        return 1
+    if occ == OCC_LOCAL:
+        return 2
     return -1
 
 
