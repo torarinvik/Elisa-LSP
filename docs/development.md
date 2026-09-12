@@ -266,6 +266,17 @@ runs of `#` comment lines, and `"""` doc blocks. Output is line-only
 satisfied with no character offsets; the client's `rangeLimit` is honored.
 Folds are always non-empty and in-bounds. Floors: `test/folding_test.sh`.
 
+## JSON validation (J01)
+
+`Json::is_valid(src)` (in `src/json.elisa`) requires exactly one well-formed
+JSON value followed only by whitespace: strict string escapes and `\uXXXX`
+hex, JSON number grammar (no leading zeros), matched delimiters, and a
+bounded nesting depth (256) so hostile input cannot overflow the stack. A
+body that fails validation gets JSON-RPC `ParseError` (`-32700`, `id: null`)
+and is never dispatched; valid-but-wrong-shape messages still go through
+P01's `InvalidRequest`/`MethodNotFound` paths. The permissive value parser
+remains for dispatch. Floors: `test/json_strict_test.sh`.
+
 ## Region/lifetime constraints
 
 The frontend's region system rejects storing a function-local container into

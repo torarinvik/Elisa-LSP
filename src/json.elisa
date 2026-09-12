@@ -6,6 +6,10 @@
 # consumed (e.g. document text). Children are `darray` side-tables (docs/76); navigate
 # with `match` and the `get` accessor.
 module Json:
+    # Nesting bound for the strict validator (J01): hostile depth is rejected
+    # rather than overflowing the stack.
+    const MAX_JSON_DEPTH: i64 = 256
+
     public:
         # Hierarchy root so `Value` is a handle-based, store-backed packed enum whose
         # Arr/Obj payloads can carry `darray` side-tables (docs/76).
@@ -153,6 +157,174 @@ module Json:
                 return parse_value(src, pos)
 
 
+        # J01 strict validation: true iff `src` is exactly one well-formed JSON
+        # value followed only by whitespace. The value parser above is
+        # deliberately permissive (it fills a model for dispatch); this gate
+        # decides whether the bytes are JSON at all, so malformed messages get a
+        # JSON-RPC ParseError instead of being silently coerced.
+        def is_valid(src: sview) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                pos: mutable usize = 0
+                false return if not value_ok(src, pos, 0)
+                ws_ok(src, pos)
+                return pos == sview_len(src)
+
+
+    private:
+        def ws_ok(src: sview, pos: mutable usize&) -> void:
+            while pos[0] < sview_len(src):
+                c: u8 = sview_at(src, pos[0])
+                match c:
+                    32 | 9 | 10 | 13:
+                        pos[0] <- pos[0] + 1
+                    _:
+                        return
+
+
+        def lit_ok(src: sview, pos: mutable usize&, text: u8&) -> bool:
+            n: usize = sview_len(sview(text, 0, -1))
+            false return if pos[0] + n > sview_len(src)
+            i: mutable usize = 0
+            while i < n:
+                false return if sview_at(src, pos[0] + i) != sview_at(sview(text, 0, -1), i)
+                i <- i + 1
+            pos[0] <- pos[0] + n
+            return true
+
+
+        def hex4_ok(src: sview, start: usize) -> bool:
+            false return if start + 4 > sview_len(src)
+            i: mutable usize = 0
+            while i < 4:
+                c: u8 = sview_at(src, start + i)
+                false return if c < 48 or (c > 57 and c < 65) or (c > 70 and c < 97) or c > 102
+                i <- i + 1
+            return true
+
+
+        def string_ok(src: sview, pos: mutable usize&) -> bool:
+            false return if sview_at(src, pos[0]) != 34
+            pos[0] <- pos[0] + 1
+            while pos[0] < sview_len(src):
+                c: u8 = sview_at(src, pos[0])
+                if c == 34:
+                    pos[0] <- pos[0] + 1
+                    return true
+                if c == 92:
+                    e: u8 = sview_at(src, pos[0] + 1) if pos[0] + 1 < sview_len(src) else 0
+                    if e == 117:
+                        false return if not hex4_ok(src, pos[0] + 2)
+                        pos[0] <- pos[0] + 6
+                    elif e == 34 or e == 92 or e == 47 or e == 98 or e == 102 or e == 110 or e == 114 or e == 116:
+                        pos[0] <- pos[0] + 2
+                    else:
+                        return false
+                elif c < 32:
+                    return false
+                else:
+                    pos[0] <- pos[0] + 1
+            return false
+
+
+        def number_ok(src: sview, pos: mutable usize&) -> bool:
+            if sview_at(src, pos[0]) == 45:
+                pos[0] <- pos[0] + 1
+            false return if pos[0] >= sview_len(src)
+            c: u8 = sview_at(src, pos[0])
+            if c == 48:
+                pos[0] <- pos[0] + 1
+            elif c >= 49 and c <= 57:
+                pos[0] <- pos[0] + 1
+                while pos[0] < sview_len(src) and sview_at(src, pos[0]) >= 48 and sview_at(src, pos[0]) <= 57:
+                    pos[0] <- pos[0] + 1
+            else:
+                return false
+            if pos[0] < sview_len(src) and sview_at(src, pos[0]) == 46:
+                pos[0] <- pos[0] + 1
+                false return if pos[0] >= sview_len(src) or sview_at(src, pos[0]) < 48 or sview_at(src, pos[0]) > 57
+                while pos[0] < sview_len(src) and sview_at(src, pos[0]) >= 48 and sview_at(src, pos[0]) <= 57:
+                    pos[0] <- pos[0] + 1
+            if pos[0] < sview_len(src) and (sview_at(src, pos[0]) == 101 or sview_at(src, pos[0]) == 69):
+                pos[0] <- pos[0] + 1
+                if pos[0] < sview_len(src) and (sview_at(src, pos[0]) == 43 or sview_at(src, pos[0]) == 45):
+                    pos[0] <- pos[0] + 1
+                false return if pos[0] >= sview_len(src) or sview_at(src, pos[0]) < 48 or sview_at(src, pos[0]) > 57
+                while pos[0] < sview_len(src) and sview_at(src, pos[0]) >= 48 and sview_at(src, pos[0]) <= 57:
+                    pos[0] <- pos[0] + 1
+            return true
+
+
+        def value_ok(src: sview, pos: mutable usize&, depth: i64) -> bool:
+            ws_ok(src, pos)
+            false return if depth > MAX_JSON_DEPTH
+            false return if pos[0] >= sview_len(src)
+            c: u8 = sview_at(src, pos[0])
+            if c == 123:
+                return object_ok(src, pos, depth + 1)
+            if c == 91:
+                return array_ok(src, pos, depth + 1)
+            if c == 34:
+                return string_ok(src, pos)
+            if c == 116:
+                return lit_ok(src, pos, "true")
+            if c == 102:
+                return lit_ok(src, pos, "false")
+            if c == 110:
+                return lit_ok(src, pos, "null")
+            if c == 45 or (c >= 48 and c <= 57):
+                return number_ok(src, pos)
+            return false
+
+
+        def object_ok(src: sview, pos: mutable usize&, depth: i64) -> bool:
+            pos[0] <- pos[0] + 1
+            ws_ok(src, pos)
+            if pos[0] < sview_len(src) and sview_at(src, pos[0]) == 125:
+                pos[0] <- pos[0] + 1
+                return true
+            while true:
+                ws_ok(src, pos)
+                false return if pos[0] >= sview_len(src) or sview_at(src, pos[0]) != 34
+                false return if not string_ok(src, pos)
+                ws_ok(src, pos)
+                false return if pos[0] >= sview_len(src) or sview_at(src, pos[0]) != 58
+                pos[0] <- pos[0] + 1
+                false return if not value_ok(src, pos, depth)
+                ws_ok(src, pos)
+                false return if pos[0] >= sview_len(src)
+                d: u8 = sview_at(src, pos[0])
+                if d == 44:
+                    pos[0] <- pos[0] + 1
+                elif d == 125:
+                    pos[0] <- pos[0] + 1
+                    return true
+                else:
+                    return false
+            return false
+
+
+        def array_ok(src: sview, pos: mutable usize&, depth: i64) -> bool:
+            pos[0] <- pos[0] + 1
+            ws_ok(src, pos)
+            if pos[0] < sview_len(src) and sview_at(src, pos[0]) == 93:
+                pos[0] <- pos[0] + 1
+                return true
+            while true:
+                false return if not value_ok(src, pos, depth)
+                ws_ok(src, pos)
+                false return if pos[0] >= sview_len(src)
+                d: u8 = sview_at(src, pos[0])
+                if d == 44:
+                    pos[0] <- pos[0] + 1
+                elif d == 93:
+                    pos[0] <- pos[0] + 1
+                    return true
+                else:
+                    return false
+            return false
+
+
+    public:
         # Look up a field by key in an object value; null if absent or not an object.
         def get(v: Value, key: u8&) -> Value?:
             can Memory.Allocate, Abort.Panic:

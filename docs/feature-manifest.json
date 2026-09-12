@@ -166,5 +166,11 @@
     "contract_version": 1,
     "test": "test/frontend_contract_test.sh",
     "note": "only module touching Semantic::SymbolTable storage layout; ref_kind roles named OCC_PARAM/OCC_LOCAL"
+  },
+  "json_validation": {
+    "strict_gate": "src/json.elisa:is_valid",
+    "on_failure": "ParseError -32700 with id null",
+    "nesting_limit": 256,
+    "test": "test/json_strict_test.sh"
   }
 }

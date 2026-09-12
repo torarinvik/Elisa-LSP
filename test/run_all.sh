@@ -27,6 +27,7 @@ run() {
 run test/handshake_test.sh
 run test/transport_test.sh
 run test/protocol_test.sh
+run test/json_strict_test.sh
 run test/capabilities_test.sh
 run test/diagnostics_test.sh
 run test/escapes_test.sh

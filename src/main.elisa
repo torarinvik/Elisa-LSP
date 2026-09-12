@@ -915,8 +915,7 @@ def send_result(id_raw: darray[u8], result: u8&) -> void can[Console, Memory.All
     send_message(body)
 
 
-# `{"jsonrpc":"2.0","id":<id>,"error":{"code":<code>,"message":"<msg>"}}`
-# P01: every valid request completes exactly once; unknown methods get
+# `{"jsonrpc":"2.0","id":<id>,"error":{"code":<code>,"message":"<msg>"}}`# P01: every valid request completes exactly once; unknown methods get
 # MethodNotFound (-32601), never silence. Notifications (no id) never produce
 # response objects — callers must check `request_has_id` first.
 # NOTE: `push_int` only emits >=0, so negative JSON-RPC codes need an explicit '-'.
@@ -933,6 +932,14 @@ def send_error(id_raw: darray[u8], code: i64, message: u8&) -> void can[Console,
     push_str(body, ",\"message\":\"")
     push_str(body, message)
     push_str(body, "\"}}")
+    send_message(body)
+
+
+# JSON-RPC ParseError (J01): the frame's body is not one valid JSON value, so
+# no request id can be recovered. Per JSON-RPC the id is null.
+def send_parse_error() -> void can[Console, Memory.Allocate, Abort.Panic]:
+    body: mutable darray[u8] = []
+    push_str(body, "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,\"message\":\"ParseError\"}}")
     send_message(body)
 
 
@@ -1223,6 +1230,11 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
         0 return if status == 0
         1 return if status < 0
         bsv: sview = sview(&body[0], 0, body.count.i64())
+        # J01: a body that is not exactly one JSON value gets ParseError and is
+        # not dispatched. Valid JSON with wrong shape is handled below (P01).
+        if not Json::is_valid(bsv):
+            send_parse_error()
+            continue
         root: Json::Value = Json::parse(bsv)
         method: sview = request_method(root)
         has_id: bool = request_has_id(root)
