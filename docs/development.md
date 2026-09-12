@@ -250,6 +250,12 @@ open/close cycles, asserts the buffer stays within ~2× live, and that it
 reclaims to a few hundred bytes with features intact. The private
 `$/elisa/stats` request (never advertised as a capability) reports
 `storage_bytes`, `live_bytes`, `documents`, `open` for observability/soak.
+Closed documents are unlinked from their hash chain and their slot marked free;
+`document_slot` reuses a freed slot (bumping its generation so no old lifetime
+can publish) instead of appending. Under URI churn the slot table and storage
+therefore stay bounded by peak concurrent opens, not by the number of distinct
+URIs touched. `test/storage_reclaim_test.sh` also drives 300 distinct URIs and
+asserts the peak slot count stays tiny.
 
 ## Region/lifetime constraints
 

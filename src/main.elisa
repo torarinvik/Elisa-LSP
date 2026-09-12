@@ -46,6 +46,7 @@ struct LspDocument:
     generation: mutable u64
     last_diag_version: mutable i64
     last_diag_fp: mutable u64
+    free: mutable bool
 
 
 # ---- stdio byte transport ---------------------------------------------------------
@@ -509,20 +510,80 @@ def document_index(documents: darray[LspDocument]&, storage: darray[u8]&, heads:
     return -1
 
 
-# Find an existing cache entry or append a new one.
+# Find an existing cache entry, reuse a freed slot (D04), or append a new one.
+# Reusing a freed slot keeps the slot table bounded under URI churn; the reused
+# slot's generation is bumped so no old lifetime can publish into the new one.
 def document_slot(documents: mutable darray[LspDocument]&, storage: mutable darray[u8]&, heads: mutable dict[u64, u32]&, uri: sview) -> usize can[Memory.Allocate, Abort.Panic]:
     found: i64 = document_index(documents, storage, heads, uri)
     return found.usize() if found >= 0
     hash: u64 = document_hash(uri)
     previous: mutable u32 = 4294967295
     previous <- head if heads.get(hash) is head
+    reuse: mutable i64 = -1
+    i: mutable usize = 0
+    while i < documents.count:
+        if documents[i].free:
+            reuse <- i.i64()
+            break
+        i <- i + 1
+    if reuse >= 0:
+        slot: usize = reuse.usize()
+        d: mutable LspDocument& = &documents[slot]
+        d.generation <- d.generation + 1
+        d.uri_start <- storage.count
+        d.uri_len <- uri.len.usize()
+        d.text_start <- storage.count
+        d.text_len <- 0
+        d.text_capacity <- 0
+        d.semantic_start <- 0
+        d.semantic_len <- 0
+        d.semantic_capacity <- 0
+        d.symbols_start <- 0
+        d.symbols_len <- 0
+        d.symbols_capacity <- 0
+        d.hash <- hash
+        d.next <- previous
+        d.version <- -1
+        d.open <- false
+        d.free <- false
+        d.last_diag_version <- -1
+        d.last_diag_fp <- 0
+        j: mutable usize = 0
+        while j < uri.len.usize():
+            storage.push(sview_at(uri, j))
+            j <- j + 1
+        heads <- heads.put(hash, slot.u32())
+        return slot
     uri_start: usize = storage.count
-    documents.push(LspDocument{uri_start: uri_start, uri_len: uri.len.usize(), text_start: 0, text_len: 0, text_capacity: 0, semantic_start: 0, semantic_len: 0, semantic_capacity: 0, symbols_start: 0, symbols_len: 0, symbols_capacity: 0, hash: hash, next: previous, version: -1, open: false, generation: 0, last_diag_version: -1, last_diag_fp: 0})
+    documents.push(LspDocument{uri_start: uri_start, uri_len: uri.len.usize(), text_start: 0, text_len: 0, text_capacity: 0, semantic_start: 0, semantic_len: 0, semantic_capacity: 0, symbols_start: 0, symbols_len: 0, symbols_capacity: 0, hash: hash, next: previous, version: -1, open: false, generation: 0, last_diag_version: -1, last_diag_fp: 0, free: false})
     slot: usize = documents.count - 1
     for i in 0..<uri.len.usize():
         storage.push(sview_at(uri, i))
     heads <- heads.put(hash, slot.u32())
     return slot
+
+
+# Remove `slot` from its hash chain so a freed slot can be reused without a
+# stale chain reaching it. A missing key is a no-op.
+def chain_remove(documents: mutable darray[LspDocument]&, heads: mutable dict[u64, u32]&, slot: usize) -> void can[Abort.Panic]:
+    h: u64 = documents[slot].hash
+    chain_head: mutable u32 = 4294967295
+    found_chain: mutable bool = false
+    if heads.get(h) is existing:
+        chain_head <- existing
+        found_chain <- true
+    return if not found_chain
+    previous: mutable u32 = 4294967295
+    current: mutable u32 = chain_head
+    while current != 4294967295:
+        if current == slot.u32():
+            if previous == 4294967295:
+                heads <- heads.put(h, documents[slot].next)
+            else:
+                documents[previous.usize()].next <- documents[slot].next
+            return
+        previous <- current
+        current <- documents[current.usize()].next
 
 
 # Commit a decoded source snapshot into reusable flat storage. Same-sized edits
@@ -606,10 +667,12 @@ def check_and_publish(root: Json::Value, documents: mutable darray[LspDocument]&
     # Malformed version (fractional, overflowing, wrong-typed): reject the
     # whole notification without mutating (J02/D01).
     return if incoming_version == -2
-    gen: u64 = document.generation
     # Duplicate open: new lifetime even if URI/version repeat.
     if is_open and document.open:
         document.generation <- document.generation + 1
+    # Snapshot generation for the publish guard, captured AFTER this update's
+    # lifetime bump so it reflects the revision actually being analyzed.
+    gen: u64 = document.generation
     # Stale/equal-version didChange: ignore without mutating.
     if not is_open and document.open and incoming_version >= 0 and incoming_version <= document.version:
         return
@@ -699,10 +762,11 @@ def send_stats(id_raw: darray[u8], documents: darray[LspDocument]&, storage: dar
     send_result_body(id_raw, body)
 
 
-# Close: mark closed, bump generation, clear text, and clear client diagnostics.
-# The URI slot is retained so collision chains stay valid; the generation bump
-# ensures in-flight old work can never publish into a reopened lifetime (D01).
-def handle_did_close(root: Json::Value, documents: mutable darray[LspDocument]&, storage: darray[u8]&, heads: dict[u64, u32]&) -> void can[Console, Memory.Allocate, Abort.Panic]:
+# Close: mark closed, unlink from the hash chain, free the slot for reuse, bump
+# generation, and clear client diagnostics. Freeing (rather than retaining)
+# keeps the slot table and storage bounded under URI churn (D04); the generation
+# bump ensures in-flight old work can never publish into a reused lifetime (D01).
+def handle_did_close(root: Json::Value, documents: mutable darray[LspDocument]&, storage: darray[u8]&, heads: mutable dict[u64, u32]&) -> void can[Console, Memory.Allocate, Abort.Panic]:
     spell_bytes: mutable darray[u8] = []
     canon_bytes: mutable darray[u8] = []
     uri: sview = request_identity(root, spell_bytes, canon_bytes)
@@ -710,10 +774,15 @@ def handle_did_close(root: Json::Value, documents: mutable darray[LspDocument]&,
     found: i64 = document_index(documents, storage, heads, uri)
     return if found < 0
     closed_version: i64 = documents[found.usize()].version
+    chain_remove(documents, heads, found.usize())
     documents[found.usize()].open <- false
+    documents[found.usize()].free <- true
     documents[found.usize()].text_len <- 0
+    documents[found.usize()].text_capacity <- 0
     documents[found.usize()].semantic_len <- 0
+    documents[found.usize()].semantic_capacity <- 0
     documents[found.usize()].symbols_len <- 0
+    documents[found.usize()].symbols_capacity <- 0
     documents[found.usize()].generation <- documents[found.usize()].generation + 1
     documents[found.usize()].last_diag_version <- -1
     documents[found.usize()].last_diag_fp <- 0
@@ -736,9 +805,10 @@ def storage_live_bytes(documents: darray[LspDocument]&) -> usize:
     i: mutable usize = 0
     while i < documents.count:
         d: LspDocument = documents[i]
-        live <- live + d.uri_len
-        if d.open:
-            live <- live + d.text_len + d.semantic_len + d.symbols_len
+        if not d.free:
+            live <- live + d.uri_len
+            if d.open:
+                live <- live + d.text_len + d.semantic_len + d.symbols_len
         i <- i + 1
     return live
 
@@ -753,6 +823,21 @@ def storage_reclaim(documents: mutable darray[LspDocument]&, storage: mutable da
     i: mutable usize = 0
     while i < documents.count:
         d: mutable LspDocument& = &documents[i]
+        if d.free:
+            # Freed slots retain nothing; reclaim their URI bytes too.
+            d.uri_start <- temp.count
+            d.uri_len <- 0
+            d.text_start <- temp.count
+            d.text_len <- 0
+            d.text_capacity <- 0
+            d.semantic_start <- temp.count
+            d.semantic_len <- 0
+            d.semantic_capacity <- 0
+            d.symbols_start <- temp.count
+            d.symbols_len <- 0
+            d.symbols_capacity <- 0
+            i <- i + 1
+            continue
         old_uri: usize = d.uri_start
         d.uri_start <- temp.count
         j: mutable usize = 0
