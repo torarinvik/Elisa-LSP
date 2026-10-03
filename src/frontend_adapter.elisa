@@ -22,9 +22,500 @@ const OCC_UNKNOWN: i64 = -1
 const OCC_PARAM: i64 = 1
 const OCC_LOCAL: i64 = 2
 
-# The frontend contract revision this adapter is written against.
+# Stable adapter categories for the compiler's SymbolKind enum. Providers map
+# these names to LSP/token presentation values without depending on enum tags.
+const SYMBOL_KIND_OTHER: i64 = -1
+const SYMBOL_KIND_FUNCTION: i64 = 1
+const SYMBOL_KIND_EXTERN: i64 = 2
+const SYMBOL_KIND_STRUCT: i64 = 3
+const SYMBOL_KIND_ENUM: i64 = 4
+const SYMBOL_KIND_ALIAS: i64 = 5
+const SYMBOL_KIND_CONST: i64 = 6
+const SYMBOL_KIND_MODULE: i64 = 7
+const SYMBOL_KIND_IMPORT: i64 = 8
+const SYMBOL_KIND_LAW: i64 = 9
+
+# Private `$/elisa/stats` counters. Query counts measure invocations of the
+# adapter's read accessors; the two index counters are incremented at the
+# server's index-build call sites in `semtokens.elisa`.
+global mutable lsp_adapter_query_calls: i64 = 0
+global mutable lsp_adapter_symbol_index_build_calls: i64 = 0
+global mutable lsp_adapter_occurrence_index_build_calls: i64 = 0
+
+# Elisa's latest SymbolTable keeps parameter/local occurrences as
+# (line, name, kind, BindingId) rows instead of retaining an Ast::Pos per row.
+# Reconstruct spans from exact lexer candidates only when row/candidate counts
+# agree. Binder-shaped candidates are paired by role and newest unmatched
+# BindingId serial; remaining uses follow resolver traversal order. If the
+# frontend changes that ordering, the versioned contract fixture must catch it.
+struct FrontendOccurrenceSpanGroup:
+    line: u32
+    name: sview
+    candidate_head: i64
+    candidate_tail: i64
+    candidate_count: usize
+    row_head: i64
+    row_tail: i64
+    row_count: usize
+    next_hash: i64
+
+struct FrontendOccurrenceCandidate:
+    position: Ast::Pos
+    binding_role: i64
+    next: i64
+
+# The frontend contract revision this adapter is written against. Version 13
+# accepts the compiler's zero-span, source-line-only occurrence sentinel while
+# keeping concrete spans exact and bounded; v12 added enum-variant accessors.
 def frontend_contract_version() -> i64:
-    return 1
+    return 13
+
+
+enum LspFrontendCompleteness:
+    Complete
+    Recovered
+    Rejected
+
+
+# One analysis job's coherent frontend result. These fields are shallow views
+# into job-local owners: keep source, token batch, and AST alive for the same
+# lexical lifetime as this record and all adapter queries.
+struct LspFrontendAnalysisSnapshot:
+    contract_version: i64
+    source_len: usize
+    token_batch: LspFrontendTokenBatch
+    syntax: Ast::File
+    semantic: Semantic::SymbolTable
+    symbols: darray[Semantic::Symbol]
+    diagnostics: darray[Semantic::Diagnostic]
+    occurrences: darray[Ast::Pos]
+    completeness: LspFrontendCompleteness
+
+
+def frontend_analysis_snapshot_valid(snapshot: LspFrontendAnalysisSnapshot, source_len: usize) -> bool:
+    return false if snapshot.contract_version != frontend_contract_version()
+    return false if snapshot.source_len != source_len
+    return false if snapshot.completeness == LspFrontendCompleteness.Rejected
+    return false if snapshot.completeness == LspFrontendCompleteness.Complete and snapshot.syntax.errors.count > 0
+    return false if snapshot.completeness == LspFrontendCompleteness.Recovered and snapshot.syntax.errors.count == 0
+    return false if snapshot.symbols.count != snapshot.semantic.symbols.count
+    return false if snapshot.diagnostics.count != snapshot.semantic.diagnostics.count
+    return true
+
+
+# Source spans used by navigation have zero-based byte offsets and a half-open
+# end. Some recovered/older frontend records legitimately have no exact span;
+# those are all-zero offset/end-column sentinels (the display line may remain
+# populated). Definition edges require an exact span.
+def frontend_span_valid(pos: Ast::Pos, source_len: usize, allow_missing: bool) -> bool:
+    absent: bool = pos.offset == 0 and pos.end_offset == 0 and pos.end_column == 0
+    return allow_missing if absent
+    return false if pos.line == 0 or pos.column == 0 or pos.end_line == 0 or pos.end_column == 0
+    return false if pos.end_line < pos.line or pos.end_offset <= pos.offset
+    return false if pos.end_offset.usize() > source_len
+    return true
+
+
+# Physical byte offsets are optional metadata for diagnostics. A zero start is
+# valid when the half-open span has a positive in-snapshot end; the all-zero
+# default, reversed spans, and ends beyond the accepted source are not spans.
+def frontend_offsets_valid(pos: Ast::Pos, source_len: usize) -> bool:
+    return false if pos.end_offset <= pos.offset
+    return pos.end_offset.usize() <= source_len
+
+
+# A retained occurrence span must point at the exact spelling the resolver
+# recorded. This catches stale AST offsets before a provider can attach a
+# semantic identity to a different token.
+def frontend_occurrence_span_matches(pos: Ast::Pos, name: sview, src: u8&, source_len: usize) -> bool:
+    return true if pos.end_offset == pos.offset
+    start: usize = pos.offset.usize()
+    return false if pos.end_offset.usize() > source_len or pos.end_offset - pos.offset != sview_len(name).u32()
+    i: mutable usize = 0
+    while i < name.len.usize():
+        return false if src[start + i] != sview_at(name, i)
+        i <- i + 1
+    return true
+
+
+# `SymbolTable.ref_pos` is authoritative when present. An absent compiler span
+# must use the all-zero sentinel; a concrete span must match the resolver row's
+# line, exact byte spelling, and accepted source snapshot.
+def frontend_occurrence_row_position_valid(pos: Ast::Pos, line: u32, name: sview, src: u8&, source_len: usize) -> bool:
+    if pos.end_offset <= pos.offset:
+        missing_coordinates: bool = pos.column == 0 and pos.offset == 0 and pos.end_column == 0 and pos.end_offset == 0
+        all_zero_sentinel: bool = pos.line == 0 and pos.end_line == 0
+        line_only_sentinel: bool = pos.line == line and pos.end_line == line
+        return missing_coordinates and (all_zero_sentinel or line_only_sentinel)
+    return false if pos.line != line
+    return frontend_span_valid(pos, source_len, false) and frontend_occurrence_span_matches(pos, name, src, source_len)
+
+
+def frontend_occurrence_group_hash(line: u32, name: sview) -> u64:
+    hash: mutable u64 = 14695981039346656037
+    hash <- (hash ^ line.u64()) * 1099511628211
+    hash <- (hash ^ 255) * 1099511628211
+    i: mutable usize = 0
+    while i < name.len.usize():
+        hash <- (hash ^ sview_at(name, i).u64()) * 1099511628211
+        i <- i + 1
+    return hash
+
+
+def frontend_occurrence_group_find(groups: darray[FrontendOccurrenceSpanGroup]&, heads: dict[u64, i64]&, line: u32, name: sview) -> i64:
+    key: u64 = frontend_occurrence_group_hash(line, name)
+    if heads.get(key) is head:
+        current: mutable i64 = head
+        while current >= 0:
+            index: usize = current.usize()
+            group: FrontendOccurrenceSpanGroup = groups[index]
+            return current if group.line == line and string_views_eq(group.name, name) != 0
+            current <- group.next_hash
+    return -1
+
+
+def frontend_occurrence_group_get(groups: mutable darray[FrontendOccurrenceSpanGroup]&, heads: mutable dict[u64, i64]&, line: u32, name: sview) -> usize:
+    found: i64 = frontend_occurrence_group_find(groups, heads, line, name)
+    return found.usize() if found >= 0
+    key: u64 = frontend_occurrence_group_hash(line, name)
+    previous: mutable i64 = -1
+    previous <- head if heads.get(key) is head
+    index: usize = groups.count
+    groups.push(FrontendOccurrenceSpanGroup{line: line, name: name, candidate_head: -1, candidate_tail: -1, candidate_count: 0, row_head: -1, row_tail: -1, row_count: 0, next_hash: previous})
+    heads <- heads.put(key, index.i64())
+    return index
+
+
+def frontend_occurrence_group_candidate_append(groups: mutable darray[FrontendOccurrenceSpanGroup]&, candidates: mutable darray[FrontendOccurrenceCandidate]&, group_index: usize, candidate_index: usize) -> void:
+    group: FrontendOccurrenceSpanGroup = groups[group_index]
+    candidate_head: mutable i64 = group.candidate_head
+    if group.candidate_tail >= 0:
+        previous: FrontendOccurrenceCandidate = candidates[group.candidate_tail.usize()]
+        candidates[group.candidate_tail.usize()] <- FrontendOccurrenceCandidate{position: previous.position, binding_role: previous.binding_role, next: candidate_index.i64()}
+    else:
+        candidate_head <- candidate_index.i64()
+    groups[group_index] <- FrontendOccurrenceSpanGroup{line: group.line, name: group.name, candidate_head: candidate_head, candidate_tail: candidate_index.i64(), candidate_count: group.candidate_count + 1, row_head: group.row_head, row_tail: group.row_tail, row_count: group.row_count, next_hash: group.next_hash}
+
+
+def frontend_occurrence_group_row_append(groups: mutable darray[FrontendOccurrenceSpanGroup]&, row_next: mutable darray[i64]&, group_index: usize, row_index: usize) -> void:
+    group: FrontendOccurrenceSpanGroup = groups[group_index]
+    row_head: mutable i64 = group.row_head
+    if group.row_tail >= 0:
+        row_next[group.row_tail.usize()] <- row_index.i64()
+    else:
+        row_head <- row_index.i64()
+    groups[group_index] <- FrontendOccurrenceSpanGroup{line: group.line, name: group.name, candidate_head: group.candidate_head, candidate_tail: group.candidate_tail, candidate_count: group.candidate_count, row_head: row_head, row_tail: row_index.i64(), row_count: group.row_count + 1, next_hash: group.next_hash}
+
+
+def frontend_source_byte_column(src: u8&, offset: usize) -> u32:
+    column: mutable u32 = 1
+    cursor: mutable usize = offset
+    while cursor > 0 and src[cursor - 1] != 10:
+        column <- column + 1
+        cursor <- cursor - 1
+    return column
+
+
+def frontend_local_binding_candidate(pos: Ast::Pos, src: u8&, source_len: usize) -> bool:
+    start: usize = pos.offset.usize()
+    finish: usize = pos.end_offset.usize()
+    return false if start >= finish or finish > source_len
+    line_start: mutable usize = start
+    while line_start > 0 and src[line_start - 1] != 10:
+        line_start <- line_start - 1
+    prefix: mutable usize = line_start
+    while prefix < start and (src[prefix] == 32 or src[prefix] == 9):
+        prefix <- prefix + 1
+    return false if prefix != start
+    suffix: mutable usize = finish
+    while suffix < source_len and (src[suffix] == 32 or src[suffix] == 9):
+        suffix <- suffix + 1
+    return suffix < source_len and (src[suffix] == 58 or src[suffix] == 61)
+
+
+# Contextual block introducers are Ident tokens, but they are syntax rather
+# than occurrences. Their trailing colon is followed only by the line break;
+# ordinary annotated binders have a type after the colon. Keep these out of
+# the compact resolver-row pairing so a syntax word cannot inherit a nearby
+# local's identity.
+def frontend_contextual_block_header(name: sview, token_end: usize, src: u8&, source_len: usize) -> bool:
+    recognized: bool = name == "can" or name == "trusted" or name == "nursery" or name == "scope" or name == "defer" or name == "parallel"
+    return false if not recognized or token_end > source_len
+    cursor: mutable usize = token_end
+    while cursor < source_len and (src[cursor] == 32 or src[cursor] == 9):
+        cursor <- cursor + 1
+    return false if cursor >= source_len or src[cursor] != 58
+    cursor <- cursor + 1
+    while cursor < source_len and (src[cursor] == 32 or src[cursor] == 9):
+        cursor <- cursor + 1
+    return cursor >= source_len or src[cursor] == 10 or src[cursor] == 13
+
+
+def frontend_occurrence_candidate_add(tok: Lexer::Token, line: u32, previous_kind: Lexer::TokenKind, next_kind: Lexer::TokenKind, src: u8&, source_len: usize, groups: mutable darray[FrontendOccurrenceSpanGroup]&, heads: mutable dict[u64, i64]&, candidates: mutable darray[FrontendOccurrenceCandidate]&) -> void:
+    return if tok.kind != Lexer::TokenKind.Ident
+    return if previous_kind == Lexer::TokenKind.Dot or previous_kind == Lexer::TokenKind.Scope
+    start: usize = tok.start.usize()
+    length: usize = tok.length.usize()
+    return if length == 0 or start > source_len or length > source_len - start
+    name: sview = Lexer::text_or_empty(tok, src)
+    return if sview_len(name) == 0
+    return if frontend_contextual_block_header(name, start + length, src, source_len)
+    # The effect-grant `can[...]` after a function parameter list is syntax,
+    # even when a parameter on the same line is also named `can`.
+    return if name == "can" and previous_kind == Lexer::TokenKind.RParen and next_kind == Lexer::TokenKind.LBracket
+    column: u32 = frontend_source_byte_column(src, start)
+    position: Ast::Pos = Ast::Pos{line: line, column: column, offset: tok.start, end_line: line, end_column: column + tok.length, end_offset: tok.start + tok.length}
+    # Resolver traversal visits a declaration's initializer before recording
+    # the newly bound name. Recognize a local binder from its exact line prefix
+    # and declaration punctuation so its compact kind row can be attached even
+    # when it was appended after reads from the initializer.
+    binding_role: i64 = OCC_LOCAL if frontend_local_binding_candidate(position, src, source_len) else 0
+    group_index: usize = frontend_occurrence_group_get(groups, heads, line, name)
+    candidate_index: usize = candidates.count
+    candidates.push(FrontendOccurrenceCandidate{position: position, binding_role: binding_role, next: -1})
+    frontend_occurrence_group_candidate_append(groups, candidates, group_index, candidate_index)
+
+
+# The main lexer intentionally represents an f-string as one token. Mirror its
+# interpolation scan and add sub-lexed identifiers at their absolute offsets so
+# semantic facts remain available inside `{ ... }` expressions too.
+def frontend_occurrence_fstring_candidates(tok: Lexer::Token, src: u8&, source_len: usize, groups: mutable darray[FrontendOccurrenceSpanGroup]&, heads: mutable dict[u64, i64]&, candidates: mutable darray[FrontendOccurrenceCandidate]&) -> void can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        lo: usize = tok.start.usize()
+        return if lo > source_len or tok.length.usize() > source_len - lo
+        hi: usize = lo + tok.length.usize()
+        i: mutable usize = lo
+        while i < hi:
+            ch: char = src[i].char()
+            if ch == '\\' or (ch == '{' and i + 1 < hi and src[i + 1].char() == '{') or (ch == '}' and i + 1 < hi and src[i + 1].char() == '}'):
+                i <- i + 2
+                continue
+            if ch == '{':
+                j: mutable usize = i + 1
+                depth: mutable usize = 1
+                while j < hi and depth > 0:
+                    cj: char = src[j].char()
+                    match cj:
+                        '{':
+                            depth <- depth + 1
+                        '}':
+                            depth <- depth - 1
+                            break if depth == 0
+                        '"':
+                            j <- j + 1
+                            while j < hi and src[j].char() != '"':
+                                j <- j + 1 if src[j].char() == '\\'
+                                j <- j + 1
+                        '\'':
+                            j <- j + 1
+                            while j < hi and src[j].char() != '\'':
+                                j <- j + 1 if src[j].char() == '\\'
+                                j <- j + 1
+                        _:
+                            pass
+                    j <- j + 1
+                if j > i + 1:
+                    subtoks: darray[Lexer::Token] = Lexer::frontend_tokenize_span("", src, i + 1, j)
+                    s: mutable usize = 0
+                    while s < subtoks.count:
+                        previous_kind: mutable Lexer::TokenKind = Lexer::TokenKind.Eof
+                        previous_kind <- subtoks[s - 1].kind if s > 0
+                        next_kind: mutable Lexer::TokenKind = Lexer::TokenKind.Eof
+                        next_kind <- subtoks[s + 1].kind if s + 1 < subtoks.count
+                        frontend_occurrence_candidate_add(subtoks[s], tok.line, previous_kind, next_kind, src, source_len, groups, heads, candidates)
+                        s <- s + 1
+                i <- j + 1 if j < hi
+                i <- hi if j >= hi
+                continue
+            i <- i + 1
+
+
+# Build the source-span sidecar for the compiler's resolver rows. Exact compiler
+# positions are authoritative; line/name pairing remains only for older or
+# synthesized rows whose compiler record has the explicit absent-span sentinel.
+def frontend_occurrence_positions(table: Semantic::SymbolTable&, tokens: darray[Lexer::Token], src: u8&, source_len: usize, out: mutable darray[Ast::Pos]&) -> bool can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        out.truncate(0)
+        return false if table.ref_line.count != table.ref_name.count or table.ref_line.count != table.ref_kind.count or table.ref_line.count != table.ref_binding_ids.count or table.ref_line.count != table.ref_pos.count
+        groups: mutable darray[FrontendOccurrenceSpanGroup] = []
+        heads: mutable dict[u64, i64] = {}
+        candidates: mutable darray[FrontendOccurrenceCandidate] = []
+        i: mutable usize = 0
+        while i < tokens.count:
+            previous_kind: mutable Lexer::TokenKind = Lexer::TokenKind.Eof
+            previous_kind <- tokens[i - 1].kind if i > 0
+            next_kind: mutable Lexer::TokenKind = Lexer::TokenKind.Eof
+            next_kind <- tokens[i + 1].kind if i + 1 < tokens.count
+            if tokens[i].kind == Lexer::TokenKind.FString:
+                frontend_occurrence_fstring_candidates(tokens[i], src, source_len, groups, heads, candidates)
+            else:
+                frontend_occurrence_candidate_add(tokens[i], tokens[i].line, previous_kind, next_kind, src, source_len, groups, heads, candidates)
+            i <- i + 1
+        row_next: mutable darray[i64] = []
+        candidate_used: mutable darray[bool] = []
+        i <- 0
+        while i < candidates.count:
+            candidate_used.push(false)
+            i <- i + 1
+        row_used: mutable darray[bool] = []
+        i <- 0
+        while i < table.ref_line.count:
+            line: u32 = table.ref_line[i]
+            name: sview = table.ref_name[i]
+            exact_position: Ast::Pos = table.ref_pos[i]
+            return false if not frontend_occurrence_row_position_valid(exact_position, line, name, src, source_len)
+            out.push(exact_position)
+            row_next.push(-1)
+            has_exact_position: bool = exact_position.end_offset > exact_position.offset
+            row_used.push(has_exact_position)
+            if has_exact_position:
+                group_index: i64 = frontend_occurrence_group_find(groups, heads, line, name)
+                if group_index >= 0:
+                    exact_candidate: mutable i64 = groups[group_index.usize()].candidate_head
+                    while exact_candidate >= 0:
+                        candidate_index: usize = exact_candidate.usize()
+                        candidate_pos: Ast::Pos = candidates[candidate_index].position
+                        if candidate_pos.offset == exact_position.offset and candidate_pos.end_offset == exact_position.end_offset:
+                            candidate_used[candidate_index] <- true
+                            break
+                        exact_candidate <- candidates[candidate_index].next
+            else:
+                group_index: usize = frontend_occurrence_group_get(groups, heads, line, name)
+                frontend_occurrence_group_row_append(groups, row_next, group_index, i)
+            i <- i + 1
+        binding_candidates: mutable darray[i64] = []
+        i <- 0
+        candidate: mutable i64 = -1
+        while i < groups.count:
+            group: FrontendOccurrenceSpanGroup = groups[i]
+            available_candidates: mutable usize = 0
+            candidate <- group.candidate_head
+            while candidate >= 0:
+                available_candidates <- available_candidates + 1 if not candidate_used[candidate.usize()]
+                candidate <- candidates[candidate.usize()].next
+            if available_candidates == group.row_count:
+                # Resolver rows for a binder can follow reads from its
+                # initializer, even though the declaration token comes first in
+                # source order. When a same-line initializer repeats the name
+                # being shadowed, matching only by parameter/local role chooses
+                # the outer binding for the declaration token. Bind declaration
+                # candidates from right to left to the newest unmatched BindingId
+                # (serials are allocated monotonically as lexical bindings enter
+                # scope); this pairs shadow declarations before source-order reads.
+                binding_candidates.truncate(0)
+                candidate <- group.candidate_head
+                while candidate >= 0:
+                    candidate_index: usize = candidate.usize()
+                    binding_candidates.push(candidate) if not candidate_used[candidate_index] and candidates[candidate_index].binding_role != 0
+                    candidate <- candidates[candidate_index].next
+                binding_candidate_index: mutable usize = binding_candidates.count
+                while binding_candidate_index > 0:
+                    binding_candidate_index <- binding_candidate_index - 1
+                    candidate_index: usize = binding_candidates[binding_candidate_index].usize()
+                    role: i64 = candidates[candidate_index].binding_role
+                    matched_row: mutable i64 = -1
+                    matched_serial: mutable u64 = 0
+                    row: mutable i64 = group.row_head
+                    while row >= 0:
+                        row_index: usize = row.usize()
+                        binding: Semantic::BindingId = table.ref_binding_ids[row_index]
+                        if not row_used[row_index] and table.ref_kind[row_index].i64() == role and (matched_row < 0 or binding.serial > matched_serial):
+                            matched_row <- row
+                            matched_serial <- binding.serial
+                        row <- row_next[row_index]
+                    if matched_row >= 0:
+                        out[matched_row.usize()] <- candidates[candidate_index].position
+                        candidate_used[candidate_index] <- true
+                        row_used[matched_row.usize()] <- true
+                # Pair remaining ordinary uses in source order only when every
+                # declaration-shaped candidate was already consumed. The
+                # resolver walks expression uses in source order, while binder
+                # rows are the only rows that can move past their initializer.
+                remaining_candidates: mutable usize = 0
+                remaining_rows: mutable usize = 0
+                compatible: mutable bool = true
+                candidate <- group.candidate_head
+                while candidate >= 0:
+                    candidate_index = candidate.usize()
+                    remaining_candidates <- remaining_candidates + 1 if not candidate_used[candidate_index]
+                    compatible <- false if not candidate_used[candidate_index] and candidates[candidate_index].binding_role != 0
+                    candidate <- candidates[candidate_index].next
+                row: mutable i64 = group.row_head
+                while row >= 0:
+                    row_index: usize = row.usize()
+                    remaining_rows <- remaining_rows + 1 if not row_used[row_index]
+                    row <- row_next[row_index]
+                if remaining_candidates == remaining_rows and compatible:
+                    candidate <- group.candidate_head
+                    row <- group.row_head
+                    while candidate >= 0 and row >= 0:
+                        candidate_index = candidate.usize()
+                        row_index = row.usize()
+                        if not candidate_used[candidate_index]:
+                            while row >= 0 and row_used[row.usize()]:
+                                row <- row_next[row.usize()]
+                            if row >= 0:
+                                row_index = row.usize()
+                                out[row_index] <- candidates[candidate_index].position
+                                candidate_used[candidate_index] <- true
+                                row_used[row_index] <- true
+                                row <- row_next[row_index]
+                        candidate <- candidates[candidate_index].next
+            i <- i + 1
+        return true
+
+
+# Parser recovery for `def` followed by EOF/newline records a real zero-width
+# cursor position for the missing identifier and still creates a symbol row
+# with an empty name. Admit only that compiler-produced shape when the parser
+# reports the matching expected-Ident error; never treat it as a usable symbol.
+def frontend_recovered_missing_identifier(symbol: Semantic::Symbol, source_len: usize, parse_errors: darray[Ast::ParseError]) -> bool:
+    pos: Ast::Pos = symbol.name_pos
+    return false if sview_len(symbol.name) != 0
+    return false if pos.offset != pos.end_offset or pos.offset.usize() > source_len
+    return false if pos.line == 0 or pos.column == 0 or pos.end_line != pos.line or pos.end_column != pos.column
+    for parse_error in parse_errors:
+        if parse_error.has_expected and parse_error.expected_kind == Lexer::TokenKind.Ident and parse_error.line == pos.line and parse_error.column == pos.column and (parse_error.got_kind == Lexer::TokenKind.Newline or parse_error.got_kind == Lexer::TokenKind.Eof):
+            return true
+    return false
+
+
+# Validate every parallel shape and index before any provider can dereference
+# the table. This is a normal-return contract check: it catches frontend API
+# drift and malformed snapshots, but cannot recover a panic or hang that occurs
+# inside Semantic::check itself.
+def frontend_table_valid(table: Semantic::SymbolTable&, src: u8&, source_len: usize, parse_errors: darray[Ast::ParseError]) -> bool:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    return false if table.ref_line.count != table.ref_name.count or table.ref_line.count != table.ref_kind.count
+    return false if table.ref_line.count != table.ref_binding_ids.count
+    return false if table.ref_line.count != table.ref_pos.count
+    return false if table.enum_variant_owner.count != table.enum_variant_name.count
+    return false if table.type_alias_name.count != table.type_alias_target.count or table.type_alias_name.count != table.type_alias_module.count
+    i: mutable usize = 0
+    while i < table.ref_kind.count:
+        return false if table.ref_kind[i] != 1 and table.ref_kind[i] != 2
+        return false if sview_len(table.ref_name[i]) == 0
+        return false if not frontend_occurrence_row_position_valid(table.ref_pos[i], table.ref_line[i], table.ref_name[i], src, source_len)
+        i <- i + 1
+    i <- 0
+    while i < table.enum_variant_owner.count:
+        return false if sview_len(table.enum_variant_owner[i]) == 0 or sview_len(table.enum_variant_name[i]) == 0
+        i <- i + 1
+    i <- 0
+    while i < table.symbols.count:
+        symbol: Semantic::Symbol = table.symbols[i]
+        return false if symbol.id.value.usize() != i
+        return false if not frontend_span_valid(symbol.name_pos, source_len, true) and not frontend_recovered_missing_identifier(symbol, source_len, parse_errors)
+        i <- i + 1
+    i <- 0
+    while i < table.definition_references.count:
+        edge: Semantic::DefinitionReference = table.definition_references[i]
+        return false if edge.declaration_id.value.usize() >= table.symbols.count
+        return false if table.symbols[edge.declaration_id.value.usize()].id.value != edge.declaration_id.value
+        return false if sview_len(table.symbols[edge.declaration_id.value.usize()].name) == 0
+        return false if not frontend_span_valid(edge.pos, source_len, false)
+        i <- i + 1
+    return true
 
 
 # FNV-1a over a name; the symbol-index bucket key. Self-contained so the
@@ -40,16 +531,89 @@ def adapter_name_hash(name: sview) -> u64:
 
 # Iterate the file's declaration symbols without exposing the storage field.
 def symbol_count(table: Semantic::SymbolTable&) -> usize:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
     return table.symbols.count
 
 
-def symbol_at(table: Semantic::SymbolTable&, index: usize) -> Semantic::Symbol:
-    return table.symbols[index]
+# Enum variants are a separate parallel registry in the frontend, not symbol
+# rows. Validate its shape in `frontend_table_valid` before providers project
+# these borrowed names into the owned analysis stream.
+def enum_variant_count(table: Semantic::SymbolTable&) -> usize:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    return table.enum_variant_name.count
+
+
+def enum_variant_owner(table: Semantic::SymbolTable&, index: usize) -> sview:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    return table.enum_variant_owner[index]
+
+
+def enum_variant_name(table: Semantic::SymbolTable&, index: usize) -> sview:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    return table.enum_variant_name[index]
+
+
+def symbol_name(table: Semantic::SymbolTable&, index: usize) -> sview:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    return table.symbols[index].name
+
+
+def symbol_category(table: Semantic::SymbolTable&, index: usize) -> i64:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    symbol: Semantic::Symbol = table.symbols[index]
+    return when symbol.kind:
+        Semantic::SymbolKind.Func -> SYMBOL_KIND_FUNCTION
+        Semantic::SymbolKind.Extern -> SYMBOL_KIND_EXTERN
+        Semantic::SymbolKind.Struct -> SYMBOL_KIND_STRUCT
+        Semantic::SymbolKind.Enum -> SYMBOL_KIND_ENUM
+        Semantic::SymbolKind.Alias -> SYMBOL_KIND_ALIAS
+        Semantic::SymbolKind.Const -> SYMBOL_KIND_CONST
+        Semantic::SymbolKind.Module -> SYMBOL_KIND_MODULE
+        Semantic::SymbolKind.Import -> SYMBOL_KIND_IMPORT
+        Semantic::SymbolKind.Law -> SYMBOL_KIND_LAW
+        _ -> SYMBOL_KIND_OTHER
+
+
+def symbol_source_line(table: Semantic::SymbolTable&, index: usize) -> u32:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    return table.symbols[index].line
+
+
+def symbol_source_offset(table: Semantic::SymbolTable&, index: usize) -> u32:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    return table.symbols[index].offset
+
+
+def symbol_arity_max(table: Semantic::SymbolTable&, index: usize) -> u32:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    return table.symbols[index].arity_max
+
+
+def symbol_return_type(table: Semantic::SymbolTable&, index: usize) -> sview:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    return table.symbols[index].return_type
+
+
+def symbol_name_position(table: Semantic::SymbolTable&, index: usize) -> Ast::Pos:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    return table.symbols[index].name_pos
+
+
+# The compiler records immutable `const` names as a separate semantic set. Keep
+# this fact behind the adapter so semantic-token modifiers do not depend on the
+# frontend's parallel-array layout. A missing name is deliberately false: the
+# highlighter must never guess readonly from spelling alone.
+def immutable_const_named(table: Semantic::SymbolTable&, name: sview) -> bool:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    for immutable_name in table.immutable_const_names:
+        return true if string_views_eq(immutable_name, name) != 0
+    return false
 
 
 # Index of the first declaration whose name matches exactly, or -1. A scan is
 # correct at per-file scale; an index arrives with A02.
 def symbol_index_of(table: Semantic::SymbolTable&, name: sview) -> i64:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
     i: mutable usize = 0
     while i < table.symbols.count:
         return i.i64() if string_views_eq(table.symbols[i].name, name) != 0
@@ -57,9 +621,30 @@ def symbol_index_of(table: Semantic::SymbolTable&, name: sview) -> i64:
     return -1
 
 
+# Canonical identity of a declaration row in this collected table. This ID is
+# table-local and must not be persisted across analysis snapshots or files.
+def symbol_declaration_id(table: Semantic::SymbolTable&, index: usize) -> i64:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    return -1 if index >= table.symbols.count
+    return table.symbols[index].id.value.i64()
+
+
+def has_module_or_import_context(table: Semantic::SymbolTable&) -> bool:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    return table.current_module != "" or table.imported_modules.count > 0 or table.imported_members.count > 0
+
+
+def module_member_named(table: Semantic::SymbolTable&, name: sview) -> bool:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    for candidate in table.module_member_name:
+        return true if string_views_eq(candidate, name) != 0
+    return false
+
+
 # A parameter/local occurrence on `line` with `name`, decoded to OCC_*. The
 # frontend logs these in parallel arrays; any renumbering surfaces here.
 def occurrence_kind_at(table: Semantic::SymbolTable&, line: u32, name: sview) -> i64:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
     i: mutable usize = 0
     while i < table.ref_line.count:
         if table.ref_line[i] == line and string_views_eq(table.ref_name[i], name) != 0:
@@ -68,11 +653,23 @@ def occurrence_kind_at(table: Semantic::SymbolTable&, line: u32, name: sview) ->
     return OCC_UNKNOWN
 
 
-# H04 occurrence index: hash-chain the frontend's occurrence log by source line
-# so a lookup touches only the entries on that line instead of every entry in
-# the file. Built once per analysis; the linear `occurrence_kind_at` remains the
-# reference implementation (and the contract fixture's oracle).
-def occurrence_index_build(table: Semantic::SymbolTable&, line_heads: mutable dict[i64, i64]&, ref_next: mutable darray[i64]&) -> void:
+# Hash the occurrence key as one composite `(byte offset, exact name)` value.
+# The final span/name comparisons remain mandatory because the table is
+# intentionally collision-safe. Missing-span synthesized rows are omitted from
+# the position index; they remain available through the line/name compatibility
+# accessor until the compiler retains their source tokens too.
+def adapter_occurrence_hash(offset: u32, name: sview) -> u64:
+    hash: mutable u64 = 14695981039346656037
+    hash <- (hash ^ offset.i64().u64()) * 1099511628211
+    hash <- (hash ^ 255) * 1099511628211
+    i: mutable usize = 0
+    while i < name.len.usize():
+        hash <- (hash ^ sview_at(name, i).u64()) * 1099511628211
+        i <- i + 1
+    return hash
+
+
+def occurrence_index_build(table: Semantic::SymbolTable&, positions: darray[Ast::Pos], position_heads: mutable dict[i64, i64]&, ref_next: mutable darray[i64]&) -> void:
     can Memory.Allocate, Abort.Panic:
         i: mutable usize = 0
         while i < table.ref_line.count:
@@ -80,22 +677,70 @@ def occurrence_index_build(table: Semantic::SymbolTable&, line_heads: mutable di
             i <- i + 1
         i <- 0
         while i < table.ref_line.count:
-            key: i64 = table.ref_line[i].i64()
-            previous: mutable i64 = -1
-            previous <- head if line_heads.get(key) is head
-            ref_next[i] <- previous
-            line_heads <- line_heads.put(key, i.i64())
+            pos: Ast::Pos = positions[i]
+            if pos.end_offset > pos.offset:
+                key: i64 = adapter_occurrence_hash(pos.offset, table.ref_name[i]).i64()
+                previous: mutable i64 = -1
+                previous <- head if position_heads.get(key) is head
+                ref_next[i] <- previous
+                position_heads <- position_heads.put(key, i.i64())
             i <- i + 1
 
 
-def occurrence_kind_indexed(table: Semantic::SymbolTable&, line_heads: dict[i64, i64]&, ref_next: darray[i64]&, line: u32, name: sview) -> i64:
-    if line_heads.get(line.i64()) is head:
+def occurrence_kind_indexed(table: Semantic::SymbolTable&, positions: darray[Ast::Pos], position_heads: dict[i64, i64]&, ref_next: darray[i64]&, offset: u32, name: sview) -> i64:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    key: i64 = adapter_occurrence_hash(offset, name).i64()
+    if position_heads.get(key) is head:
         current: mutable i64 = head
         while current >= 0:
             index: usize = current.usize()
-            return table.ref_kind[index].i64() if string_views_eq(table.ref_name[index], name) != 0
+            pos: Ast::Pos = positions[index]
+            return table.ref_kind[index].i64() if pos.offset == offset and pos.end_offset > pos.offset and string_views_eq(table.ref_name[index], name) != 0
             current <- ref_next[index]
     return OCC_UNKNOWN
+
+
+# Hash an enum owner/name pair as one composite value. The registry keeps the
+# owner and variant in parallel arrays, so every indexed hit is still checked
+# against both strings after hashing.
+def adapter_enum_variant_hash(owner: sview, name: sview) -> u64:
+    hash: mutable u64 = 14695981039346656037
+    i: mutable usize = 0
+    while i < owner.len.usize():
+        hash <- (hash ^ sview_at(owner, i).u64()) * 1099511628211
+        i <- i + 1
+    hash <- (hash ^ 255) * 1099511628211
+    i <- 0
+    while i < name.len.usize():
+        hash <- (hash ^ sview_at(name, i).u64()) * 1099511628211
+        i <- i + 1
+    return hash
+
+
+def enum_variant_index_build(table: Semantic::SymbolTable&, name_heads: mutable dict[u64, i64]&, name_next: mutable darray[i64]&, owner_heads: mutable dict[u64, i64]&, owner_next: mutable darray[i64]&) -> void:
+    can Memory.Allocate, Abort.Panic:
+        i: mutable usize = 0
+        while i < table.enum_variant_name.count:
+            name_next.push(-1)
+            owner_next.push(-1)
+            i <- i + 1
+        i <- 0
+        while i < table.enum_variant_name.count:
+            name: sview = table.enum_variant_name[i]
+            owner: sview = table.enum_variant_owner[i]
+            if name.len > 0:
+                key: u64 = adapter_name_hash(name)
+                previous_name: mutable i64 = -1
+                previous_name <- head if name_heads.get(key) is head
+                name_next[i] <- previous_name
+                name_heads <- name_heads.put(key, i.i64())
+            if owner.len > 0 and name.len > 0:
+                owner_key: u64 = adapter_enum_variant_hash(owner, name)
+                previous_owner: mutable i64 = -1
+                previous_owner <- head if owner_heads.get(owner_key) is head
+                owner_next[i] <- previous_owner
+                owner_heads <- owner_heads.put(owner_key, i.i64())
+            i <- i + 1
 
 
 # H04 symbol index: hash-chain file symbols by name. `symbol_index_of`'s linear
@@ -108,15 +753,18 @@ def symbol_index_build(table: Semantic::SymbolTable&, name_heads: mutable dict[u
             i <- i + 1
         i <- 0
         while i < table.symbols.count:
-            key: u64 = adapter_name_hash(table.symbols[i].name)
-            previous: mutable i64 = -1
-            previous <- head if name_heads.get(key) is head
-            sym_next[i] <- previous
-            name_heads <- name_heads.put(key, i.i64())
+            name: sview = table.symbols[i].name
+            if name.len > 0:
+                key: u64 = adapter_name_hash(name)
+                previous: mutable i64 = -1
+                previous <- head if name_heads.get(key) is head
+                sym_next[i] <- previous
+                name_heads <- name_heads.put(key, i.i64())
             i <- i + 1
 
 
 def symbol_index_of_indexed(table: Semantic::SymbolTable&, name_heads: dict[u64, i64]&, sym_next: darray[i64]&, name: sview) -> i64:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
     if name_heads.get(adapter_name_hash(name)) is head:
         current: mutable i64 = head
         while current >= 0:
@@ -127,15 +775,55 @@ def symbol_index_of_indexed(table: Semantic::SymbolTable&, name_heads: dict[u64,
 
 
 # Enum variants live in parallel registries, not ordinary Symbol rows.
-def enum_variant_for_owner(table: Semantic::SymbolTable&, owner: sview, name: sview) -> bool:
+# Keep alias traversal recursive so each view remains an immutable borrowed
+# value; the table-sized depth bound makes cycles and pathological chains safe.
+def enum_variant_for_owner_bounded(table: Semantic::SymbolTable&, owner: sview, name: sview, steps: usize) -> bool:
     i: mutable usize = 0
     while i < table.enum_variant_owner.count:
         return true if string_views_eq(table.enum_variant_owner[i], owner) != 0 and string_views_eq(table.enum_variant_name[i], name) != 0
         i <- i + 1
+    return false if steps >= table.type_alias_name.count
+    alias_index: mutable usize = 0
+    while alias_index < table.type_alias_name.count:
+        if string_views_eq(table.type_alias_name[alias_index], owner) != 0:
+            target: sview = table.type_alias_target[alias_index]
+            return false if target.len == 0 or string_views_eq(target, owner) != 0
+            return enum_variant_for_owner_bounded(table, target, name, steps + 1.usize())
+        alias_index <- alias_index + 1
     return false
 
 
+def enum_variant_for_owner(table: Semantic::SymbolTable&, owner: sview, name: sview) -> bool:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    return enum_variant_for_owner_bounded(table, owner, name, 0)
+
+
+def enum_variant_for_owner_indexed_bounded(table: Semantic::SymbolTable&, owner_heads: dict[u64, i64]&, owner_next: darray[i64]&, owner: sview, name: sview, steps: usize) -> bool:
+    key: u64 = adapter_enum_variant_hash(owner, name)
+    if owner_heads.get(key) is head:
+        current: mutable i64 = head
+        while current >= 0:
+            index: usize = current.usize()
+            return true if string_views_eq(table.enum_variant_owner[index], owner) != 0 and string_views_eq(table.enum_variant_name[index], name) != 0
+            current <- owner_next[index]
+    return false if steps >= table.type_alias_name.count
+    alias_index: mutable usize = 0
+    while alias_index < table.type_alias_name.count:
+        if string_views_eq(table.type_alias_name[alias_index], owner) != 0:
+            target: sview = table.type_alias_target[alias_index]
+            return false if target.len == 0 or string_views_eq(target, owner) != 0
+            return enum_variant_for_owner_indexed_bounded(table, owner_heads, owner_next, target, name, steps + 1.usize())
+        alias_index <- alias_index + 1
+    return false
+
+
+def enum_variant_for_owner_indexed(table: Semantic::SymbolTable&, owner_heads: dict[u64, i64]&, owner_next: darray[i64]&, owner: sview, name: sview) -> bool:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    return enum_variant_for_owner_indexed_bounded(table, owner_heads, owner_next, owner, name, 0)
+
+
 def enum_variant_anywhere(table: Semantic::SymbolTable&, name: sview) -> bool:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
     i: mutable usize = 0
     while i < table.enum_variant_name.count:
         return true if string_views_eq(table.enum_variant_name[i], name) != 0
@@ -143,28 +831,141 @@ def enum_variant_anywhere(table: Semantic::SymbolTable&, name: sview) -> bool:
     return false
 
 
+def enum_variant_anywhere_indexed(table: Semantic::SymbolTable&, name_heads: dict[u64, i64]&, name_next: darray[i64]&, name: sview) -> bool:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    key: u64 = adapter_name_hash(name)
+    if name_heads.get(key) is head:
+        current: mutable i64 = head
+        while current >= 0:
+            index: usize = current.usize()
+            return true if string_views_eq(table.enum_variant_name[index], name) != 0
+            current <- name_next[index]
+    return false
+
+
 # The frontend's located findings. Wording/severity stay frontend-owned.
 def diagnostic_count(table: Semantic::SymbolTable&) -> usize:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
     return table.diagnostics.count
 
 
 def diagnostic_at(table: Semantic::SymbolTable&, index: usize) -> Semantic::Diagnostic:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
     return table.diagnostics[index]
 
 
 # Occurrence-log entries, exposed for A03 serialization (a retained analysis
 # summary). The raw `ref_kind` stays encoded behind OCC_*.
 def occurrence_count(table: Semantic::SymbolTable&) -> usize:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
     return table.ref_line.count
 
 
 def occurrence_line(table: Semantic::SymbolTable&, index: usize) -> u32:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
     return table.ref_line[index]
 
 
 def occurrence_name(table: Semantic::SymbolTable&, index: usize) -> sview:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
     return table.ref_name[index]
 
 
+def occurrence_position(positions: darray[Ast::Pos], index: usize) -> Ast::Pos:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    return positions[index]
+
+
+def frontend_source_line_indent(src: u8&, offset: usize) -> u32:
+    line_start: mutable usize = offset
+    while line_start > 0 and src[line_start - 1] != 10:
+        line_start <- line_start - 1
+    cursor: mutable usize = line_start
+    while cursor < offset and (src[cursor] == 32 or src[cursor] == 9):
+        cursor <- cursor + 1
+    return (cursor - line_start).u32()
+
+
+# F-string expression identifiers are parsed by the lexer for coloring but are
+# currently represented as string literals in the compact semantic table. Use
+# resolver-confirmed bindings from the enclosing function only when exact rows
+# for this token are absent; a preceding exact local declaration shadows params.
+def frontend_fstring_occurrence_kind(table: Semantic::SymbolTable&, positions: darray[Ast::Pos], src: u8&, source_len: usize, offset: u32, name: sview) -> i64:
+    token_offset: usize = offset.usize()
+    token_indent: u32 = frontend_source_line_indent(src, token_offset)
+    function_index: mutable i64 = -1
+    function_offset: mutable u32 = 0
+    i: mutable usize = 0
+    while i < table.symbols.count:
+        symbol: Semantic::Symbol = table.symbols[i]
+        if symbol.kind == Semantic::SymbolKind.Func and symbol.name_pos.offset.usize() <= token_offset:
+            declaration_indent: u32 = frontend_source_line_indent(src, symbol.name_pos.offset.usize())
+            same_line_body: bool = token_offset > symbol.name_pos.end_offset.usize()
+            later_indented_line: bool = token_indent > declaration_indent and symbol.name_pos.offset < offset
+            if same_line_body or later_indented_line:
+                if function_index < 0 or symbol.name_pos.offset > function_offset:
+                    function_index <- i.i64()
+                    function_offset <- symbol.name_pos.offset
+        i <- i + 1
+    return OCC_UNKNOWN if function_index < 0
+    owner: u32 = table.symbols[function_index.usize()].id.value
+    i <- 0
+    while i < table.ref_name.count:
+        binding: Semantic::BindingId = table.ref_binding_ids[i]
+        pos: Ast::Pos = positions[i]
+        if binding.owner.value == owner and table.ref_kind[i] == OCC_LOCAL.u8() and string_views_eq(table.ref_name[i], name) != 0 and pos.end_offset > pos.offset and pos.offset < offset and frontend_local_binding_candidate(pos, src, source_len):
+            return OCC_LOCAL
+        i <- i + 1
+    i <- 0
+    while i < table.ref_name.count:
+        binding: Semantic::BindingId = table.ref_binding_ids[i]
+        return OCC_PARAM if binding.owner.value == owner and table.ref_kind[i] == OCC_PARAM.u8() and string_views_eq(table.ref_name[i], name) != 0
+        i <- i + 1
+    return OCC_UNKNOWN
+
+
+def occurrence_binding_owner(table: Semantic::SymbolTable&, index: usize) -> u32:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    return table.ref_binding_ids[index].owner.value
+
+
+def occurrence_binding_serial(table: Semantic::SymbolTable&, index: usize) -> u64:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    return table.ref_binding_ids[index].serial
+
+
 def occurrence_kind_index(table: Semantic::SymbolTable&, index: usize) -> i64:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
     return table.ref_kind[index].i64()
+
+
+# Exact resolver-produced identifier-to-function edges. The frontend records only
+# references whose target is one unique top-level function; consumers must not
+# reinterpret unresolved or ambiguous spellings as declaration links.
+def definition_reference_count(table: Semantic::SymbolTable&) -> usize:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    return table.definition_references.count
+
+
+def definition_reference_position(table: Semantic::SymbolTable&, index: usize) -> Ast::Pos:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    return table.definition_references[index].pos
+
+
+def definition_reference_symbol_index(table: Semantic::SymbolTable&, index: usize) -> usize:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    target: usize = table.definition_references[index].declaration_id.value.usize()
+    return target if symbol_declaration_id(table, target) == target.i64()
+    return table.symbols.count
+
+
+def definition_reference_target_position(table: Semantic::SymbolTable&, index: usize) -> Ast::Pos:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    target: u32 = table.definition_references[index].declaration_id.value
+    return table.symbols[target.usize()].name_pos
+
+
+def definition_reference_target_name(table: Semantic::SymbolTable&, index: usize) -> sview:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    target: u32 = table.definition_references[index].declaration_id.value
+    return table.symbols[target.usize()].name

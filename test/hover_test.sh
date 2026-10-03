@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Smoke test: textDocument/hover surfaces a docs/119 loop-header capture list —
+# Smoke test: textDocument/hover surfaces a loop-header capture list —
 # "Mutates (captured, in place): …" plus "Loop-private accumulators: …" — reports
 # "Pure over outer state" for a header with no captures, and returns null on a
 # non-header line and on a bitwise `|` that is not a header.
@@ -8,11 +8,12 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 SRV="$ROOT/build/elisa-lsp"
 [[ -x "$SRV" ]] || { echo "error: $SRV missing — build first: bash build.sh" >&2; exit 2; }
 
-python3 - "$SRV" <<'PY'
-import subprocess, json, sys, re
+python3 - "$SRV" "$ROOT" <<'PY'
+import os, sys
+sys.path.insert(0, os.path.join(sys.argv[2], "test"))
+from lsp_client import LspSession
+
 srv = sys.argv[1]
-def frame(o):
-    b = json.dumps(o); return f"Content-Length: {len(b)}\r\n\r\n{b}".encode()
 # line 3: capture header; line 6: no-capture header; line 9: bitwise | (not a header)
 doc = ("def f(xs: darray[i64], a: i64, b: i64) -> i64:\n"      # 0
        "    total: mutable i64 = 0\n"                          # 1
@@ -26,30 +27,68 @@ doc = ("def f(xs: darray[i64], a: i64, b: i64) -> i64:\n"      # 0
        "    for y in 0..<(a | b):\n"                           # 9
        "        total <- total + y\n"                          # 10
        "    return total + r + s\n")                           # 11
-def hover(line, ch, id):
-    return frame({"jsonrpc":"2.0","id":id,"method":"textDocument/hover",
-                  "params":{"textDocument":{"uri":"file:///t.elisa"},"position":{"line":line,"character":ch}}})
-m  = frame({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})
-m += frame({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///t.elisa","languageId":"Elisa","version":1,"text":doc}}})
-m += hover(3, 20, 2)   # capture header
-m += hover(7, 20, 3)   # no-capture header
-m += hover(9, 20, 4)   # bitwise | — not a header
-m += hover(1, 5, 5)    # ordinary decl line
-m += frame({"jsonrpc":"2.0","method":"exit"})
-out = subprocess.run([srv], input=m, capture_output=True, timeout=30).stdout.decode(errors="replace")
-res = {}
-for mm in re.finditer(r'\{"jsonrpc":"2\.0","id":(\d+),"result":(.*?)\}(?=Content-Length|\Z)', out, re.S):
-    res[int(mm.group(1))] = mm.group(2)
-def fail(msg): print("hover test FAIL:", msg, file=sys.stderr); sys.exit(1)
-r2 = res.get(2, "")
+def hover_request(line, ch, request_id):
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "textDocument/hover",
+        "params": {
+            "textDocument": {"uri": "file:///t.elisa"},
+            "position": {"line": line, "character": ch},
+        },
+    }
+
+def hover_text(response):
+    assert "result" in response, response
+    result = response["result"]
+    if result is None:
+        return ""
+    contents = result["contents"]
+    if isinstance(contents, dict):
+        return contents["value"]
+    return contents
+
+with LspSession(srv, request_timeout=30, teardown_timeout=5) as client:
+    initialized = client.initialize({"capabilities": {}})
+    assert "result" in initialized, initialized
+    client.notify("textDocument/didOpen", {
+        "textDocument": {
+            "uri": "file:///t.elisa",
+            "languageId": "Elisa",
+            "version": 1,
+            "text": doc,
+        }
+    })
+    line_index_before = client.request("$/elisa/stats", {}, req_id=96)["result"]["line_index"]
+    # Keep all four requests pipelined as in the original smoke test.
+    client.send_many([
+        hover_request(3, 20, 2),  # capture header
+        hover_request(7, 20, 3),  # no-capture header
+        hover_request(9, 20, 4),  # bitwise | — not a header
+        hover_request(1, 5, 5),   # ordinary decl line
+    ])
+    results = {request_id: hover_text(client.wait_response(request_id))
+               for request_id in (2, 3, 4, 5)}
+    line_index_after = client.request("$/elisa/stats", {}, req_id=97)["result"]["line_index"]
+    assert line_index_after == line_index_before, (line_index_before, line_index_after)
+    assert line_index_after["fallback_build_calls"] == 0, line_index_after
+    # The explicit hover IDs are pipelined, so use a distinct ID for shutdown.
+    shutdown = client.request("shutdown", req_id=99, timeout=30)
+    assert shutdown.get("result", "missing") is None, shutdown
+    client.notify("exit")
+    client.close(expect_exit=0, timeout=30)
+
+r2 = results[2]
+if not r2.startswith("**Loop header**") or "docs/119" in r2:
+    raise AssertionError(f"loop header hover should use a user-facing label: {r2}")
 if "captured, in place): total" not in r2 or "accumulators: acc" not in r2:
-    fail(f"capture header hover wrong: {r2}")
-r3 = res.get(3, "")
+    raise AssertionError(f"capture header hover wrong: {r2}")
+r3 = results[3]
 if "Pure over outer state" not in r3:
-    fail(f"no-capture header hover wrong: {r3}")
-if "loop header" in res.get(4, ""):
-    fail(f"bitwise | must not show a loop-header hover: {res.get(4)}")
-if "loop header" in res.get(5, ""):
-    fail(f"ordinary line must not show a loop-header hover: {res.get(5)}")
+    raise AssertionError(f"no-capture header hover wrong: {r3}")
+if "loop header" in results[4]:
+    raise AssertionError(f"bitwise | must not show a loop-header hover: {results[4]}")
+if "loop header" in results[5]:
+    raise AssertionError(f"ordinary line must not show a loop-header hover: {results[5]}")
 print("hover smoke OK: capture list, pure-over-outer, bitwise-| safe, no header off-header")
 PY

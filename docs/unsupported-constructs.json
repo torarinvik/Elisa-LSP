@@ -1,0 +1,438 @@
+{
+  "schema_version": 1,
+  "inventory": "elisa-lsp-language-construct-support",
+  "verified_date": "2026-10-01",
+  "purpose": "Keep compiler-rejected language spellings separate from constructs that the compiler accepts but the LSP providers intentionally decline.",
+  "compiler": {
+    "frontend_root_env": "ELISA_COMPILER_ROOT",
+    "frontend_revision": "d8b5d305ec99a9d2238e035b871d9fd4e9835603",
+    "frontend_sources_sha256": "56868fba124d5f56905635d2529b3e70acbd22033a0a3ce5ff7225330cbb5393",
+    "backend_binary_env": "ELISAC",
+    "backend_kind": "stage0",
+    "verification": "All 19 compiler-rejected probes passed on 2026-10-01 against the current local Elisa compiler checkout at HEAD d8b5d305ec99a9d2238e035b871d9fd4e9835603, with source fingerprint 56868fba124d5f56905635d2529b3e70acbd22033a0a3ce5ff7225330cbb5393. The checked origin/main reference is ce52ba2c5261ebced8f5dae9ca1e21f25db8f460; the pinned release uses the newer local source snapshot and supported Go stage0 binary at SHA-256 2fc31c130863b41ac07d250c4bfa25ee5c73f45f8faefb8e696b5bbf7176c408 with release flags -O2 -fno-builtin -Wl,-v. Linux evidence retains its separately recorded backend hash and has not been rerun against this frontend fingerprint.",
+    "backend_sha256_by_target": {
+      "Darwin/arm64": "2fc31c130863b41ac07d250c4bfa25ee5c73f45f8faefb8e696b5bbf7176c408",
+      "Linux/aarch64": "b0692d4f01eb7eaeb32141f1a15572f6bae44624633258baf1eb40b46bddd7be"
+    }
+  },
+  "status_definitions": {
+    "rejected_removed": "The current compiler deliberately rejects a removed spelling and emits a directed migration diagnostic.",
+    "rejected_syntax": "The current compiler rejects this language shape as invalid syntax; the diagnostic is still a compiler result rather than an LSP failure.",
+    "accepted": "The current compiler parser and semantic sources contain the construct, or its direct compiler behavior is covered by the referenced compiler tests.",
+    "diagnostic_passthrough": "The LSP must preserve the compiler diagnostic and recovery behavior; it must not claim that a provider supports the construct.",
+    "unsupported": "The compiler accepts the construct, but the named LSP providers deliberately return their documented no-match shape until they have exact semantic identity or workspace data.",
+    "partial": "The LSP covers only the providers and cases named by the entry; other providers must not infer support from that partial coverage."
+  },
+  "regression_buckets": {
+    "compiler_regression": "A changed or missing compiler probe, parser source reference, or compiler source fingerprint is triaged as frontend/toolchain drift before changing LSP behavior.",
+    "server_regression": "A provider test failing while the compiler provenance and probe results are unchanged is triaged as an LSP regression.",
+    "inventory_staleness": "A newer pinned compiler source or backend binary requires re-running this inventory and recording the new provenance before any support claim changes."
+  },
+  "compiler_rejected": [
+    {
+      "id": "removed.expr_as_cast",
+      "area": "expressions",
+      "construct": "The general `expr as T` cast spelling",
+      "compiler_status": "rejected_removed",
+      "lsp_status": "diagnostic_passthrough",
+      "source_refs": [
+        "src/parser/parser_stmt.elisa",
+        "src/parser/parser_expr_binary.elisa"
+      ],
+      "probe": {
+        "source": "def main() -> i64:\n    x: i64 = 1\n    return x as i64\n",
+        "message_fragment": "the `expr as T` cast has been removed"
+      }
+    },
+    {
+      "id": "removed.if_let",
+      "area": "control_flow",
+      "construct": "The `if let` conditional-binding spelling",
+      "compiler_status": "rejected_removed",
+      "lsp_status": "diagnostic_passthrough",
+      "source_refs": [
+        "src/parser/parser_stmt_control.elisa"
+      ],
+      "probe": {
+        "source": "def main() -> i64:\n    if let x = 1:\n        return x\n    return 0\n",
+        "message_fragment": "`if let` is no longer supported"
+      }
+    },
+    {
+      "id": "removed.match_question",
+      "area": "patterns",
+      "construct": "The `match?` optional-match spelling",
+      "compiler_status": "rejected_removed",
+      "lsp_status": "diagnostic_passthrough",
+      "source_refs": [
+        "src/parser/parser_stmt_pattern.elisa"
+      ],
+      "probe": {
+        "source": "def main() -> i64:\n    x: i64 = 1\n    match? x:\n        1:\n            return 1\n    return 0\n",
+        "message_fragment": "`match?` is no longer supported"
+      }
+    },
+    {
+      "id": "removed.return_question",
+      "area": "control_flow",
+      "construct": "The `return?` fallible-return shorthand",
+      "compiler_status": "rejected_removed",
+      "lsp_status": "diagnostic_passthrough",
+      "source_refs": [
+        "src/parser/parser_stmt_control.elisa"
+      ],
+      "probe": {
+        "source": "def main() -> i64:\n    return? 1\n",
+        "message_fragment": "`return?` is no longer supported"
+      }
+    },
+    {
+      "id": "removed.try_question_default",
+      "area": "error_handling",
+      "construct": "The `try? value default fallback` spelling",
+      "compiler_status": "rejected_removed",
+      "lsp_status": "diagnostic_passthrough",
+      "source_refs": [
+        "src/parser/parser_expr.elisa"
+      ],
+      "probe": {
+        "source": "def main() -> i64:\n    return try? 1 default 0\n",
+        "message_fragment": "`try? ... default` is no longer supported"
+      }
+    },
+    {
+      "id": "removed.for_ref_binder",
+      "area": "iteration",
+      "construct": "The `for ref name in iterable` and `for mutable ref name` binder spellings",
+      "compiler_status": "rejected_removed",
+      "lsp_status": "diagnostic_passthrough",
+      "source_refs": [
+        "src/parser/parser_stmt_for.elisa"
+      ],
+      "probe": {
+        "source": "def main() -> i64:\n    xs: darray[i64] = [1]\n    for ref x in xs:\n        return x\n    return 0\n",
+        "message_fragment": "`for ref x in ...` has been removed"
+      },
+      "additional_probe": {
+        "source": "def main() -> i64:\n    xs: darray[i64] = [1]\n    for mutable ref x in xs:\n        return x\n    return 0\n",
+        "message_fragment": "`for mutable ref x in ...` has been removed"
+      }
+    },
+    {
+      "id": "removed.for_reverse_prefix",
+      "area": "iteration",
+      "construct": "The legacy `for rev name in iterable` loop prefix",
+      "compiler_status": "rejected_removed",
+      "lsp_status": "diagnostic_passthrough",
+      "source_refs": [
+        "src/parser/parser_stmt_for.elisa"
+      ],
+      "probe": {
+        "source": "def main() -> i64:\n    xs: darray[i64] = [1]\n    for rev x in xs:\n        return x\n    return 0\n",
+        "message_fragment": "legacy reverse iterable loop syntax"
+      }
+    },
+    {
+      "id": "removed.sizeof_spelling",
+      "area": "type_introspection",
+      "construct": "The `sizeof` spelling",
+      "compiler_status": "rejected_removed",
+      "lsp_status": "diagnostic_passthrough",
+      "source_refs": [
+        "src/parser/parser_expr.elisa"
+      ],
+      "probe": {
+        "source": "def main() -> i64:\n    return sizeof(i64)\n",
+        "message_fragment": "`sizeof` has been removed"
+      }
+    },
+    {
+      "id": "removed.alignof_spelling",
+      "area": "type_introspection",
+      "construct": "The `alignof` spelling",
+      "compiler_status": "rejected_removed",
+      "lsp_status": "diagnostic_passthrough",
+      "source_refs": [
+        "src/parser/parser_expr.elisa"
+      ],
+      "probe": {
+        "source": "def main() -> i64:\n    return alignof(i64)\n",
+        "message_fragment": "`alignof` has been removed"
+      }
+    },
+    {
+      "id": "removed.offsetof_spelling",
+      "area": "type_introspection",
+      "construct": "The `offsetof` spelling",
+      "compiler_status": "rejected_removed",
+      "lsp_status": "diagnostic_passthrough",
+      "source_refs": [
+        "src/parser/parser_expr.elisa"
+      ],
+      "probe": {
+        "source": "struct Pair:\n    left: i64\n    right: i64\ndef main() -> i64:\n    return offsetof(Pair, left)\n",
+        "message_fragment": "`offsetof` has been removed"
+      }
+    },
+    {
+      "id": "removed.dview_type",
+      "area": "container_types",
+      "construct": "The `dview[T]` dynamic-view type",
+      "compiler_status": "rejected_removed",
+      "lsp_status": "diagnostic_passthrough",
+      "source_refs": [
+        "src/semantic/check_dview_removed.elisa"
+      ],
+      "probe": {
+        "source": "def take(xs: dview[i64]) -> i64:\n    return 0\ndef main() -> i64:\n    return 0\n",
+        "message_fragment": "`dview[T]` has been removed"
+      }
+    },
+    {
+      "id": "removed.cascade_expression",
+      "area": "expressions",
+      "construct": "The `cascade receiver => expression` form",
+      "compiler_status": "rejected_removed",
+      "lsp_status": "diagnostic_passthrough",
+      "source_refs": [
+        "src/parser/parser_expr.elisa"
+      ],
+      "probe": {
+        "source": "def main() -> i64:\n    return cascade value => value\n",
+        "message_fragment": "the `cascade` expression has been removed"
+      }
+    },
+    {
+      "id": "removed.func_type_keyword",
+      "area": "function_types",
+      "construct": "The `func(...) -> T` function-type keyword",
+      "compiler_status": "rejected_removed",
+      "lsp_status": "diagnostic_passthrough",
+      "source_refs": [
+        "src/parser/parser_expr.elisa"
+      ],
+      "probe": {
+        "source": "def main() -> i64:\n    f: func(i64) -> i64\n    return 0\n",
+        "message_fragment": "the `func` type keyword has been renamed"
+      }
+    },
+    {
+      "id": "removed.lambda_keyword",
+      "area": "function_values",
+      "construct": "The word `lambda` and its unparenthesized shorthand parameters",
+      "compiler_status": "rejected_removed",
+      "lsp_status": "diagnostic_passthrough",
+      "source_refs": [
+        "src/parser/parser_expr.elisa",
+        "src/parser/parser_expr_literals.elisa"
+      ],
+      "probe": {
+        "source": "def main() -> i64:\n    f: fn(i64) -> i64 = lambda x: x\n    return 0\n",
+        "message_fragment": "the `lambda` keyword has been removed"
+      }
+    },
+    {
+      "id": "rejected.positional_tuple_type",
+      "area": "tuple_types",
+      "construct": "A positional tuple type such as `(i64, i64)`",
+      "compiler_status": "rejected_syntax",
+      "lsp_status": "diagnostic_passthrough",
+      "source_refs": [
+        "src/parser/parser_types_signature.elisa",
+        "src/parser/ast_nodes.elisa"
+      ],
+      "probe": {
+        "source": "def main() -> (i64, i64):\n    return (1, 2)\n",
+        "message_fragment": "expected :, got ,"
+      }
+    },
+    {
+      "id": "removed.bare_layout_soa",
+      "area": "aggregate_layout",
+      "construct": "The bare `layout soa` declaration clause",
+      "compiler_status": "rejected_removed",
+      "lsp_status": "diagnostic_passthrough",
+      "source_refs": [
+        "src/parser/parser_types_signature.elisa"
+      ],
+      "probe": {
+        "source": "struct Pair layout soa:\n    left: i64\ndef main() -> i64:\n    return 0\n",
+        "message_fragment": "bare `layout soa` has been removed"
+      }
+    },
+    {
+      "id": "removed.protocol_colon_parent",
+      "area": "protocol_declarations",
+      "construct": "The `protocol Child: Parent:` supertype spelling",
+      "compiler_status": "rejected_removed",
+      "lsp_status": "diagnostic_passthrough",
+      "source_refs": [
+        "src/parser/parser_decl_named_block.elisa"
+      ],
+      "probe": {
+        "source": "protocol Child: Parent:\n    pass\ndef main() -> i64:\n    return 0\n",
+        "message_fragment": "`protocol Child: Parent:` has been removed"
+      }
+    },
+    {
+      "id": "removed.legacy_region_parameter",
+      "area": "region_parameters",
+      "construct": "The `[region r]` generic region-parameter spelling",
+      "compiler_status": "rejected_removed",
+      "lsp_status": "diagnostic_passthrough",
+      "source_refs": [
+        "src/parser/parser_types_signature.elisa",
+        "src/parser/parser_types_function.elisa"
+      ],
+      "probe": {
+        "source": "def id[region r](value: i64& @r) -> i64& @r:\n    return value\ndef main() -> i64:\n    return 0\n",
+        "message_fragment": "region-param spelling `region r` has been removed"
+      }
+    }
+  ],
+  "lsp_provider_limits": [
+    {
+      "id": "provider.cross_file_module_members",
+      "area": "modules_and_imports",
+      "construct": "Imported modules, qualified module members, and cross-file references",
+      "compiler_status": "accepted",
+      "lsp_status": "unsupported",
+      "providers": [
+        "definition",
+        "references",
+        "documentHighlight",
+        "signatureHelp"
+      ],
+      "behavior": "Providers use only exact same-document retained resolver edges; qualified, imported, or cross-file targets return null or [] according to the provider contract.",
+      "compiler_source_refs": [
+        "src/parser/parser_decl_module.elisa",
+        "src/parser/ast_nodes.elisa",
+        "src/semantic/symbols.elisa",
+        "src/semantic/resolve_expr_walk.elisa"
+      ],
+      "lsp_source_refs": [
+        "src/features/definition.elisa",
+        "src/features/references.elisa",
+        "src/features/document_highlight.elisa",
+        "src/features/signature_help.elisa"
+      ],
+      "tests": [
+        "test/definition_test.sh",
+        "test/references_test.sh",
+        "test/document_highlight_test.sh",
+        "test/signature_help_test.sh"
+      ]
+    },
+    {
+      "id": "provider.overloaded_function_identity",
+      "area": "functions_and_overloads",
+      "construct": "Overloaded functions with more than one declaration sharing a name",
+      "compiler_status": "accepted",
+      "lsp_status": "unsupported",
+      "providers": [
+        "definition",
+        "references",
+        "documentHighlight",
+        "signatureHelp"
+      ],
+      "behavior": "Navigation and signature help decline ambiguous names instead of guessing an overload; the compiler remains the authority for call resolution and diagnostics.",
+      "compiler_source_refs": [
+        "src/semantic/symbols.elisa",
+        "src/semantic/resolve_types.elisa",
+        "src/semantic/resolve_expr_walk.elisa"
+      ],
+      "lsp_source_refs": [
+        "src/features/definition.elisa",
+        "src/features/references.elisa",
+        "src/features/document_highlight.elisa",
+        "src/features/signature_help.elisa"
+      ],
+      "tests": [
+        "test/definition_test.sh",
+        "test/references_test.sh",
+        "test/document_highlight_test.sh",
+        "test/signature_help_test.sh"
+      ]
+    },
+    {
+      "id": "provider.shadowed_local_identity",
+      "area": "scopes_and_bindings",
+      "construct": "A local or parameter shadowing a top-level declaration",
+      "compiler_status": "accepted",
+      "lsp_status": "unsupported",
+      "providers": [
+        "definition",
+        "signatureHelp"
+      ],
+      "behavior": "Definition declines local binding targets because the compiler has no local declaration edge. Signature help declines a call when a local or parameter shadows the top-level callable; it does not fabricate a name-only target. References and documentHighlight support parameter/local BindingIds with exact spans.",
+      "compiler_source_refs": [
+        "src/semantic/resolve_value_blocks.elisa",
+        "src/semantic/resolve_types.elisa",
+        "src/semantic/resolve_expr_walk.elisa"
+      ],
+      "lsp_source_refs": [
+        "src/features/definition.elisa",
+        "src/features/references.elisa",
+        "src/features/document_highlight.elisa",
+        "src/features/signature_help.elisa"
+      ],
+      "tests": [
+        "test/definition_test.sh",
+        "test/signature_help_test.sh"
+      ]
+    },
+    {
+      "id": "provider.member_and_variant_identity",
+      "area": "structs_and_enums",
+      "construct": "Struct fields, enum variants, constructors, and method/member calls",
+      "compiler_status": "accepted",
+      "lsp_status": "unsupported",
+      "providers": [
+        "definition",
+        "references",
+        "documentHighlight",
+        "signatureHelp"
+      ],
+      "behavior": "The current providers do not expose member or variant identity as navigation/signature targets; they return their documented no-match result while semantic tokens and diagnostics may still represent the source.",
+      "compiler_source_refs": [
+        "src/parser/ast_nodes.elisa",
+        "src/semantic/semantic_types.elisa",
+        "src/semantic/resolve_expr_walk.elisa"
+      ],
+      "lsp_source_refs": [
+        "src/features/definition.elisa",
+        "src/features/references.elisa",
+        "src/features/document_highlight.elisa",
+        "src/features/signature_help.elisa"
+      ],
+      "tests": [
+        "test/definition_test.sh",
+        "test/references_test.sh",
+        "test/document_highlight_test.sh",
+        "test/signature_help_test.sh"
+      ]
+    },
+    {
+      "id": "provider.specialized_and_dynamic_calls",
+      "area": "call_forms",
+      "construct": "Named, generic-specialized, variadic, dynamic, synthetic effect-handler, and constructor calls",
+      "compiler_status": "accepted",
+      "lsp_status": "unsupported",
+      "providers": [
+        "signatureHelp"
+      ],
+      "behavior": "Signature help is limited to one positional call edge targeting a unique non-constructor top-level function; all other call forms return null.",
+      "compiler_source_refs": [
+        "src/parser/ast_nodes.elisa",
+        "src/semantic/resolve_expr_walk.elisa",
+        "src/semantic/check_named_call_args.elisa"
+      ],
+      "lsp_source_refs": [
+        "src/features/signature_help.elisa"
+      ],
+      "tests": [
+        "test/signature_help_test.sh"
+      ]
+    }
+  ]
+}

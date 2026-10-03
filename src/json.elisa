@@ -9,6 +9,10 @@ module Json:
     # Nesting bound for the strict validator (J01): hostile depth is rejected
     # rather than overflowing the stack.
     const MAX_JSON_DEPTH: i64 = 256
+    # Bound object/array node allocation even when a body packs millions of
+    # tiny values. Object member names also consume this budget because they
+    # allocate a Field and retain a source span in the parsed value tree.
+    const MAX_JSON_VALUES: i64 = 200000
 
     public:
         # Hierarchy root so `Value` is a handle-based, store-backed packed enum whose
@@ -31,6 +35,37 @@ module Json:
         struct Field:
             key: sview
             value: Value
+
+
+        # Strict validation reports a zero-based byte offset into the original
+        # UTF-8 body and a stable failure category.
+        enum ValidationCategory:
+            Encoding
+            Syntax
+            ResourceLimit
+
+
+        struct ValidationError:
+            offset: mutable usize
+            category: mutable ValidationCategory
+
+
+        enum ParseOutcome:
+            Parsed(value: Value)
+            Rejected(detail: ValidationError)
+
+
+        # Integer conversion keeps failure distinct from every valid i64,
+        # including -2, which was previously used as a sentinel.
+        enum I64ParseOutcome:
+            Valid(value: i64)
+            Invalid
+
+
+        enum StringParseOutcome:
+            Valid(text: sview)
+            Null
+            WrongType
 
     private:
         # Byte at `pos`, or 0 past the end.
@@ -150,27 +185,133 @@ module Json:
                         return (Value.Num(parse_number_span(src, pos)))
 
     public:
-        # Parse a complete JSON document, returning the root value.
-        def parse(src: sview) -> Value:
-            can Memory.Allocate, Abort.Panic:
-                pos: mutable usize = 0
-                return parse_value(src, pos)
-
-
         # J01 strict validation: true iff `src` is exactly one well-formed JSON
-        # value followed only by whitespace. The value parser above is
-        # deliberately permissive (it fills a model for dispatch); this gate
-        # decides whether the bytes are JSON at all, so malformed messages get a
-        # JSON-RPC ParseError instead of being silently coerced.
+        # value followed only by whitespace. On failure, `error` identifies a
+        # zero-based byte offset and whether the body failed UTF-8 validation,
+        # JSON grammar, or a configured resource bound. The value parser above
+        # remains deliberately permissive; callers must validate before parse.
+        def validate(src: sview, detail: mutable ValidationError&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                detail.offset <- 0
+                detail.category <- ValidationCategory.Syntax
+                bad_utf8: mutable usize = 0
+                if not utf8_ok(src, bad_utf8):
+                    detail.offset <- bad_utf8
+                    detail.category <- ValidationCategory.Encoding
+                    return false
+                # The LSP content part is UTF-8. The structural JSON scanner
+                # below treats non-ASCII bytes as ordinary string bytes, so
+                # validate the complete message encoding before parsing any
+                # spans that may later be copied back to the client.
+                pos: mutable usize = 0
+                values: mutable i64 = 0
+                resource_failed: mutable bool = false
+                if not value_ok(src, pos, 0, values, resource_failed):
+                    detail.offset <- pos
+                    if resource_failed:
+                        detail.category <- ValidationCategory.ResourceLimit
+                    return false
+                ws_ok(src, pos)
+                if pos != sview_len(src):
+                    detail.offset <- pos
+                    return false
+                return true
+
+
+        # Compatibility convenience for callers that only need a yes/no gate.
         def is_valid(src: sview) -> bool:
             can Memory.Allocate, Abort.Panic:
+                detail: mutable ValidationError = ValidationError{offset: 0, category: ValidationCategory.Syntax}
+                return validate(src, detail)
+
+
+        # Checked parse entry point. The raw-value builder stays private and
+        # zero-copy, while callers receive either the complete root or a
+        # structured failure and can never observe a partial parsed tree.
+        def parse(src: sview) -> ParseOutcome:
+            can Memory.Allocate, Abort.Panic:
+                detail: mutable ValidationError = ValidationError{offset: 0, category: ValidationCategory.Syntax}
+                if not validate(src, detail):
+                    return ParseOutcome.Rejected(detail)
                 pos: mutable usize = 0
-                false return if not value_ok(src, pos, 0)
-                ws_ok(src, pos)
-                return pos == sview_len(src)
+                root: Value = parse_value(src, pos)
+                return ParseOutcome.Parsed(root)
 
 
     private:
+        # Strict UTF-8 validation for the JSON body. Reject overlong encodings,
+        # surrogate code points, isolated continuations, truncated sequences,
+        # and scalars above U+10FFFF. This is deliberately applied to the full
+        # body, not only decoded string values: JSON syntax itself is ASCII, and
+        # every raw non-ASCII byte must belong to a valid Unicode scalar.
+        def invalid_utf8(bad_offset: mutable usize&, offset: usize) -> bool:
+            bad_offset[0] <- offset
+            return false
+
+
+        def utf8_ok(src: sview, bad_offset: mutable usize&) -> bool:
+            n: usize = sview_len(src)
+            i: mutable usize = 0
+            while i < n:
+                b0: u8 = sview_at(src, i)
+                if b0 <= 0x7F:
+                    i <- i + 1
+                    continue
+                if b0 >= 0xC2 and b0 <= 0xDF:
+                    return invalid_utf8(bad_offset, i) if i + 1 >= n
+                    b1: u8 = sview_at(src, i + 1)
+                    return invalid_utf8(bad_offset, i) if b1 < 0x80 or b1 > 0xBF
+                    i <- i + 2
+                    continue
+                if b0 == 0xE0:
+                    return invalid_utf8(bad_offset, i) if i + 2 >= n
+                    b1: u8 = sview_at(src, i + 1)
+                    b2: u8 = sview_at(src, i + 2)
+                    return invalid_utf8(bad_offset, i) if b1 < 0xA0 or b1 > 0xBF or b2 < 0x80 or b2 > 0xBF
+                    i <- i + 3
+                    continue
+                if (b0 >= 0xE1 and b0 <= 0xEC) or (b0 >= 0xEE and b0 <= 0xEF):
+                    return invalid_utf8(bad_offset, i) if i + 2 >= n
+                    b1: u8 = sview_at(src, i + 1)
+                    b2: u8 = sview_at(src, i + 2)
+                    return invalid_utf8(bad_offset, i) if b1 < 0x80 or b1 > 0xBF or b2 < 0x80 or b2 > 0xBF
+                    i <- i + 3
+                    continue
+                if b0 == 0xED:
+                    return invalid_utf8(bad_offset, i) if i + 2 >= n
+                    b1: u8 = sview_at(src, i + 1)
+                    b2: u8 = sview_at(src, i + 2)
+                    return invalid_utf8(bad_offset, i) if b1 < 0x80 or b1 > 0x9F or b2 < 0x80 or b2 > 0xBF
+                    i <- i + 3
+                    continue
+                if b0 == 0xF0:
+                    return invalid_utf8(bad_offset, i) if i + 3 >= n
+                    b1: u8 = sview_at(src, i + 1)
+                    b2: u8 = sview_at(src, i + 2)
+                    b3: u8 = sview_at(src, i + 3)
+                    return invalid_utf8(bad_offset, i) if b1 < 0x90 or b1 > 0xBF or b2 < 0x80 or b2 > 0xBF or b3 < 0x80 or b3 > 0xBF
+                    i <- i + 4
+                    continue
+                if b0 >= 0xF1 and b0 <= 0xF3:
+                    return invalid_utf8(bad_offset, i) if i + 3 >= n
+                    b1: u8 = sview_at(src, i + 1)
+                    b2: u8 = sview_at(src, i + 2)
+                    b3: u8 = sview_at(src, i + 3)
+                    return invalid_utf8(bad_offset, i) if b1 < 0x80 or b1 > 0xBF or b2 < 0x80 or b2 > 0xBF or b3 < 0x80 or b3 > 0xBF
+                    i <- i + 4
+                    continue
+                if b0 == 0xF4:
+                    return invalid_utf8(bad_offset, i) if i + 3 >= n
+                    b1: u8 = sview_at(src, i + 1)
+                    b2: u8 = sview_at(src, i + 2)
+                    b3: u8 = sview_at(src, i + 3)
+                    return invalid_utf8(bad_offset, i) if b1 < 0x80 or b1 > 0x8F or b2 < 0x80 or b2 > 0xBF or b3 < 0x80 or b3 > 0xBF
+                    i <- i + 4
+                    continue
+                return invalid_utf8(bad_offset, i)
+            return true
+
+
         def ws_ok(src: sview, pos: mutable usize&) -> void:
             while pos[0] < sview_len(src):
                 c: u8 = sview_at(src, pos[0])
@@ -181,7 +322,7 @@ module Json:
                         return
 
 
-        def lit_ok(src: sview, pos: mutable usize&, text: u8&) -> bool:
+        def lit_ok(src: sview, pos: mutable usize&, text: cstr?) -> bool:
             n: usize = sview_len(sview(text, 0, -1))
             false return if pos[0] + n > sview_len(src)
             i: mutable usize = 0
@@ -202,6 +343,17 @@ module Json:
             return true
 
 
+        def hex4_value(src: sview, start: usize) -> u32:
+            value: mutable u32 = 0
+            i: mutable usize = 0
+            while i < 4:
+                c: u8 = sview_at(src, start + i)
+                digit: u32 = (c - 48).u32() if c >= 48 and c <= 57 else ((c - 87).u32() if c >= 97 and c <= 102 else (c - 55).u32())
+                value <- (value << 4) | digit
+                i <- i + 1
+            return value
+
+
         def string_ok(src: sview, pos: mutable usize&) -> bool:
             false return if sview_at(src, pos[0]) != 34
             pos[0] <- pos[0] + 1
@@ -214,7 +366,21 @@ module Json:
                     e: u8 = sview_at(src, pos[0] + 1) if pos[0] + 1 < sview_len(src) else 0
                     if e == 117:
                         false return if not hex4_ok(src, pos[0] + 2)
-                        pos[0] <- pos[0] + 6
+                        cp: u32 = hex4_value(src, pos[0] + 2)
+                        if cp >= 0xD800 and cp <= 0xDBFF:
+                            # A high surrogate is valid only as the first half
+                            # of an immediately adjacent escaped low surrogate.
+                            false return if pos[0] + 11 >= sview_len(src)
+                            false return if sview_at(src, pos[0] + 6) != 92 or sview_at(src, pos[0] + 7) != 117
+                            false return if not hex4_ok(src, pos[0] + 8)
+                            lo: u32 = hex4_value(src, pos[0] + 8)
+                            false return if lo < 0xDC00 or lo > 0xDFFF
+                            pos[0] <- pos[0] + 12
+                        else:
+                            # Unpaired low surrogates cannot be encoded as
+                            # valid UTF-8 by decode_into, so reject them here.
+                            false return if cp >= 0xDC00 and cp <= 0xDFFF
+                            pos[0] <- pos[0] + 6
                     elif e == 34 or e == 92 or e == 47 or e == 98 or e == 102 or e == 110 or e == 114 or e == 116:
                         pos[0] <- pos[0] + 2
                     else:
@@ -254,15 +420,21 @@ module Json:
             return true
 
 
-        def value_ok(src: sview, pos: mutable usize&, depth: i64) -> bool:
+        def value_ok(src: sview, pos: mutable usize&, depth: i64, values: mutable i64&, resource_failed: mutable bool&) -> bool:
             ws_ok(src, pos)
-            false return if depth > MAX_JSON_DEPTH
+            if depth > MAX_JSON_DEPTH:
+                resource_failed[0] <- true
+                return false
+            if values[0] >= MAX_JSON_VALUES:
+                resource_failed[0] <- true
+                return false
+            values[0] <- values[0] + 1
             false return if pos[0] >= sview_len(src)
             c: u8 = sview_at(src, pos[0])
             if c == 123:
-                return object_ok(src, pos, depth + 1)
+                return object_ok(src, pos, depth + 1, values, resource_failed)
             if c == 91:
-                return array_ok(src, pos, depth + 1)
+                return array_ok(src, pos, depth + 1, values, resource_failed)
             if c == 34:
                 return string_ok(src, pos)
             if c == 116:
@@ -276,7 +448,7 @@ module Json:
             return false
 
 
-        def object_ok(src: sview, pos: mutable usize&, depth: i64) -> bool:
+        def object_ok(src: sview, pos: mutable usize&, depth: i64, values: mutable i64&, resource_failed: mutable bool&) -> bool:
             pos[0] <- pos[0] + 1
             ws_ok(src, pos)
             if pos[0] < sview_len(src) and sview_at(src, pos[0]) == 125:
@@ -285,11 +457,15 @@ module Json:
             while true:
                 ws_ok(src, pos)
                 false return if pos[0] >= sview_len(src) or sview_at(src, pos[0]) != 34
+                if values[0] >= MAX_JSON_VALUES:
+                    resource_failed[0] <- true
+                    return false
+                values[0] <- values[0] + 1
                 false return if not string_ok(src, pos)
                 ws_ok(src, pos)
                 false return if pos[0] >= sview_len(src) or sview_at(src, pos[0]) != 58
                 pos[0] <- pos[0] + 1
-                false return if not value_ok(src, pos, depth)
+                false return if not value_ok(src, pos, depth, values, resource_failed)
                 ws_ok(src, pos)
                 false return if pos[0] >= sview_len(src)
                 d: u8 = sview_at(src, pos[0])
@@ -303,14 +479,14 @@ module Json:
             return false
 
 
-        def array_ok(src: sview, pos: mutable usize&, depth: i64) -> bool:
+        def array_ok(src: sview, pos: mutable usize&, depth: i64, values: mutable i64&, resource_failed: mutable bool&) -> bool:
             pos[0] <- pos[0] + 1
             ws_ok(src, pos)
             if pos[0] < sview_len(src) and sview_at(src, pos[0]) == 93:
                 pos[0] <- pos[0] + 1
                 return true
             while true:
-                false return if not value_ok(src, pos, depth)
+                false return if not value_ok(src, pos, depth, values, resource_failed)
                 ws_ok(src, pos)
                 false return if pos[0] >= sview_len(src)
                 d: u8 = sview_at(src, pos[0])
@@ -326,34 +502,39 @@ module Json:
 
     public:
         # Look up a field by key in an object value; null if absent or not an object.
-        def get(v: Value, key: u8&) -> Value?:
+        def get(v: Value, key: cstr?) -> Value?:
             can Memory.Allocate, Abort.Panic:
                 match v:
                     Value.Obj(fields):
                         for f in fields:
-                            f.value return if string_view_eq(f.key, key) == 1
+                            # Object member names are JSON strings too: compare
+                            # their decoded value so e.g. "metho\\u0064" is
+                            # the same protocol field as "method".
+                            decoded_key: mutable darray[u8] = []
+                            decode_into(Value.Str(f.key), decoded_key)
+                            key_view: sview = bytes_view_range_ref(decoded_key, 0, decoded_key.count) if decoded_key.count > 0 else sview("", 0, 0)
+                            f.value return if string_view_eq(key_view, key) == 1
                     _:
                         pass
                 return null
 
 
-        # Decode a Num value as i64 (handles a leading `-`); 0 for non-numbers.
-        def as_i64(v: Value) -> i64:
-            match v:
-                Value.Num(text):
-                    n: mutable i64 = 0
-                    neg: mutable bool = false
-                    i: mutable usize = 0
-                    if text.len > 0 and sview_at(text, 0) == 45:
-                        neg <- true
-                        i <- 1
-                    while i < text.len:
-                        d: u8 = sview_at(text, i)
-                        n <- n * 10 + (d.i64() - 48) if d >= 48 and d <= 57
-                        i <- i + 1
-                    return (0 - n) if neg else n
-                _:
-                    return 0
+        # Count members whose decoded key exactly matches `key`. Protocol
+        # envelopes reject duplicate critical keys instead of letting callers
+        # disagree about which occurrence wins.
+        def count_key(v: Value, key: cstr?) -> i64:
+            can Memory.Allocate, Abort.Panic:
+                count: mutable i64 = 0
+                match v:
+                    Value.Obj(fields):
+                        for f in fields:
+                            decoded_key: mutable darray[u8] = []
+                            decode_into(Value.Str(f.key), decoded_key)
+                            key_view: sview = bytes_view_range_ref(decoded_key, 0, decoded_key.count) if decoded_key.count > 0 else sview("", 0, 0)
+                            count <- count + 1 if string_view_eq(key_view, key) == 1
+                    _:
+                        pass
+                return count
 
 
         # J02 strict protocol integers: canonical optional-`-` plus 1+ ASCII
@@ -383,40 +564,73 @@ module Json:
                     return false
 
 
-        # Checked conversion for protocol fields (versions, positions): the
-        # value, or -2 when present-but-malformed (wrong type, fractional
-        # syntax, or i64 overflow). -2 is deliberately distinct from -1
-        # (absent), so callers can reject malformed input instead of treating
-        # an overflowing version as "unversioned" and applying it.
-        def as_i64_checked(v: Value) -> i64:
+        # Convert a canonical integer token without overflow. Accumulating a
+        # negative value permits the asymmetric i64 minimum to be represented.
+        def as_i64_result(v: Value) -> I64ParseOutcome:
             match v:
                 Value.Num(text):
-                    return -2 if not is_int_text(text)
+                    return I64ParseOutcome.Invalid if not is_int_text(text)
                     neg: mutable bool = false
                     i: mutable usize = 0
                     if sview_at(text, 0) == 45:
                         neg <- true
                         i <- 1
                     n: mutable i64 = 0
-                    limit: i64 = 922337203685477580
+                    limit: mutable i64 = -9223372036854775807
+                    limit <- -9223372036854775808 if neg
                     while i < text.len.usize():
                         d: i64 = sview_at(text, i).i64() - 48
-                        last: i64 = 8 if neg else 7
-                        return -2 if n > limit or (n == limit and d > last)
-                        n <- n * 10 + d
+                        return I64ParseOutcome.Invalid if n < limit / 10
+                        n <- n * 10
+                        return I64ParseOutcome.Invalid if n < limit + d
+                        n <- n - d
                         i <- i + 1
-                    return (0 - n) if neg else n
+                    value: i64 = n if neg else 0 - n
+                    return I64ParseOutcome.Valid(value)
                 _:
-                    return -2
+                    return I64ParseOutcome.Invalid
 
 
-        # The raw string content of a Str value; empty for non-strings.
-        def as_str(v: Value) -> sview:
+        # LSP `integer` is a signed 32-bit JSON integer; coordinates and
+        # limits generally use the non-negative `uinteger` range.
+        def as_lsp_integer_result(v: Value) -> I64ParseOutcome:
+            match as_i64_result(v):
+                I64ParseOutcome.Valid(value):
+                    return I64ParseOutcome.Valid(value) if value >= -2147483648 and value <= 2147483647
+                    return I64ParseOutcome.Invalid
+                I64ParseOutcome.Invalid:
+                    return I64ParseOutcome.Invalid
+
+
+        def as_lsp_uinteger_result(v: Value) -> I64ParseOutcome:
+            match as_i64_result(v):
+                I64ParseOutcome.Valid(value):
+                    return I64ParseOutcome.Valid(value) if value >= 0 and value <= 2147483647
+                    return I64ParseOutcome.Invalid
+                I64ParseOutcome.Invalid:
+                    return I64ParseOutcome.Invalid
+
+
+        # Convenience for coordinates that default to an invalid negative
+        # value. `-1` cannot collide with a valid LSP uinteger.
+        def as_lsp_uinteger_or_invalid(v: Value) -> i64:
+            match as_lsp_uinteger_result(v):
+                I64ParseOutcome.Valid(value):
+                    return value
+                I64ParseOutcome.Invalid:
+                    return -1
+
+
+        # Raw string content is distinct from an empty valid string; absent
+        # fields remain distinct through `get`'s optional result.
+        def as_str_result(v: Value) -> StringParseOutcome:
             match v:
                 Value.Str(text):
-                    return text
+                    return StringParseOutcome.Valid(text)
+                Value.Null:
+                    return StringParseOutcome.Null
                 _:
-                    return sview("", 0, 0)
+                    return StringParseOutcome.WrongType
 
 
         # Hex digit value, or 0 for non-hex.
@@ -457,7 +671,12 @@ module Json:
         # small docs) — the exact bug found wiring up the JetBrains client.
         def decode_into(v: Value, out: mutable darray[u8]&) -> void:
             can Memory.Allocate, Abort.Panic:
-                text: sview = as_str(v)
+                text: mutable sview = sview("", 0, 0)
+                match as_str_result(v):
+                    StringParseOutcome.Valid(value):
+                        text <- value
+                    StringParseOutcome.Null | StringParseOutcome.WrongType:
+                        return
                 n: usize = sview_len(text)
                 i: mutable usize = 0
                 while i < n:

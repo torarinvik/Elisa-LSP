@@ -1,0 +1,177 @@
+# Shared, source-independent JSON string encoding (J02).
+#
+# Keep this writer free of the compiler frontend so focused tests can exercise
+# hostile byte sequences directly. Callers provide a string body's bytes and
+# own the surrounding quotes/value framing.
+
+def json_escape_byte(buffer: mutable darray[u8]&, b: u8) -> void can[Memory.Allocate, Abort.Panic]:
+    if b == 34:              # quote -> \\" 
+        buffer.push(92)
+        buffer.push(34)
+    elif b == 92:            # backslash -> \\\\
+        buffer.push(92)
+        buffer.push(92)
+    elif b == 10:            # newline
+        buffer.push(92)
+        buffer.push(110)
+    elif b == 13:            # carriage return
+        buffer.push(92)
+        buffer.push(114)
+    elif b == 9:             # tab
+        buffer.push(92)
+        buffer.push(116)
+    elif b < 32:             # other C0 controls -> \\u00XX
+        buffer.push(92)
+        buffer.push(117)
+        buffer.push(48)
+        buffer.push(48)
+        buffer.push(json_hex_digit((b.i64() >> 4) & 15))
+        buffer.push(json_hex_digit(b.i64() & 15))
+    else:
+        buffer.push(b)
+
+
+def json_hex_digit(n: i64) -> u8:
+    return (48 + n).u8() if n < 10 else (87 + n).u8()
+
+
+# Append every i64 value as a JSON decimal integer, including the asymmetric
+# minimum. Bytes.push_int is intentionally non-negative-only.
+def json_push_i64(buffer: mutable darray[u8]&, number: i64) -> void can[Memory.Allocate, Abort.Panic]:
+    magnitude: mutable u64 = number.u64()
+    if number < 0:
+        buffer.push(45)
+        if number == -9223372036854775808:
+            magnitude <- 9223372036854775808
+        else:
+            magnitude <- (0 - number).u64()
+    if magnitude == 0:
+        buffer.push(48)
+        return
+    digits: mutable darray[u8] = []
+    while magnitude > 0:
+        digits.push((48 + (magnitude % 10)).u8())
+        magnitude <- magnitude / 10
+    i: mutable usize = digits.count
+    while i > 0:
+        i <- i - 1
+        buffer.push(digits[i])
+
+
+# Copy a parsed JSON value back to an output buffer without decoding and
+# re-escaping its strings. Json::Value string/key spans retain the original
+# valid JSON body, so this preserves client-owned completion-item fields and
+# their exact values during resolve.
+def json_append_raw_sview(buffer: mutable darray[u8]&, text: sview) -> void:
+    i: mutable usize = 0
+    while i < text.len.usize():
+        buffer.push(sview_at(text, i))
+        i <- i + 1
+
+
+def json_append_raw_string(buffer: mutable darray[u8]&, raw_content: sview) -> void can[Memory.Allocate, Abort.Panic]:
+    buffer.push(34)
+    json_append_raw_sview(buffer, raw_content)
+    buffer.push(34)
+
+
+def json_append_raw_value(buffer: mutable darray[u8]&, value: Json::Value, depth: i64) -> bool can[Memory.Allocate, Abort.Panic]:
+    return false if depth > 256
+    match value:
+        Json::Value.Null:
+            json_append_raw_sview(buffer, "null")
+        Json::Value.Bool(boolean):
+            json_append_raw_sview(buffer, "true") if boolean
+            json_append_raw_sview(buffer, "false") if not boolean
+        Json::Value.Num(text):
+            json_append_raw_sview(buffer, text)
+        Json::Value.Str(text):
+            json_append_raw_string(buffer, text)
+        Json::Value.Arr(items):
+            buffer.push(91)
+            first: mutable bool = true
+            for item in items:
+                buffer.push(44) if not first
+                first <- false
+                return false if not json_append_raw_value(buffer, item, depth + 1)
+            buffer.push(93)
+        Json::Value.Obj(fields):
+            buffer.push(123)
+            first: mutable bool = true
+            for field in fields:
+                buffer.push(44) if not first
+                first <- false
+                json_append_raw_string(buffer, field.key)
+                buffer.push(58)
+                return false if not json_append_raw_value(buffer, field.value, depth + 1)
+            buffer.push(125)
+    return true
+
+
+# Escape arbitrary input bytes as one JSON string body. Valid shortest-form
+# UTF-8 scalar values pass through unchanged; quotes, backslashes, C0 controls,
+# overlong forms, surrogate encodings, stray continuations, and out-of-range
+# code points cannot invalidate the outgoing JSON or UTF-8 frame.
+def json_escape_utf8(buffer: mutable darray[u8]&, text: sview) -> void can[Memory.Allocate, Abort.Panic]:
+    i: mutable usize = 0
+    while i < text.len.usize():
+        b: u8 = sview_at(text, i)
+        if b < 128:
+            can Memory.Allocate, Abort.Panic:
+                json_escape_byte(buffer, b)
+            i <- i + 1
+            continue
+
+        seqlen: mutable usize = 0
+        minimum_codepoint: mutable u32 = 0
+        if b >= 0xC2 and b <= 0xDF:
+            seqlen <- 2
+            minimum_codepoint <- 0x80
+        elif b >= 0xE0 and b <= 0xEF:
+            seqlen <- 3
+            minimum_codepoint <- 0x800
+        elif b >= 0xF0 and b <= 0xF4:
+            seqlen <- 4
+            minimum_codepoint <- 0x10000
+
+        valid: mutable bool = seqlen > 0 and i + seqlen <= text.len.usize()
+        cp: mutable u32 = 0
+        if valid:
+            c1: u8 = sview_at(text, i + 1)
+            valid <- c1 >= 128 and c1 <= 191
+            if seqlen == 2:
+                cp <- ((b.u32() & 31) << 6) | (c1.u32() & 63)
+            elif seqlen == 3:
+                c2: u8 = sview_at(text, i + 2)
+                valid <- valid and c2 >= 128 and c2 <= 191
+                cp <- ((b.u32() & 15) << 12) | ((c1.u32() & 63) << 6) | (c2.u32() & 63)
+            elif seqlen == 4:
+                c2: u8 = sview_at(text, i + 2)
+                c3: u8 = sview_at(text, i + 3)
+                valid <- valid and c2 >= 128 and c2 <= 191 and c3 >= 128 and c3 <= 191
+                cp <- ((b.u32() & 7) << 18) | ((c1.u32() & 63) << 12) | ((c2.u32() & 63) << 6) | (c3.u32() & 63)
+
+        if valid:
+            if cp < minimum_codepoint:
+                valid <- false
+            elif cp >= 0xD800 and cp <= 0xDFFF:
+                valid <- false
+            elif cp > 0x10FFFF:
+                valid <- false
+
+        if valid:
+            k: mutable usize = 0
+            while k < seqlen:
+                buffer.push(sview_at(text, i + k))
+                k <- k + 1
+            i <- i + seqlen
+        else:
+            # Encode U+FFFD as ASCII JSON escapes, so even malformed input is
+            # safe to place in a byte-framed protocol response.
+            buffer.push(92)
+            buffer.push(117)
+            buffer.push(102)
+            buffer.push(102)
+            buffer.push(102)
+            buffer.push(100)
+            i <- i + 1

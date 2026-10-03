@@ -63,10 +63,309 @@ const ST_OP_ASSIGN: i64 = 46
 # Enum variants are appended so existing semantic-token wire indices remain stable.
 const ST_ENUM_VARIANT: i64 = 47
 
+# Standard semantic-token modifiers are a second, independent legend. The
+# cached analysis uses this canonical bit order; a session profile remaps the
+# bits to the subset/order negotiated from the client's capability list.
+# Keep the values explicit because the source language does not have a
+# portable compile-time bit-shift expression in every supported compiler.
+const ST_MOD_DECLARATION: i64 = 1
+const ST_MOD_DEFINITION: i64 = 2
+const ST_MOD_READONLY: i64 = 4
+const ST_MOD_MODIFICATION: i64 = 8
+const ST_MODIFIER_MASK: i64 = 15
+const SEMTOK_MODIFIER_COUNT: i64 = 4
+
 # The legend, embedded in the initialize capabilities. Names mirror the
 # taxonomy leaves; the client palette keys off these exact strings.
-def semtok_legend_json() -> u8&:
+def semtok_legend_json() -> cstr:
     return "[\"elisa.type.int.signed\",\"elisa.type.int.unsigned\",\"elisa.type.float\",\"elisa.type.scalar\",\"elisa.type.string\",\"elisa.type.container\",\"elisa.type.user\",\"elisa.type.void\",\"elisa.lit.int\",\"elisa.lit.float\",\"elisa.lit.char\",\"elisa.lit.string\",\"elisa.lit.value\",\"elisa.fn.def\",\"elisa.fn.use\",\"elisa.fn.lambda\",\"elisa.bind.param\",\"elisa.bind.local\",\"elisa.bind.field\",\"elisa.bind.global\",\"elisa.bind.discard\",\"elisa.effect.grant\",\"elisa.effect.name\",\"elisa.effect.unsafe\",\"elisa.effect.error\",\"elisa.mem.region\",\"elisa.mem.qualifier\",\"elisa.flow.branch\",\"elisa.flow.error\",\"elisa.flow.concurrent\",\"elisa.decl.skeleton\",\"elisa.contract.clause\",\"elisa.contract.quantifier\",\"elisa.contract.ghost\",\"elisa.op.mutation\",\"elisa.op.lambda\",\"elisa.op.range\",\"elisa.meta.decorator\",\"elisa.meta.directive\",\"elisa.meta.module\",\"elisa.comment\",\"elisa.punctuation\",\"elisa.op.arithmetic\",\"elisa.op.comparison\",\"elisa.op.logical\",\"elisa.op.bitwise\",\"elisa.op.assign\",\"elisa.enum.variant\"]"
+
+
+# The cache always stores these stable custom indices. A session profile maps
+# each cached index either to a position in its advertised legend or to -1
+# when the client's partial standard-token set cannot represent that category.
+struct SemTokProfile:
+    legend_json: mutable darray[u8]
+    type_map: mutable darray[i64]
+    custom: mutable bool
+    # JSON legend and stable-index -> negotiated-index map for modifiers.
+    # `modifier_map[i] == -1` means that the client did not advertise the
+    # canonical modifier at index i, so that bit is dropped at the wire edge.
+    modifier_json: mutable darray[u8]
+    modifier_map: mutable darray[i64]
+
+
+const SEMTOK_CUSTOM_TYPE_COUNT: i64 = 48
+const SEMTOK_STANDARD_FALLBACK_COUNT: i64 = 15
+const SEMTOK_MAX_CLIENT_TOKEN_TYPES: i64 = 256
+const SEMTOK_MAX_CLIENT_TOKEN_MODIFIERS: i64 = 256
+
+
+def semtok_modifier_bit(index: i64) -> i64:
+    return when index:
+        0 -> ST_MOD_DECLARATION
+        1 -> ST_MOD_DEFINITION
+        2 -> ST_MOD_READONLY
+        3 -> ST_MOD_MODIFICATION
+        _ -> 0
+
+
+def semtok_modifier_name(index: i64) -> cstr:
+    return when index:
+        0 -> "declaration"
+        1 -> "definition"
+        2 -> "readonly"
+        3 -> "modification"
+        _ -> ""
+
+
+# Re-encode the canonical cache bitset into the negotiated legend's bitset.
+# Unknown cache bits are intentionally ignored; the worker validator rejects
+# them before a cache can be published, and this mask keeps the protocol edge
+# defensive if an old cache is encountered during an upgrade.
+def semtok_remap_modifier_bits(modifiers: i64, modifier_map: darray[i64]) -> i64:
+    mapped: mutable i64 = 0
+    for index in 0..<SEMTOK_MODIFIER_COUNT:
+        source_bit: i64 = semtok_modifier_bit(index)
+        if source_bit != 0 and (modifiers & source_bit) != 0 and index < modifier_map.count.i64():
+            target_index: i64 = modifier_map[index.usize()]
+            target_bit: i64 = semtok_modifier_bit(target_index)
+            mapped <- mapped | target_bit if target_bit != 0
+    return mapped
+
+
+def semtok_modifier_map_is_identity(modifier_map: darray[i64]) -> bool:
+    return false if modifier_map.count.i64() != SEMTOK_MODIFIER_COUNT
+    for index in 0..<SEMTOK_MODIFIER_COUNT:
+        return false if modifier_map[index.usize()] != index
+    return true
+
+
+def semtok_custom_type_name(index: i64) -> cstr:
+    return when index:
+        0 -> "elisa.type.int.signed"
+        1 -> "elisa.type.int.unsigned"
+        2 -> "elisa.type.float"
+        3 -> "elisa.type.scalar"
+        4 -> "elisa.type.string"
+        5 -> "elisa.type.container"
+        6 -> "elisa.type.user"
+        7 -> "elisa.type.void"
+        8 -> "elisa.lit.int"
+        9 -> "elisa.lit.float"
+        10 -> "elisa.lit.char"
+        11 -> "elisa.lit.string"
+        12 -> "elisa.lit.value"
+        13 -> "elisa.fn.def"
+        14 -> "elisa.fn.use"
+        15 -> "elisa.fn.lambda"
+        16 -> "elisa.bind.param"
+        17 -> "elisa.bind.local"
+        18 -> "elisa.bind.field"
+        19 -> "elisa.bind.global"
+        20 -> "elisa.bind.discard"
+        21 -> "elisa.effect.grant"
+        22 -> "elisa.effect.name"
+        23 -> "elisa.effect.unsafe"
+        24 -> "elisa.effect.error"
+        25 -> "elisa.mem.region"
+        26 -> "elisa.mem.qualifier"
+        27 -> "elisa.flow.branch"
+        28 -> "elisa.flow.error"
+        29 -> "elisa.flow.concurrent"
+        30 -> "elisa.decl.skeleton"
+        31 -> "elisa.contract.clause"
+        32 -> "elisa.contract.quantifier"
+        33 -> "elisa.contract.ghost"
+        34 -> "elisa.op.mutation"
+        35 -> "elisa.op.lambda"
+        36 -> "elisa.op.range"
+        37 -> "elisa.meta.decorator"
+        38 -> "elisa.meta.directive"
+        39 -> "elisa.meta.module"
+        40 -> "elisa.comment"
+        41 -> "elisa.punctuation"
+        42 -> "elisa.op.arithmetic"
+        43 -> "elisa.op.comparison"
+        44 -> "elisa.op.logical"
+        45 -> "elisa.op.bitwise"
+        46 -> "elisa.op.assign"
+        47 -> "elisa.enum.variant"
+        _ -> ""
+
+
+# Standard fallback order follows the first occurrence of each mapped category
+# in docs/semantic-token-schema.json. The mapping itself is kept in
+# semtok_fallback_category below and checked against that manifest in tests.
+def semtok_standard_type_name(category: i64) -> cstr:
+    return when category:
+        0 -> "type"
+        1 -> "number"
+        2 -> "string"
+        3 -> "keyword"
+        4 -> "function"
+        5 -> "parameter"
+        6 -> "variable"
+        7 -> "property"
+        8 -> "macro"
+        9 -> "modifier"
+        10 -> "comment"
+        11 -> "operator"
+        12 -> "decorator"
+        13 -> "namespace"
+        14 -> "enumMember"
+        _ -> ""
+
+
+# Values mirror docs/semantic-token-schema.json's standard_fallback mapping.
+def semtok_fallback_category(index: i64) -> i64:
+    return when index:
+        0..=7 -> 0
+        8..=9 -> 1
+        10..=11 -> 2
+        12 -> 3
+        13..=14 -> 4
+        15 -> 3
+        16 -> 5
+        17 -> 6
+        18 -> 7
+        19..=20 -> 6
+        21 -> 3
+        22 -> 0
+        23 -> 8
+        24..=25 -> 3
+        26 -> 9
+        27..=30 -> 3
+        31 -> 10
+        32 -> 3
+        33 -> 10
+        34..=36 -> 11
+        37 -> 12
+        38 -> 8
+        39 -> 13
+        40 -> 10
+        41..=46 -> 11
+        47 -> 14
+        _ -> -1
+
+
+def semtok_default_profile() -> SemTokProfile can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        legend: mutable darray[u8] = []
+        push_str(legend, semtok_legend_json())
+        mapping: mutable darray[i64] = []
+        for index in 0..<SEMTOK_CUSTOM_TYPE_COUNT:
+            mapping.push(index)
+        # Modifier negotiation is filled in by semtok_profile_with_modifiers;
+        # an empty map is the safe default for clients that omit the semantic
+        # token capability or its tokenModifiers list.
+        modifier_json: mutable darray[u8] = []
+        push_str(modifier_json, "[]")
+        modifier_map: mutable darray[i64] = []
+        for index in 0..<SEMTOK_MODIFIER_COUNT:
+            modifier_map.push(-1)
+        return SemTokProfile{legend_json: legend, type_map: mapping, custom: true, modifier_json: modifier_json, modifier_map: modifier_map}
+
+
+# Build the modifier legend in canonical order from the client's advertised
+# list. LSP clients may list supported modifiers in any order; the server
+# chooses one stable order and remaps cached canonical bits to it. If the
+# semantic-token capability is absent, no modifiers are emitted, preserving
+# compatibility with legacy clients that only know the original 5-field data
+# shape.
+def semtok_profile_with_modifiers(profile: SemTokProfile, root: Json::Value) -> SemTokProfile can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        modifier_json: mutable darray[u8] = []
+        push_str(modifier_json, "[")
+        modifier_map: mutable darray[i64] = []
+        for index in 0..<SEMTOK_MODIFIER_COUNT:
+            modifier_map.push(-1)
+        semantic_present: mutable bool = false
+        offered: mutable darray[i64] = []
+        for index in 0..<SEMTOK_MODIFIER_COUNT:
+            offered.push(0)
+        if Json::get(root, "params") is params:
+            if Json::get(params, "capabilities") is caps:
+                if Json::get(caps, "textDocument") is td:
+                    if Json::get(td, "semanticTokens") is semantic:
+                        semantic_present <- true
+                        if Json::get(semantic, "tokenModifiers") is token_modifiers:
+                            match token_modifiers:
+                                Json::Value.Arr(items):
+                                    for item in items:
+                                        for index in 0..<SEMTOK_MODIFIER_COUNT:
+                                            offered[index.usize()] <- 1 if json_string_is(item, semtok_modifier_name(index))
+                                _:
+                                    pass
+        emitted: mutable i64 = 0
+        if semantic_present:
+            for index in 0..<SEMTOK_MODIFIER_COUNT:
+                if offered[index.usize()] == 1:
+                    modifier_json.push(44) if emitted > 0
+                    modifier_json.push(34)
+                    push_str(modifier_json, semtok_modifier_name(index))
+                    modifier_json.push(34)
+                    modifier_map[index.usize()] <- emitted
+                    emitted <- emitted + 1
+        modifier_json.push(93)
+        return SemTokProfile{legend_json: profile.legend_json, type_map: profile.type_map, custom: profile.custom, modifier_json: modifier_json, modifier_map: modifier_map}
+
+
+def semtok_has_full_custom_list(items: darray[Json::Value]) -> bool can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        for expected in 0..<SEMTOK_CUSTOM_TYPE_COUNT:
+            found: mutable bool = false
+            for item in items:
+                found <- true if json_string_is(item, semtok_custom_type_name(expected))
+            return false if not found
+        return true
+
+
+# Negotiate one legend for the whole session. Missing textDocument.semanticTokens
+# preserves the established custom legend for old clients. An explicitly
+# complete custom list also opts into that stable ABI. Every other capability
+# receives the supported standard subset from the schema fallback table.
+def semtok_negotiate_profile(root: Json::Value) -> SemTokProfile can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        if Json::get(root, "params") is params:
+            if Json::get(params, "capabilities") is caps:
+                if Json::get(caps, "textDocument") is td:
+                    if Json::get(td, "semanticTokens") is semantic:
+                        if Json::get(semantic, "tokenTypes") is token_types:
+                            match token_types:
+                                Json::Value.Arr(items):
+                                    return semtok_profile_with_modifiers(semtok_default_profile(), root) if semtok_has_full_custom_list(items)
+                                    supported: mutable darray[i64] = []
+                                    standard_indices: mutable darray[i64] = []
+                                    for category in 0..<SEMTOK_STANDARD_FALLBACK_COUNT:
+                                        found: mutable bool = false
+                                        for item in items:
+                                            found <- true if json_string_is(item, semtok_standard_type_name(category))
+                                        supported.push(1 if found else 0)
+                                        standard_indices.push(-1)
+                                    legend: mutable darray[u8] = []
+                                    push_str(legend, "[")
+                                    legend_count: mutable i64 = 0
+                                    for category in 0..<SEMTOK_STANDARD_FALLBACK_COUNT:
+                                        if supported[category.usize()] == 1:
+                                            legend.push(44) if legend_count > 0
+                                            legend.push(34)
+                                            push_str(legend, semtok_standard_type_name(category))
+                                            legend.push(34)
+                                            standard_indices[category.usize()] <- legend_count
+                                            legend_count <- legend_count + 1
+                                    push_str(legend, "]")
+                                    mapping: mutable darray[i64] = []
+                                    for index in 0..<SEMTOK_CUSTOM_TYPE_COUNT:
+                                        category: i64 = semtok_fallback_category(index)
+                                        mapped: mutable i64 = -1
+                                        if category >= 0 and category < standard_indices.count.i64():
+                                            mapped <- standard_indices[category.usize()]
+                                        mapping.push(mapped)
+                                    return semtok_profile_with_modifiers(SemTokProfile{legend_json: legend, type_map: mapping, custom: false, modifier_json: [], modifier_map: []}, root)
+                                _:
+                                    pass
+        return semtok_profile_with_modifiers(semtok_default_profile(), root)
 
 
 # Classify a contextual identifier by its text ([L] approximation: text match
@@ -109,20 +408,19 @@ def semtok_ident_class(text: sview) -> i64 can[Memory.Allocate, Abort.Panic]:
 def symbol_ttype(table: Semantic::SymbolTable&, name_heads: dict[u64, i64]&, sym_next: darray[i64]&, name: sview) -> i64:
     idx: i64 = symbol_index_of_indexed(table, name_heads, sym_next, name)
     return -1 if idx < 0
-    k: Semantic::SymbolKind = symbol_at(table, idx.usize()).kind
-    return when k:
-        Semantic::SymbolKind.Func | Semantic::SymbolKind.Extern -> ST_FN_USE
-        Semantic::SymbolKind.Struct | Semantic::SymbolKind.Enum | Semantic::SymbolKind.Alias -> ST_TYPE_USER
-        Semantic::SymbolKind.Const -> ST_BIND_GLOBAL
-        Semantic::SymbolKind.Module | Semantic::SymbolKind.Import -> ST_META_MODULE
-        Semantic::SymbolKind.Law -> ST_DECL_SKELETON
-        _ -> -1
+    k: i64 = symbol_category(table, idx.usize())
+    return ST_FN_USE if k == SYMBOL_KIND_FUNCTION or k == SYMBOL_KIND_EXTERN
+    return ST_TYPE_USER if k == SYMBOL_KIND_STRUCT or k == SYMBOL_KIND_ENUM or k == SYMBOL_KIND_ALIAS
+    return ST_BIND_GLOBAL if k == SYMBOL_KIND_CONST
+    return ST_META_MODULE if k == SYMBOL_KIND_MODULE or k == SYMBOL_KIND_IMPORT
+    return ST_DECL_SKELETON if k == SYMBOL_KIND_LAW
+    return -1
 
 
-# Resolve a param/local occurrence through the adapter's named roles (H04:
-# indexed by line, not a full scan per identifier).
-def occurrence_ttype(table: Semantic::SymbolTable&, line_heads: dict[i64, i64]&, ref_next: darray[i64]&, line: u32, name: sview) -> i64:
-    occ: i64 = occurrence_kind_indexed(table, line_heads, ref_next, line, name)
+# Resolve a param/local occurrence through the adapter's exact source-span index.
+def occurrence_ttype(table: Semantic::SymbolTable&, occurrence_positions: darray[Ast::Pos], position_heads: dict[i64, i64]&, ref_next: darray[i64]&, token: Lexer::Token, name: sview, allow_fstring_scope_fallback: bool, src: u8&, src_len: usize) -> i64:
+    occ: i64 = occurrence_kind_indexed(table, occurrence_positions, position_heads, ref_next, token.start, name)
+    return frontend_fstring_occurrence_kind(table, occurrence_positions, src, src_len, token.start, name) if occ == OCC_UNKNOWN and allow_fstring_scope_fallback
     if occ == OCC_PARAM:
         return 1
     if occ == OCC_LOCAL:
@@ -133,7 +431,7 @@ def occurrence_ttype(table: Semantic::SymbolTable&, line_heads: dict[i64, i64]&,
 # Classify one token; -1 = no token emitted (IDE default styling). `prev`/`next`
 # are the neighboring token kinds; `table` is the real symbol table so bare
 # references take their declared kind ([S] layer) rather than a lexical guess.
-def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: Lexer::TokenKind, in_effect: bool, table: Semantic::SymbolTable&, qualified_owner: sview, shorthand_member: bool, name_heads: dict[u64, i64]&, sym_next: darray[i64]&, line_heads: dict[i64, i64]&, ref_next: darray[i64]&) -> i64 can[Memory.Allocate, Abort.Panic]:
+def semtok_classify(tok: Lexer::Token, src: u8&, src_len: usize, prev: Lexer::TokenKind, next: Lexer::TokenKind, in_effect: bool, table: Semantic::SymbolTable&, occurrence_positions: darray[Ast::Pos], allow_fstring_scope_fallback: bool, qualified_owner: sview, qualified_owner_start: u32, shorthand_member: bool, name_heads: dict[u64, i64]&, sym_next: darray[i64]&, position_heads: dict[i64, i64]&, ref_next: darray[i64]&, enum_name_heads: dict[u64, i64]&, enum_name_next: darray[i64]&, enum_owner_heads: dict[u64, i64]&, enum_owner_next: darray[i64]&) -> i64 can[Memory.Allocate, Abort.Panic]:
     can Memory.Allocate, Abort.Panic:
         kind: Lexer::TokenKind = tok.kind
         match kind:
@@ -143,20 +441,35 @@ def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: L
                 text: sview = Lexer::text_or_empty(tok, src)
                 # Decorator name right after `@` (the At token colors too).
                 ST_META_DECORATOR return if prev == Lexer::TokenKind.At
-                # A qualified enum member is a variant selector, not a field/function.
-                ST_ENUM_VARIANT return if prev == Lexer::TokenKind.Dot and enum_variant_for_owner(table, qualified_owner, text)
-                ST_ENUM_VARIANT return if shorthand_member and enum_variant_anywhere(table, text)
+                # Inside a bracketed effect row, `.` separates the qualifier
+                # from the permission name. Treat that suffix as effect metadata,
+                # not as an ordinary value-field selector.
+                ST_EFFECT_NAME return if in_effect and prev == Lexer::TokenKind.Dot
+                # A qualified enum member is a variant selector only when its
+                # receiver is not shadowed by a resolved parameter/local binding.
+                # An exact owner-token occurrence suppresses enum interpretation when
+                # a local binding shadows a type with the same spelling.
+                if prev == Lexer::TokenKind.Dot and enum_variant_for_owner_indexed(table, enum_owner_heads, enum_owner_next, qualified_owner, text):
+                    owner_occurrence: i64 = occurrence_kind_indexed(table, occurrence_positions, position_heads, ref_next, qualified_owner_start, qualified_owner)
+                    ST_ENUM_VARIANT return if owner_occurrence == OCC_UNKNOWN
+                ST_ENUM_VARIANT return if shorthand_member and enum_variant_anywhere_indexed(table, enum_name_heads, enum_name_next, text)
                 # Member access is always a field or method — decided before the
                 # symbol table, so a `.field` sharing a top-level name isn't mistaken
                 # for that declaration.
                 ST_FN_USE return if prev == Lexer::TokenKind.Dot and next == Lexer::TokenKind.LParen
                 ST_BIND_FIELD return if prev == Lexer::TokenKind.Dot
+                # `can` is an Ident token even when it is the effect-grant clause
+                # immediately following a function's parameter list. A parameter
+                # with the same spelling on that line is present in the compiler's
+                # (line,name)-keyed occurrence log, but this exact signature shape
+                # is syntax, not a parameter reference.
+                ST_EFFECT_GRANT return if text == "can" and prev == Lexer::TokenKind.RParen and (next == Lexer::TokenKind.LBracket or next == Lexer::TokenKind.Ident)
                 # H02 precedence: a RESOLVED param/local binding is authoritative
                 # and must beat keyword/type/effect spelling. A binding legally
                 # named `can`, `move`, or `type` is a binding, not its keyword
                 # meaning. Consulted before the text classifier and the symbol
                 # table, so shadowing a top-level name also wins.
-                occ: i64 = occurrence_ttype(table, line_heads, ref_next, tok.line, text)
+                occ: i64 = occurrence_ttype(table, occurrence_positions, position_heads, ref_next, tok, text, allow_fstring_scope_fallback, src, src_len)
                 ST_BIND_PARAM return if occ == 1
                 ST_BIND_LOCAL return if occ == 2
                 by_text: i64 = semtok_ident_class(text)
@@ -173,7 +486,7 @@ def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: L
                 by_symbol return if by_symbol >= 0
                 # Bare variants (including bare match arms) are registry-resolved,
                 # not guessed from case.
-                ST_ENUM_VARIANT return if enum_variant_anywhere(table, text)
+                ST_ENUM_VARIANT return if enum_variant_anywhere_indexed(table, enum_name_heads, enum_name_next, text)
                 # Unknown name in call position — best-effort function use.
                 ST_FN_USE return if next == Lexer::TokenKind.LParen
                 # PascalCase → a user-type reference (Point, Self, …). Lexical guess
@@ -251,6 +564,13 @@ def semtok_classify(tok: Lexer::Token, src: u8&, prev: Lexer::TokenKind, next: L
 # full lexeme: +1 for the opening delimiter (column already sits on it) and +1
 # more when the closing delimiter is present (absent only for an unterminated
 # literal at EOF / end of line).
+def semtok_display_start(tok: Lexer::Token) -> usize:
+    start: usize = tok.start.usize()
+    if tok.kind == Lexer::TokenKind.StringLit or tok.kind == Lexer::TokenKind.CharLit:
+        return start - 1 if start > 0
+    return start
+
+
 def semtok_display_length(tok: Lexer::Token, src: u8&, src_len: usize) -> i64:
     base: mutable i64 = tok.length.i64()
     kind: Lexer::TokenKind = tok.kind
@@ -279,6 +599,55 @@ struct SemTok:
     col: i64
     length: i64
     ttype: i64
+    modifiers: i64 = 0
+
+
+# Declaration names are the only tokens for which a lexical declaration marker
+# is reliable across all currently supported declaration forms. Concrete
+# definitions receive `definition`; an `extern` name is a declaration without
+# a body and therefore receives `declaration` only. Contextual declaration
+# words are checked by text because the lexer intentionally keeps them as
+# identifiers for parser compatibility.
+def semtok_declaration_modifiers(tokens: darray[Lexer::Token], index: usize, src: u8&) -> i64 can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        return 0 if index >= tokens.count or tokens[index].kind != Lexer::TokenKind.Ident or index == 0
+        previous: Lexer::Token = tokens[index - 1]
+        return ST_MOD_DEFINITION if previous.kind == Lexer::TokenKind.Def or previous.kind == Lexer::TokenKind.Struct or previous.kind == Lexer::TokenKind.Enum or previous.kind == Lexer::TokenKind.Const or previous.kind == Lexer::TokenKind.Global
+        return ST_MOD_DECLARATION if previous.kind == Lexer::TokenKind.Extern
+        if previous.kind == Lexer::TokenKind.Ident:
+            previous_text: sview = Lexer::text_or_empty(previous, src)
+            return ST_MOD_DEFINITION if previous_text == "type" or previous_text == "alias" or previous_text == "law" or previous_text == "module" or previous_text == "extend" or previous_text == "effect" or previous_text == "protocol" or previous_text == "permission"
+        return 0
+
+
+# Readonly is exposed only for names the compiler explicitly records as
+# immutable constants. Parameter/local mutability is not retained in the
+# current frontend's occurrence log, so guessing it from syntax would produce
+# false positives. A resolved local/parameter shadows a same-spelled const and
+# suppresses the modifier.
+def semtok_readonly_modifier(table: Semantic::SymbolTable&, tok: Lexer::Token, src: u8&, occurrence_kind: i64) -> i64 can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        return 0 if tok.kind != Lexer::TokenKind.Ident or occurrence_kind != OCC_UNKNOWN
+        name: sview = Lexer::text_or_empty(tok, src)
+        return ST_MOD_READONLY if immutable_const_named(table, name)
+        return 0
+
+
+# `modification` is emitted for direct assignment targets only. The token
+# immediately preceding a mutation operator is the exact written place for
+# identifiers and fields; index expressions have no single safe identifier to
+# annotate and are intentionally left unmodified until the frontend exposes a
+# resolved write span.
+def semtok_modification_modifier(tokens: darray[Lexer::Token], index: usize, src: u8&) -> i64 can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        return 0 if index >= tokens.count or tokens[index].kind != Lexer::TokenKind.Ident
+        if index + 1 < tokens.count:
+            next_kind: Lexer::TokenKind = tokens[index + 1].kind
+            return ST_MOD_MODIFICATION if next_kind == Lexer::TokenKind.LArrow or next_kind == Lexer::TokenKind.PlusEq or next_kind == Lexer::TokenKind.MinusEq or next_kind == Lexer::TokenKind.StarEq or next_kind == Lexer::TokenKind.SlashEq or next_kind == Lexer::TokenKind.PercentEq or next_kind == Lexer::TokenKind.CaretEq or next_kind == Lexer::TokenKind.PipeEq or next_kind == Lexer::TokenKind.AmpEq or next_kind == Lexer::TokenKind.LShiftEq or next_kind == Lexer::TokenKind.RShiftEq or next_kind == Lexer::TokenKind.QAssign
+        if index > 0 and tokens[index - 1].kind == Lexer::TokenKind.Ident:
+            previous_text: sview = Lexer::text_or_empty(tokens[index - 1], src)
+            return ST_MOD_MODIFICATION if previous_text == "rebind"
+        return 0
 
 
 # Emit fine-grained spans for one f-string token: literal chunks (including the
@@ -288,7 +657,7 @@ struct SemTok:
 # `{d.name}` colours its identifiers, operators, and nested literals. Mirrors the
 # parser's scan (parser_expr.elisa `fstring_expr`) so the highlighted spans match
 # what actually parses. Single-line; columns are byte-based (as elsewhere here).
-def semtok_fstring_spans(entries: mutable darray[SemTok]&, tok: Lexer::Token, src: u8&, src_len: usize, table: Semantic::SymbolTable&, name_heads: dict[u64, i64]&, sym_next: darray[i64]&, line_heads: dict[i64, i64]&, ref_next: darray[i64]&) -> void can[Memory.Allocate, Abort.Panic]:
+def semtok_fstring_spans(entries: mutable darray[SemTok]&, tok: Lexer::Token, src: u8&, src_len: usize, table: Semantic::SymbolTable&, occurrence_positions: darray[Ast::Pos], name_heads: dict[u64, i64]&, sym_next: darray[i64]&, position_heads: dict[i64, i64]&, ref_next: darray[i64]&, enum_name_heads: dict[u64, i64]&, enum_name_next: darray[i64]&, enum_owner_heads: dict[u64, i64]&, enum_owner_next: darray[i64]&) -> void can[Memory.Allocate, Abort.Panic]:
     can Memory.Allocate, Abort.Panic:
         line: i64 = tok.line.i64() - 1
         base_col: i64 = tok.column.i64() - 1     # 0-based column of the `f`
@@ -328,6 +697,11 @@ def semtok_fstring_spans(entries: mutable darray[SemTok]&, tok: Lexer::Token, sr
                             while j < hi and src[j].char() != '"':
                                 j <- j + 1 if src[j].char() == '\\'
                                 j <- j + 1
+                        '\'':
+                            j <- j + 1
+                            while j < hi and src[j].char() != '\'':
+                                j <- j + 1 if src[j].char() == '\\'
+                                j <- j + 1
                         _:
                             pass
                     j <- j + 1
@@ -336,8 +710,10 @@ def semtok_fstring_spans(entries: mutable darray[SemTok]&, tok: Lexer::Token, sr
                 # Sub-lex the embedded expression. Its tokens carry ABSOLUTE
                 # `.start` offsets into `src` (so text/classification are exact),
                 # but `.line`/`.column` are stale — the span lexer jumps `position`
-                # without re-tracking them. Derive the column from `.start` (the
-                # interpolation shares the f-string's single line).
+                # without re-tracking them. Derive the source column from `.start`
+                # (the interpolation shares the f-string's single line). Quoted
+                # literals store `.start` after their opening delimiter, while
+                # their display span begins at that delimiter.
                 if j > i + 1:
                     subtoks: darray[Lexer::Token] = Lexer::frontend_tokenize_span("", src, i + 1, j)
                     s: mutable usize = 0
@@ -348,16 +724,19 @@ def semtok_fstring_spans(entries: mutable darray[SemTok]&, tok: Lexer::Token, sr
                         sn: mutable Lexer::TokenKind = Lexer::TokenKind.Eof
                         sn <- subtoks[s + 1].kind if s + 1 < subtoks.count
                         qualified_owner: mutable sview = sview("", 0, 0)
+                        qualified_owner_start: mutable u32 = 0
                         shorthand_member: mutable bool = false
                         if sp == Lexer::TokenKind.Dot:
                             if s >= 2 and subtoks[s - 2].kind == Lexer::TokenKind.Ident:
                                 qualified_owner <- Lexer::text_or_empty(subtoks[s - 2], src)
+                                qualified_owner_start <- subtoks[s - 2].start
                             else:
                                 shorthand_member <- true
-                        stt: i64 = semtok_classify(st, src, sp, sn, false, table, qualified_owner, shorthand_member, name_heads, sym_next, line_heads, ref_next)
+                        stt: i64 = semtok_classify(st, src, src_len, sp, sn, false, table, occurrence_positions, true, qualified_owner, qualified_owner_start, shorthand_member, name_heads, sym_next, position_heads, ref_next, enum_name_heads, enum_name_next, enum_owner_heads, enum_owner_next)
                         sln: i64 = semtok_display_length(st, src, src_len)
                         if stt >= 0 and sln > 0:
-                            sub_col: i64 = base_col + 2 + (st.start.usize() - lo).i64()
+                            display_start: usize = semtok_display_start(st)
+                            sub_col: i64 = base_col + 2 + (display_start - lo).i64()
                             entries.push(SemTok{line: line, col: sub_col, length: sln, ttype: stt})
                         s <- s + 1
                 if j < hi:
@@ -380,9 +759,8 @@ def semtok_fstring_spans(entries: mutable darray[SemTok]&, tok: Lexer::Token, sr
 
 # Classify the main token stream into absolute-position entries, tracking the
 # `can[…]` / `trusted …` effect-list context so effect names colour correctly.
-def semtok_main_entries(src: u8&, src_len: usize, table: Semantic::SymbolTable&, name_heads: dict[u64, i64]&, sym_next: darray[i64]&, line_heads: dict[i64, i64]&, ref_next: darray[i64]&) -> darray[SemTok]:
+def semtok_main_entries(src: u8&, src_len: usize, tokens: darray[Lexer::Token], table: Semantic::SymbolTable&, occurrence_positions: darray[Ast::Pos], name_heads: dict[u64, i64]&, sym_next: darray[i64]&, position_heads: dict[i64, i64]&, ref_next: darray[i64]&, enum_name_heads: dict[u64, i64]&, enum_name_next: darray[i64]&, enum_owner_heads: dict[u64, i64]&, enum_owner_next: darray[i64]&) -> darray[SemTok]:
     can Memory.Allocate, Abort.Panic:
-        tokens: darray[Lexer::Token] = Lexer::frontend_tokenize_with_length(src, src, src_len)
         entries: mutable darray[SemTok] = []
         # Effect-list context: bracketed (closes on the matching `]`) or block
         # (`can X, Y:`, closes on `:` / newline).
@@ -402,18 +780,24 @@ def semtok_main_entries(src: u8&, src_len: usize, table: Semantic::SymbolTable&,
             if tok.kind == Lexer::TokenKind.FString:
                 # F-strings expand into multiple spans (literal chunks + coloured
                 # `{EXPR}` interpolations) rather than one whole-token span.
-                semtok_fstring_spans(entries, tok, src, src_len, table, name_heads, sym_next, line_heads, ref_next)
+                semtok_fstring_spans(entries, tok, src, src_len, table, occurrence_positions, name_heads, sym_next, position_heads, ref_next, enum_name_heads, enum_name_next, enum_owner_heads, enum_owner_next)
             else:
                 qualified_owner: mutable sview = sview("", 0, 0)
+                qualified_owner_start: mutable u32 = 0
                 shorthand_member: mutable bool = false
                 if prev_kind == Lexer::TokenKind.Dot:
                     if i >= 2 and tokens[i - 2].kind == Lexer::TokenKind.Ident:
                         qualified_owner <- Lexer::text_or_empty(tokens[i - 2], src)
+                        qualified_owner_start <- tokens[i - 2].start
                     else:
                         shorthand_member <- true
-                ttype: i64 = semtok_classify(tok, src, prev_kind, next_kind, in_effect, table, qualified_owner, shorthand_member, name_heads, sym_next, line_heads, ref_next)
+                ttype: i64 = semtok_classify(tok, src, src_len, prev_kind, next_kind, in_effect, table, occurrence_positions, false, qualified_owner, qualified_owner_start, shorthand_member, name_heads, sym_next, position_heads, ref_next, enum_name_heads, enum_name_next, enum_owner_heads, enum_owner_next)
                 emit_len: i64 = semtok_display_length(tok, src, src_len)
-                entries.push(SemTok{line: tok.line.i64() - 1, col: tok.column.i64() - 1, length: emit_len, ttype: ttype}) if ttype >= 0 and emit_len > 0
+                occurrence_kind: mutable i64 = OCC_UNKNOWN
+                if tok.kind == Lexer::TokenKind.Ident:
+                    occurrence_kind <- occurrence_ttype(table, occurrence_positions, position_heads, ref_next, tok, Lexer::text_or_empty(tok, src), false, src, src_len)
+                modifiers: i64 = semtok_declaration_modifiers(tokens, i, src) | semtok_readonly_modifier(table, tok, src, occurrence_kind) | semtok_modification_modifier(tokens, i, src)
+                entries.push(SemTok{line: tok.line.i64() - 1, col: tok.column.i64() - 1, length: emit_len, ttype: ttype, modifiers: modifiers}) if ttype >= 0 and emit_len > 0
             # Advance the effect-list state machine for the NEXT token.
             k: Lexer::TokenKind = tok.kind
             match k:
@@ -438,9 +822,8 @@ def semtok_main_entries(src: u8&, src_len: usize, table: Semantic::SymbolTable&,
 
 # Comment spans (harvested from the lexer's side channel) as entries. Comments
 # report `column` at the `#`/`"""` with `length` = full span, so no adjustment.
-def semtok_comment_entries(src: u8&, src_len: usize) -> darray[SemTok]:
+def semtok_comment_entries(comments: darray[Lexer::Token]) -> darray[SemTok]:
     can Memory.Allocate, Abort.Panic:
-        comments: darray[Lexer::Token] = Lexer::frontend_tokenize_comments_with_length(src, src, src_len)
         entries: mutable darray[SemTok] = []
         j: mutable usize = 0
         while j < comments.count:
@@ -455,14 +838,19 @@ def semtok_comment_entries(src: u8&, src_len: usize) -> darray[SemTok]:
 # its start line only — so a multiline comment/string emitted as one entry is
 # invalid (and hides every intermediate line). Pieces preserve order, never
 # overlap, and exclude a CRLF's CR. Line-bounded entries pass through unchanged.
-def semtok_append_normalized(out: mutable darray[SemTok]&, e: SemTok, src: u8&, src_len: usize) -> void can[Memory.Allocate, Abort.Panic]:
+def semtok_append_normalized(out: mutable darray[SemTok]&, e: SemTok, src: u8&, src_len: usize, line_starts: darray[usize]&, span_start: usize, span_count: usize) -> void can[Memory.Allocate, Abort.Panic]:
     return if e.length <= 0
-    llen: i64 = Positions::line_byte_length(src, src_len, e.line)
+    llen: i64 = Positions::line_byte_length_span_indexed(src, src_len, line_starts, span_start, span_count, e.line)
+    # Positions excludes the CR byte in CRLF's visible line width. A frontend
+    # token that begins at that byte must not be emitted as an end-of-line span.
+    return if e.col >= llen
     if e.col + e.length <= llen:
         out.push(e)
         return
-    start: usize = Positions::line_start_offset(src, src_len, e.line) + e.col.usize()
-    end: usize = start + e.length.usize()
+    start: usize = Positions::line_start_offset_span_indexed(line_starts, span_start, span_count, src_len, e.line) + e.col.usize()
+    return if start > src_len
+    end: mutable usize = start + e.length.usize()
+    end <- src_len if end > src_len
     line: mutable i64 = e.line
     seg: mutable usize = start
     col: mutable i64 = e.col
@@ -472,23 +860,22 @@ def semtok_append_normalized(out: mutable darray[SemTok]&, e: SemTok, src: u8&, 
             seg_end: mutable usize = i
             if seg_end > seg and src[seg_end - 1] == 13:
                 seg_end <- seg_end - 1
-            out.push(SemTok{line: line, col: col, length: (seg_end - seg).i64(), ttype: e.ttype}) if seg_end > seg
+            out.push(SemTok{line: line, col: col, length: (seg_end - seg).i64(), ttype: e.ttype, modifiers: e.modifiers}) if seg_end > seg
             line <- line + 1
             col <- 0
             seg <- i + 1
         i <- i + 1
     fin: mutable usize = end
-    if fin > seg and src[fin - 1] == 13:
-        fin <- fin - 1
-    out.push(SemTok{line: line, col: col, length: (fin - seg).i64(), ttype: e.ttype}) if fin > seg
+    fin <- fin - 1 if fin > seg and fin <= src_len and src[fin - 1] == 13 and fin < src_len and src[fin] == 10
+    out.push(SemTok{line: line, col: col, length: (fin - seg).i64(), ttype: e.ttype, modifiers: e.modifiers}) if fin > seg
 
 
-def semtok_normalize(list: darray[SemTok], src: u8&, src_len: usize) -> darray[SemTok]:
+def semtok_normalize(list: darray[SemTok], src: u8&, src_len: usize, line_starts: darray[usize]&, span_start: usize, span_count: usize) -> darray[SemTok]:
     can Memory.Allocate, Abort.Panic:
         out: mutable darray[SemTok] = []
         i: mutable usize = 0
         while i < list.count:
-            semtok_append_normalized(out, list[i], src, src_len)
+            semtok_append_normalized(out, list[i], src, src_len, line_starts, span_start, span_count)
             i <- i + 1
         return out
 
@@ -499,18 +886,25 @@ def semtok_normalize(list: darray[SemTok], src: u8&, src_len: usize) -> darray[S
 # unaffected because the conversion is monotonic within a line. The caller
 # passes the already-computed table so diagnostics and highlighting share one
 # frontend pass per source update.
-def semtok_data_body_with_table(src: u8&, src_len: usize, table: Semantic::SymbolTable&, utf8: bool) -> darray[u8]:
+def semtok_data_body_with_table(src: u8&, src_len: usize, tokens: darray[Lexer::Token], comments: darray[Lexer::Token], table: Semantic::SymbolTable&, occurrence_positions: darray[Ast::Pos], line_starts: darray[usize]&, span_start: usize, span_count: usize, utf8: bool) -> darray[u8]:
     can Memory.Allocate, Abort.Panic:
         # H04: build name/line indexes once per analysis so classification is
         # O(1) average instead of a full scan per identifier.
         name_heads: mutable dict[u64, i64] = {}
         sym_next: mutable darray[i64] = []
-        line_heads: mutable dict[i64, i64] = {}
+        position_heads: mutable dict[i64, i64] = {}
         ref_next: mutable darray[i64] = []
+        enum_name_heads: mutable dict[u64, i64] = {}
+        enum_name_next: mutable darray[i64] = []
+        enum_owner_heads: mutable dict[u64, i64] = {}
+        enum_owner_next: mutable darray[i64] = []
+        lsp_adapter_symbol_index_build_calls <- lsp_adapter_symbol_index_build_calls + 1
         symbol_index_build(table, name_heads, sym_next)
-        occurrence_index_build(table, line_heads, ref_next)
-        entries: darray[SemTok] = semtok_normalize(semtok_main_entries(src, src_len, table, name_heads, sym_next, line_heads, ref_next), src, src_len)
-        comments: darray[SemTok] = semtok_normalize(semtok_comment_entries(src, src_len), src, src_len)
+        lsp_adapter_occurrence_index_build_calls <- lsp_adapter_occurrence_index_build_calls + 1
+        occurrence_index_build(table, occurrence_positions, position_heads, ref_next)
+        enum_variant_index_build(table, enum_name_heads, enum_name_next, enum_owner_heads, enum_owner_next)
+        entries: darray[SemTok] = semtok_normalize(semtok_main_entries(src, src_len, tokens, table, occurrence_positions, name_heads, sym_next, position_heads, ref_next, enum_name_heads, enum_name_next, enum_owner_heads, enum_owner_next), src, src_len, line_starts, span_start, span_count)
+        comment_entries: darray[SemTok] = semtok_normalize(semtok_comment_entries(comments), src, src_len, line_starts, span_start, span_count)
         body: mutable darray[u8] = []
         push_str(body, "{\"data\":[")
         prev_line: mutable i64 = 0
@@ -518,36 +912,22 @@ def semtok_data_body_with_table(src: u8&, src_len: usize, table: Semantic::Symbo
         first: mutable bool = true
         a: mutable usize = 0
         b: mutable usize = 0
-        # H04/U01: tokens are in source order, so advance a single line cursor
-        # instead of re-scanning to each line start from offset 0 (which made
-        # encoding O(tokens x file size)).
-        cur_line: mutable i64 = 0
-        cur_start: mutable usize = 0
-        while a < entries.count or b < comments.count:
+        while a < entries.count or b < comment_entries.count:
             take_a: mutable bool = true
             take_a <- false if a >= entries.count
-            if b < comments.count and a < entries.count:
+            if b < comment_entries.count and a < entries.count:
                 ea: SemTok = entries[a]
-                cb: SemTok = comments[b]
+                cb: SemTok = comment_entries[b]
                 take_a <- false if cb.line < ea.line or (cb.line == ea.line and cb.col < ea.col)
             e: mutable SemTok = zeroed
             if take_a:
                 e <- entries[a]
                 a <- a + 1
             else:
-                e <- comments[b]
+                e <- comment_entries[b]
                 b <- b + 1
-            while cur_line < e.line:
-                while cur_start < src_len and src[cur_start] != 10:
-                    cur_start <- cur_start + 1
-                cur_start <- cur_start + 1 if cur_start < src_len
-                cur_line <- cur_line + 1
-            lstart: usize = cur_start
-            lend: mutable usize = cur_start
-            while lend < src_len and src[lend] != 10:
-                lend <- lend + 1
-            lend <- lend - 1 if lend > lstart and src[lend - 1] == 13
-            llen: i64 = (lend - lstart).i64()
+            lstart: usize = Positions::line_start_offset_span_indexed(line_starts, span_start, span_count, src_len, e.line)
+            llen: i64 = Positions::line_byte_length_span_indexed(src, src_len, line_starts, span_start, span_count, e.line)
             bcol: i64 = 0 if e.col < 0 else (llen if e.col > llen else e.col)
             ucol: i64 = bcol if utf8 else Positions::utf16_units_for_bytes(src, lstart, bcol.usize())
             ulen: i64 = Positions::span_unit_length(src, src_len, lstart + bcol.usize(), e.length.usize(), utf8)
@@ -562,7 +942,11 @@ def semtok_data_body_with_table(src: u8&, src_len: usize, table: Semantic::Symbo
             push_int(body, ulen)
             body.push(44)
             push_int(body, e.ttype)
-            push_str(body, ",0")
+            # Canonical cache modifier bits stay independent from the
+            # negotiated client profile. The worker validates this mask before
+            # publication; remapping happens only when serving a request.
+            body.push(44)
+            push_int(body, e.modifiers & ST_MODIFIER_MASK)
             first <- false
             prev_line <- e.line
             prev_col <- ucol
@@ -572,19 +956,34 @@ def semtok_data_body_with_table(src: u8&, src_len: usize, table: Semantic::Symbo
 
 # Handle `textDocument/semanticTokens/full`: emit the cached LSP delta-encoded
 # data array. Unknown/uncached uri -> empty data.
-# `LspDocument` is declared in main.elisa; all included source shares one module
+# LspDocument is declared in documents.elisa; included source shares one module
 # scope, so this handler can select the requested snapshot by URI.
-def handle_semantic_tokens(root: Json::Value, documents: darray[LspDocument]&, document_storage: darray[u8]&, document_heads: dict[u64, u32]&) -> void can[Console, Memory.Allocate, Abort.Panic]:
-    id_raw: darray[u8] = extract_id(root)
-    spell_bytes: mutable darray[u8] = []
-    canon_bytes: mutable darray[u8] = []
-    uri: sview = request_identity(root, spell_bytes, canon_bytes)
-    found: i64 = document_index(documents, document_storage, document_heads, uri)
-    if found < 0 or not documents[found.usize()].open or documents[found.usize()].text_len <= 1:
-        send_result(id_raw, "{\"data\":[]}")
-        return
-    document: LspDocument = documents[found.usize()]
-    send_result_storage(id_raw, document_storage, document.semantic_start, document.semantic_len)
+def handle_semantic_tokens(root: Json::Value, snapshot: DocumentSnapshotView, document_storage: darray[u8]&, profile: SemTokProfile, result_body: mutable darray[u8]&, retained_start_out: mutable usize&, retained_len_out: mutable usize&) -> ProviderOutcome can[Memory.Allocate, Abort.Panic]:
+    if not snapshot.valid or snapshot.lifecycle.analysis_state != DocumentAnalysisState.Ready:
+        return ProviderOutcome.NoMatchSemanticTokens
+    document: DocumentSnapshotView = snapshot
+    if document.source.text_start > document_storage.count:
+        return ProviderOutcome.InvalidRetainedCache
+    if document.source.text_len == 0 or document.source.text_len > document_storage.count - document.source.text_start:
+        return ProviderOutcome.InvalidRetainedCache
+    semantic_start: mutable usize = document.caches.semantic_start
+    if semantic_start > document_storage.count:
+        return ProviderOutcome.InvalidRetainedCache
+    if document.caches.semantic_len == 0 or document.caches.semantic_len > document_storage.count - semantic_start:
+        return ProviderOutcome.InvalidRetainedCache
+    if document.source.text_len <= 1:
+        return ProviderOutcome.NoMatchSemanticTokens
+    if profile.custom and semtok_modifier_map_is_identity(profile.modifier_map):
+        retained_start_out <- semantic_start
+        retained_len_out <- document.caches.semantic_len
+        return ProviderOutcome.Result
+    cached: sview = bytes_view_range_ref(document_storage, semantic_start, document.caches.semantic_len)
+    result: darray[u8] = semtok_remap_full(cached, profile.type_map, profile.modifier_map)
+    # The generated container belongs to this function's auto region. Copy its
+    # scalar payload into the caller-owned response buffer without storing the
+    # local container descriptor beyond that lifetime.
+    result_body.extend([byte for byte in result])
+    return ProviderOutcome.Result
 
 
 # `send_result` variant whose result payload is an owned buffer.
@@ -619,7 +1018,9 @@ def send_result_storage(id_raw: darray[u8], storage: darray[u8]&, start: usize, 
 # requested range, and re-encodes with the SAME document-zero baseline (per LSP,
 # the first token is relative to line/character zero, not the range start), so
 # the filtered array is a valid prefix-compatible subset of the full one.
-# Modifiers are always 0 here and are preserved positionally.
+# Modifier bits are decoded and remapped alongside token types. The cached
+# stream uses canonical modifier positions; the response uses the negotiated
+# client legend positions.
 
 def semtok_parse_int(data: sview, pos: mutable usize&) -> i64:
     n: mutable i64 = 0
@@ -635,7 +1036,73 @@ def semtok_parse_int(data: sview, pos: mutable usize&) -> i64:
     return (0 - n) if neg else n
 
 
-def semtok_filter_range(cached: sview, sline: i64, schar: i64, eline: i64, echar: i64) -> darray[u8]:
+# Translate a cached full result from stable Elisa indices to the session's
+# negotiated legend. Unsupported fallback categories are omitted. Delta
+# positions are re-encoded against the previously emitted token so skipped
+# tokens cannot corrupt subsequent coordinates.
+def semtok_remap_full(cached: sview, type_map: darray[i64], modifier_map: darray[i64]) -> darray[u8]:
+    can Memory.Allocate, Abort.Panic:
+        lb: mutable i64 = -1
+        rb: mutable i64 = -1
+        j: mutable usize = 0
+        while j < cached.len.usize():
+            c: u8 = sview_at(cached, j)
+            lb <- j.i64() if c == 91 and lb < 0
+            rb <- j.i64() if c == 93
+            j <- j + 1
+        body: mutable darray[u8] = []
+        push_str(body, "{\"data\":[")
+        if lb < 0 or rb <= lb:
+            push_str(body, "]}")
+            return body
+        data: sview = string_view_slice(cached, lb + 1, rb)
+        pos: mutable usize = 0
+        cur_line: mutable i64 = 0
+        cur_col: mutable i64 = 0
+        prev_line: mutable i64 = 0
+        prev_col: mutable i64 = 0
+        first: mutable bool = true
+        while pos < data.len.usize():
+            dl: i64 = semtok_parse_int(data, pos)
+            pos <- pos + 1 if pos < data.len.usize() and sview_at(data, pos) == 44
+            dc: i64 = semtok_parse_int(data, pos)
+            pos <- pos + 1 if pos < data.len.usize() and sview_at(data, pos) == 44
+            ln: i64 = semtok_parse_int(data, pos)
+            pos <- pos + 1 if pos < data.len.usize() and sview_at(data, pos) == 44
+            tt: i64 = semtok_parse_int(data, pos)
+            pos <- pos + 1 if pos < data.len.usize() and sview_at(data, pos) == 44
+            mods: i64 = semtok_parse_int(data, pos)
+            pos <- pos + 1 if pos < data.len.usize() and sview_at(data, pos) == 44
+            cur_line <- cur_line + dl
+            if dl == 0:
+                cur_col <- cur_col + dc
+            else:
+                cur_col <- dc
+            mapped_type: mutable i64 = -1
+            if tt >= 0 and tt < type_map.count.i64():
+                mapped_type <- type_map[tt.usize()]
+            if mapped_type >= 0:
+                odl: i64 = cur_line - prev_line
+                odc: mutable i64 = cur_col
+                odc <- cur_col - prev_col if odl == 0
+                body.push(44) if not first
+                push_int(body, odl)
+                body.push(44)
+                push_int(body, odc)
+                body.push(44)
+                push_int(body, ln)
+                body.push(44)
+                push_int(body, mapped_type)
+                body.push(44)
+                push_int(body, semtok_remap_modifier_bits(mods, modifier_map))
+                first <- false
+                prev_line <- cur_line
+                prev_col <- cur_col
+        push_str(body, "]}")
+        return body
+
+
+def semtok_filter_range(cached: sview, sline: i64, schar: i64, eline: i64, echar: i64, type_map: darray[i64], modifier_map: darray[i64]) -> darray[u8]:
     can Memory.Allocate, Abort.Panic:
         # Locate `[` .. `]` of the data array.
         lb: mutable i64 = -1
@@ -669,15 +1136,18 @@ def semtok_filter_range(cached: sview, sline: i64, schar: i64, eline: i64, echar
             pos <- pos + 1 if pos < data.len.usize() and sview_at(data, pos) == 44
             tt: i64 = semtok_parse_int(data, pos)
             pos <- pos + 1 if pos < data.len.usize() and sview_at(data, pos) == 44
-            _mods: i64 = semtok_parse_int(data, pos)
+            mods: i64 = semtok_parse_int(data, pos)
             pos <- pos + 1 if pos < data.len.usize() and sview_at(data, pos) == 44
             cur_line <- cur_line + dl
             if dl == 0:
                 cur_col <- cur_col + dc
             else:
                 cur_col <- dc
+            mapped_type: mutable i64 = -1
+            if tt >= 0 and tt < type_map.count.i64():
+                mapped_type <- type_map[tt.usize()]
             # Intersect [cur_col, cur_col+ln) on cur_line with the range.
-            if cur_line >= sline and cur_line <= eline:
+            if mapped_type >= 0 and cur_line >= sline and cur_line <= eline:
                 starts_before_end: bool = cur_line < eline or cur_col < echar
                 ends_after_start: bool = cur_line > sline or cur_col + ln > schar
                 if starts_before_end and ends_after_start:
@@ -691,8 +1161,9 @@ def semtok_filter_range(cached: sview, sline: i64, schar: i64, eline: i64, echar
                     body.push(44)
                     push_int(body, ln)
                     body.push(44)
-                    push_int(body, tt)
-                    push_str(body, ",0")
+                    push_int(body, mapped_type)
+                    body.push(44)
+                    push_int(body, semtok_remap_modifier_bits(mods, modifier_map))
                     first <- false
                     prev_line <- cur_line
                     prev_col <- cur_col
@@ -700,15 +1171,21 @@ def semtok_filter_range(cached: sview, sline: i64, schar: i64, eline: i64, echar
         return body
 
 
-def handle_semantic_tokens_range(root: Json::Value, documents: darray[LspDocument]&, document_storage: darray[u8]&, document_heads: dict[u64, u32]&) -> void can[Console, Memory.Allocate, Abort.Panic]:
-    id_raw: darray[u8] = extract_id(root)
-    uri_bytes: mutable darray[u8] = []
-    canon_bytes: mutable darray[u8] = []
-    uri: sview = request_identity(root, uri_bytes, canon_bytes)
-    found: i64 = document_index(documents, document_storage, document_heads, uri)
-    if found < 0 or not documents[found.usize()].open or documents[found.usize()].text_len <= 1:
-        send_result(id_raw, "{\"data\":[]}")
-        return
+def handle_semantic_tokens_range(root: Json::Value, snapshot: DocumentSnapshotView, document_storage: darray[u8]&, profile: SemTokProfile, result_body: mutable darray[u8]&) -> ProviderOutcome can[Memory.Allocate, Abort.Panic]:
+    if not snapshot.valid or snapshot.lifecycle.analysis_state != DocumentAnalysisState.Ready:
+        return ProviderOutcome.NoMatchSemanticTokens
+    document: DocumentSnapshotView = snapshot
+    if document.source.text_start > document_storage.count:
+        return ProviderOutcome.InvalidRetainedCache
+    if document.source.text_len == 0 or document.source.text_len > document_storage.count - document.source.text_start:
+        return ProviderOutcome.InvalidRetainedCache
+    semantic_start: mutable usize = document.caches.semantic_start
+    if semantic_start > document_storage.count:
+        return ProviderOutcome.InvalidRetainedCache
+    if document.caches.semantic_len == 0 or document.caches.semantic_len > document_storage.count - semantic_start:
+        return ProviderOutcome.InvalidRetainedCache
+    if document.source.text_len <= 1:
+        return ProviderOutcome.NoMatchSemanticTokens
     sline: mutable i64 = 0
     schar: mutable i64 = 0
     eline: mutable i64 = 0
@@ -717,14 +1194,14 @@ def handle_semantic_tokens_range(root: Json::Value, documents: darray[LspDocumen
         if Json::get(params, "range") is rng:
             if Json::get(rng, "start") is s:
                 if Json::get(s, "line") is v:
-                    sline <- Json::as_i64_checked(v)
+                    sline <- Json::as_lsp_uinteger_or_invalid(v)
                 if Json::get(s, "character") is v:
-                    schar <- Json::as_i64_checked(v)
+                    schar <- Json::as_lsp_uinteger_or_invalid(v)
             if Json::get(rng, "end") is e:
                 if Json::get(e, "line") is v:
-                    eline <- Json::as_i64_checked(v)
+                    eline <- Json::as_lsp_uinteger_or_invalid(v)
                 if Json::get(e, "character") is v:
-                    echar <- Json::as_i64_checked(v)
+                    echar <- Json::as_lsp_uinteger_or_invalid(v)
     sline <- 0 if sline < 0
     schar <- 0 if schar < 0
     eline <- 0 if eline < 0
@@ -732,7 +1209,8 @@ def handle_semantic_tokens_range(root: Json::Value, documents: darray[LspDocumen
     if eline < sline or (eline == sline and echar < schar):
         eline <- sline
         echar <- schar
-    document: LspDocument = documents[found.usize()]
-    cached: sview = sview(&document_storage[document.semantic_start], 0, document.semantic_len.i64())
-    result: darray[u8] = semtok_filter_range(cached, sline, schar, eline, echar)
-    send_result_body(id_raw, result)
+    cached: sview = bytes_view_range_ref(document_storage, semantic_start, document.caches.semantic_len)
+    result: darray[u8] = semtok_filter_range(cached, sline, schar, eline, echar, profile.type_map, profile.modifier_map)
+    # Keep the auto-region result local and copy only its byte values outward.
+    result_body.extend([byte for byte in result])
+    return ProviderOutcome.Result

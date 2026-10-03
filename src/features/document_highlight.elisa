@@ -1,0 +1,56 @@
+# Exact, same-document document highlights for compiler-resolved functions and
+# parameter/local BindingIds shared with textDocument/references (F04).
+#
+# The frontend currently records declaration/reference edges for unique,
+# unqualified top-level functions and exact occurrence rows for parameters and
+# locals. Function declarations are Text and calls are Read. Binding highlights
+# omit kind because occurrence rows do not yet distinguish reads from writes.
+# Other symbol kinds return no highlights rather than being inferred by spelling.
+
+def document_highlight_result_body(spans: darray[ReferenceSpan], target: ReferenceSpan, binding_target: bool) -> darray[u8]:
+    can Memory.Allocate, Abort.Panic:
+        body: mutable darray[u8] = []
+        body.push(91)
+        i: mutable usize = 0
+        while i < spans.count:
+            span: ReferenceSpan = spans[i]
+            body.push(44) if i > 0
+            body.push_str("{\"range\":{\"start\":{\"line\":")
+            body.push_int(span.start_line)
+            body.push_str(",\"character\":")
+            body.push_int(span.start_char)
+            body.push_str("},\"end\":{\"line\":")
+            body.push_int(span.end_line)
+            body.push_str(",\"character\":")
+            body.push_int(span.end_char)
+            body.push_str("}}")
+            if not binding_target:
+                body.push_str(",\"kind\":")
+                body.push_int(1 if reference_range_equal(span, target) else 2)
+            body.push(125)
+            i <- i + 1
+        body.push(93)
+        return body
+
+
+def handle_document_highlight(root: Json::Value, snapshot: DocumentSnapshotView, document_storage: darray[u8]&, result_body: mutable darray[u8]&) -> ProviderOutcome can[Memory.Allocate, Abort.Panic]:
+    if not snapshot.valid or snapshot.lifecycle.analysis_state != DocumentAnalysisState.Ready or snapshot.caches.hover_len == 0:
+        return ProviderOutcome.NoMatchEmptyArray
+    document: DocumentSnapshotView = snapshot
+    highlight_start: mutable usize = document.caches.hover_start
+    highlight_len: usize = document.caches.hover_len
+    if highlight_start > document_storage.count:
+        return ProviderOutcome.InvalidRetainedCache
+    if highlight_len > document_storage.count - highlight_start:
+        return ProviderOutcome.InvalidRetainedCache
+    blob: sview = bytes_view_range_ref(document_storage, highlight_start, highlight_len)
+    target: mutable ReferenceTarget = ReferenceTarget{is_binding: false, owner: 0, serial: 0, name: sview("", 0, 0), span: ReferenceSpan{start_line: 0, start_char: 0, end_line: 0, end_char: 0}}
+    if not reference_any_target_at(blob, request_hover_line(root), request_hover_char(root), target):
+        return ProviderOutcome.NoMatchEmptyArray
+    spans: darray[ReferenceSpan] = reference_any_collect(blob, target, true)
+    return ProviderOutcome.NoMatchEmptyArray if spans.count == 0
+    body: darray[u8] = document_highlight_result_body(spans, target.span, target.is_binding)
+    # `body` is local to this handler's auto region. Copy scalar bytes into the
+    # caller-owned response buffer instead of storing its container descriptor.
+    result_body.extend([byte for byte in body])
+    return ProviderOutcome.Result

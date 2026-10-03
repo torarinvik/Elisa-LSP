@@ -1,56 +1,101 @@
 {
-  "spec_baseline": "LSP 3.17",
+  "spec_baseline": "LSP 3.18",
   "server": "elisa-lsp",
   "transport": {
-    "framing": "buffered Content-Length framing (case-insensitive header, strict digit value, overflow-checked)",
+    "framing": "buffered CRLF Content-Length framing with case-insensitive ASCII headers; strict overflow-checked decimal length with optional surrounding space/tab; identical duplicate lengths tolerated and conflicting duplicates rejected; optional application/vscode-jsonrpc Content-Type accepts UTF-8 or legacy utf8; only identity Content-Encoding is accepted",
     "bounds": {
-      "max_header_bytes": 16384,
-      "max_header_lines": 64,
-      "max_body_bytes": 16777216
+      "max_header_bytes_default": 16384,
+      "max_header_bytes_range": [
+        256,
+        1048576
+      ],
+      "max_header_bytes_env": "ELISA_LSP_MAX_HEADER_BYTES",
+      "max_header_lines_default": 64,
+      "max_header_lines_range": [
+        2,
+        1024
+      ],
+      "max_header_lines_env": "ELISA_LSP_MAX_HEADER_LINES",
+      "max_body_bytes_default": 16777216,
+      "max_body_bytes_range": [
+        1,
+        268435456
+      ],
+      "max_body_bytes_env": "ELISA_LSP_MAX_BODY_BYTES",
+      "max_derived_cache_bytes_default": 67108864,
+      "max_derived_cache_bytes_range": [
+        1024,
+        1073741824
+      ],
+      "max_derived_cache_bytes_env": "ELISA_LSP_MAX_DERIVED_CACHE_BYTES",
+      "write_timeout_ms_default": 15000,
+      "write_timeout_ms_range": [
+        100,
+        120000
+      ],
+      "write_timeout_ms_env": "ELISA_LSP_WRITE_TIMEOUT_MS"
     },
-    "failure": "malformed/conflicting/missing/zero/truncated/oversized frames are controlled nonzero exits with no output frame; clean EOF is exit 0",
+    "failure": "malformed headers, unsupported charset/encoding, conflicting/missing/truncated/oversized frames and terminal read/write errors cause controlled nonzero exits; a stalled stdout frame exits after its configured whole-frame deadline and is not followed by another frame; a zero-byte body is a complete frame and returns structured ParseError; clean EOF between frames exits 0",
     "test": "test/transport_test.sh"
   },
   "methods": {
     "initialize": {
       "implemented": true,
-      "test": "test/handshake_test.sh",
-      "module": "src/main.elisa:main"
+      "test": "test/protocol_test.sh",
+      "module": "src/main.elisa:main",
+      "kind": "client-to-server request",
+      "note": "requires an InitializeParams.capabilities object; validates rootUri and every workspaceFolders entry before state mutation; an empty capabilities object is the valid minimal profile; successful initialize enters Running after its response"
     },
     "initialized": {
-      "implemented": false,
-      "note": "accepted silently (no-op); P02 state machine pending"
+      "implemented": true,
+      "test": "test/protocol_test.sh",
+      "module": "src/main.elisa:main",
+      "kind": "client-to-server notification",
+      "note": "the first valid notification transitions Running to Initialized without a response; repeats and out-of-order notifications are ignored"
     },
     "shutdown": {
       "implemented": true,
-      "test": "test/handshake_test.sh",
-      "module": "src/main.elisa:main"
+      "test": "test/protocol_test.sh",
+      "module": "src/main.elisa:main",
+      "kind": "client-to-server request",
+      "note": "responds with null, then enters ShutdownRequested; later requests receive InvalidRequest and non-exit notifications are dropped"
     },
     "exit": {
       "implemented": true,
-      "test": "test/handshake_test.sh",
-      "module": "src/main.elisa:main"
+      "test": "test/protocol_test.sh",
+      "module": "src/main.elisa:main",
+      "kind": "client-to-server notification",
+      "note": "exits 0 after shutdown and 1 otherwise; clean EOF between frames exits 0 as a separate transport rule"
     },
     "textDocument/didOpen": {
       "implemented": true,
       "test": "test/diagnostics_test.sh",
-      "module": "src/main.elisa:check_and_publish"
+      "module": "src/main.elisa:check_and_publish",
+      "note": "requires URI, nonempty languageId, signed document version, and source text; malformed metadata is ignored without opening a document; a duplicate open replaces the snapshot and starts a new internal generation even when the client version is reused"
     },
     "textDocument/didChange": {
       "implemented": true,
       "test": "test/incremental_sync_test.sh",
       "module": "src/main.elisa:apply_content_changes",
-      "note": "incremental (2) + full replacements; multi-change lists applied in order; invalid ranges reject the notification"
+      "note": "incremental (2) + full replacements; multi-change lists applied in order; inverted ranges and lines beyond the current document reject the whole notification; character columns beyond a valid line clamp to its end per LSP 3.17 Position; duplicate consumed fields and mismatched optional deprecated rangeLength reject transactionally; rangeLength uses negotiated UTF-8-byte or UTF-16-code-unit units"
     },
     "textDocument/didClose": {
       "implemented": true,
       "test": "test/multi_document_test.sh",
       "module": "src/main.elisa:handle_did_close"
     },
+    "workspace/didChangeConfiguration": {
+      "implemented": true,
+      "test": "test/configuration_test.sh",
+      "module": "src/main.elisa:apply_configuration_notification",
+      "kind": "client-to-server notification",
+      "note": "accepts the standard settings envelope and applies only the validated namespaced elisa.analysisTimeoutMs setting; unknown settings are ignored and malformed values leave the prior value unchanged"
+    },
     "textDocument/semanticTokens/full": {
       "implemented": true,
-      "test": "test/semtokens_test.sh",
-      "module": "src/semtokens.elisa:handle_semantic_tokens"
+      "test": "test/semtoken_families_test.sh",
+      "module": "src/semtokens.elisa:handle_semantic_tokens",
+      "note": "exact source-occurrence coverage spans all 48 advertised categories; repeated enum/alias, contextual-binding, interpolation, and multiline regressions are also covered by focused token tests; full results map once through the session-negotiated legend and omit unsupported fallback categories"
     },
     "textDocument/hover": {
       "implemented": true,
@@ -66,41 +111,67 @@
     },
     "textDocument/didSave": {
       "implemented": false,
-      "note": "not handled"
+      "test": "test/documents_test.sh",
+      "note": "intentionally ignored and not advertised; optional save text never replaces an open-buffer overlay or triggers analysis; disk-backed indexing must define save/watch invalidation first"
     },
     "textDocument/willSave": {
       "implemented": false,
-      "note": "not handled"
+      "test": "test/documents_test.sh",
+      "note": "intentionally ignored and not advertised; does not mutate document state or trigger analysis"
     },
     "textDocument/documentSymbol": {
       "implemented": true,
       "test": "test/document_symbols_test.sh",
       "module": "src/features/document_symbols.elisa:handle_document_symbols",
-      "note": "flat SymbolInformation by default; hierarchical DocumentSymbol when supported; line-range outline (declaration end lines + enum variants pending A02); symbolKind.valueSet respected"
+      "note": "flat SymbolInformation by default; hierarchical DocumentSymbol when supported; compiler symbol rows nest under source-indented modules with block ranges and validated exact name selections where name_pos or one unambiguous lexer token proves them; struct fields and enum variants remain unavailable pending frontend positions/identities; symbolKind.valueSet respected"
     },
     "textDocument/definition": {
-      "implemented": false,
-      "planned": "F03"
+      "implemented": true,
+      "test": "test/definition_test.sh",
+      "module": "src/features/definition.elisa:handle_definition",
+      "note": "returns exact same-file locations for unqualified references resolved to one unique top-level function and for parameter/local BindingIds; nested shadowing follows identity; ambiguous top-level and unresolved references return null"
     },
     "textDocument/references": {
-      "implemented": false,
-      "planned": "F04"
+      "implemented": true,
+      "test": "test/references_test.sh",
+      "module": "src/features/references.elisa:handle_references",
+      "note": "exact same-document locations for unique-function resolver edges and parameter/local BindingIds; includeDeclaration honored for logged declarations; unsupported, ambiguous, closed, or out-of-token queries return []"
+    },
+    "textDocument/documentHighlight": {
+      "implemented": true,
+      "test": "test/document_highlight_test.sh",
+      "module": "src/features/document_highlight.elisa:handle_document_highlight",
+      "note": "same-document Text/Read highlights for unique resolved function edges and exact parameter/local BindingIds; binding highlights omit kind until reads and writes are distinguished; unsupported, ambiguous, closed, and out-of-token queries return []"
     },
     "textDocument/completion": {
-      "implemented": false,
-      "planned": "F05"
+      "implemented": true,
+      "test": "test/completion_test.sh",
+      "module": "src/features/completion.elisa:handle_completion",
+      "note": "bounded same-file function/type/constant candidates plus exact-owner parameters and declaration-backed locals at function-body root indentation from the retained analysis cache; exact full-token text edits, prefix ranking, conservative string/comment/member declines, and honest isIncomplete=true; nested-scope locals, imports, members, and workspace candidates remain unsupported"
+    },
+    "completionItem/resolve": {
+      "implemented": true,
+      "test": "test/completion_test.sh",
+      "module": "src/features/completion.elisa:handle_completion_resolve",
+      "note": "adds a detail string for one uniquely retained same-file function signature only when canonical URI, document version, and open-document generation still identify the ready snapshot; stale or invalid data is a no-op and all client-owned item fields are preserved"
     },
     "textDocument/signatureHelp": {
-      "implemented": false,
-      "planned": "F06"
+      "implemented": true,
+      "test": "test/signature_help_test.sh",
+      "module": "src/features/signature_help.elisa:handle_signature_help",
+      "note": "exact resolver-backed unique top-level source functions; nested token delimiters determine active parameter; named arguments, constructors, overloads, shadowed, member, qualified, dynamic, variadic, and synthetic effect-handler calls decline"
     },
     "textDocument/rename": {
-      "implemented": false,
-      "planned": "F07"
+      "implemented": true,
+      "test": "test/rename_test.sh",
+      "module": "src/features/rename.elisa:handle_rename",
+      "note": "advertised only when workspace.workspaceEdit.documentChanges is true; same-document parameter/local BindingIds only; exact compiler occurrence ranges become non-overlapping versioned documentChanges; new names must lex as Ident, include a parser-context disambiguator, and be absent anywhere in the source; no scratch re-analysis or cross-file rename"
     },
     "textDocument/prepareRename": {
-      "implemented": false,
-      "planned": "F07"
+      "implemented": true,
+      "test": "test/rename_test.sh",
+      "module": "src/features/rename.elisa:handle_prepare_rename",
+      "note": "advertised only when workspace.workspaceEdit.documentChanges is true; returns exact range and placeholder only for one unambiguous retained parameter/local BindingId; unsupported symbols or unnegotiated requests return null"
     },
     "workspace/symbol": {
       "implemented": false,
@@ -114,7 +185,19 @@
       "implemented": true,
       "test": "test/cancel_test.sh",
       "module": "src/main.elisa:main",
-      "note": "bounded typed-id set; pipelined cancellation completes with RequestCancelled -32800"
+      "note": "validated notification is ignored by synchronous dispatch; no active request can be observed while it runs, and unknown IDs never cancel a later request"
+    },
+    "$/elisa/stats": {
+      "implemented": true,
+      "test": "test/analysis_cache_test.sh",
+      "module": "src/main.elisa:send_stats",
+      "note": "private request returning retained storage/document counters, cumulative frontend/accessor/index counters, and explicit transport/document/analysis/cache budget state; derived-cache cost includes retained reservations and whole-snapshot LRU eviction is reported; not advertised as a standard LSP capability"
+    },
+    "$/elisa/status": {
+      "implemented": true,
+      "test": "test/observability_test.sh",
+      "module": "src/main.elisa:send_status",
+      "note": "private safe self-description returning JSON-RPC/LSP compatibility, frontend contract and embedded compiler status, effective limits, and bounded logging configuration without reading workspace files or source text; not advertised as a standard LSP capability"
     },
     "window/workDoneProgress/create": {
       "implemented": false,
@@ -136,16 +219,55 @@
       "implemented": true,
       "test": "test/semantic_range_test.sh",
       "module": "src/semtokens.elisa:handle_semantic_tokens_range",
-      "note": "filters the cached full result; re-encodes from document zero"
+      "note": "filters and remaps the same cached full result using the session legend; re-encodes from document zero and skips unsupported fallback categories"
     }
   },
   "capabilities_advertised": {
+    "required": [
+      "textDocumentSync",
+      "semanticTokensProvider",
+      "hoverProvider",
+      "completionProvider",
+      "definitionProvider",
+      "referencesProvider",
+      "documentHighlightProvider",
+      "documentSymbolProvider",
+      "foldingRangeProvider",
+      "selectionRangeProvider",
+      "signatureHelpProvider"
+    ],
+    "optional": [
+      "positionEncoding",
+      "renameProvider"
+    ],
+    "methods": [
+      "textDocument/didOpen",
+      "textDocument/didChange",
+      "textDocument/didClose",
+      "textDocument/semanticTokens/full",
+      "textDocument/semanticTokens/range",
+      "textDocument/hover",
+      "textDocument/completion",
+      "completionItem/resolve",
+      "textDocument/definition",
+      "textDocument/references",
+      "textDocument/documentHighlight",
+      "textDocument/documentSymbol",
+      "textDocument/foldingRange",
+      "textDocument/selectionRange",
+      "textDocument/signatureHelp"
+    ],
+    "conditional_methods": [
+      "textDocument/prepareRename",
+      "textDocument/rename"
+    ],
     "textDocumentSync": {
       "openClose": true,
       "change": 2
     },
     "semanticTokensProvider": {
-      "legend": "src/semtokens.elisa:semtok_legend_json (48 custom types)",
+      "legend": "session-negotiated: stable 48 custom types for omitted/complete custom tokenTypes; otherwise a standard subset from docs/semantic-token-schema.json",
+      "tokenModifiers": "session-negotiated standard subset: declaration, definition, readonly, modification; canonical cache bits are remapped at response time",
       "full": true,
       "range": true
     },
@@ -153,6 +275,42 @@
       "markdown": "default",
       "plaintext": "when contentFormat lacks markdown",
       "test": "test/capabilities_test.sh"
+    },
+    "completionProvider": {
+      "resolveProvider": true,
+      "client_capabilities": "CompletionItemKind.valueSet, CompletionItem.snippetSupport, CompletionItem.insertReplaceSupport, CompletionItem.commitCharactersSupport, and CompletionItem.labelDetailsSupport are validated at initialize; optional item fields and InsertReplaceEdit are emitted only for capable clients",
+      "scope": "same-file declarations, unique enum variants, and conservative exact-owner parameters/root locals from the retained semantic cache; results are explicitly incomplete",
+      "commit_characters": "the opening parenthesis is attached only to plain function-name insertions when the token is not already followed by an opening parenthesis; it is omitted for snippets and unsupported clients",
+      "label_details": "CompletionItem.labelDetails.detail contains parameter names for one uniquely retained function signature only; it is omitted for unsupported clients, non-functions, ambiguous signatures, or missing metadata",
+      "resolve": "CompletionItem/resolve adds `detail` in the form name(parameter, ...) only for unique retained same-file function signatures. Completion items carry canonical URI, document version, and open-document generation in data; resolve requires the exact current ready snapshot. Missing, malformed, unknown, stale-version, or stale-generation data returns the submitted item unchanged, and all other client-owned fields are preserved. Resolve data is omitted for non-functions, missing signature metadata, or URIs longer than 2,048 bytes.",
+      "unsupported": "imported names, members, nested-block locals, workspace candidates, snippets for overloads or signatures outside the retained unique-function index, documentation and return-type resolution, and multiline-string/f-string cursor context",
+      "test": "test/completion_test.sh"
+    },
+    "definitionProvider": {
+      "scope": "unique top-level functions from exact compiler-resolved spans plus exact parameter/local BindingIds",
+      "link_support": "LocationLink[] is returned only when textDocument.definition.linkSupport is true; originSelectionRange and exact target token ranges use the negotiated encoding, and targetRange is the target token span until the resolver exposes enclosing declaration spans; other clients receive Location",
+      "unsupported": "overloaded or module-scoped top-level names, unsupported symbol categories, and unresolved identifiers return null",
+      "test": "test/definition_test.sh"
+    },
+    "referencesProvider": {
+      "scope": "same-document locations for unique-function resolver edges and exact parameter/local BindingIds",
+      "includeDeclaration": "logged declarations are included only when ReferenceContext.includeDeclaration is true",
+      "unsupported": "cross-file search, overloads, module members, and unresolved identifiers return an empty array",
+      "test": "test/references_test.sh"
+    },
+    "renameProvider": {
+      "prepareProvider": true,
+      "client_requirement": "workspace.workspaceEdit.documentChanges must be true",
+      "scope": "same-document parameters and locals selected through exact retained BindingIds",
+      "edits": "versioned, non-overlapping TextDocumentEdit ranges in the negotiated UTF-8 or UTF-16 encoding",
+      "collisionPolicy": "a different new spelling must not occur anywhere in the source snapshot; comments and strings can therefore cause conservative rejection",
+      "unsupported": "plain lowercase words, top-level symbols, cross-file references, lexical-scope graph comparison, scratch re-analysis, and parser-context-sensitive names are declined",
+      "test": "test/rename_test.sh"
+    },
+    "documentHighlightProvider": {
+      "scope": "Text/Read highlights for unique resolved function edges and exact parameter/local BindingIds; binding occurrence kind is omitted",
+      "unsupported": "other symbol kinds, ambiguous targets, and unresolved identifiers return an empty array",
+      "test": "test/document_highlight_test.sh"
     },
     "positionEncoding": {
       "negotiated": "utf-8 only when the client offers it first; otherwise UTF-16 (default, field omitted)",
@@ -163,10 +321,6 @@
       "valueSet": "honored via per-category fallbacks",
       "test": "test/document_symbols_test.sh"
     },
-    "publishDiagnostics": {
-      "relatedInformation": "emitted when the client advertises support and the compiler carries a secondary span",
-      "test": "test/related_info_test.sh"
-    },
     "foldingRangeProvider": {
       "shape": "line-only FoldingRange",
       "rangeLimit": "honored",
@@ -174,19 +328,108 @@
     },
     "selectionRangeProvider": {
       "test": "test/selection_test.sh"
+    },
+    "signatureHelpProvider": {
+      "scope": "one exact unqualified resolver edge to a unique non-constructor top-level function; returns declaration parameter names and one active signature",
+      "triggers": [
+        "(",
+        ","
+      ],
+      "unsupported": "named arguments, overloads, shadowed/unresolved names, module/member/dynamic calls, constructors, variadics, and synthetic effect-handler rewrites return null",
+      "test": "test/signature_help_test.sh"
     }
+  },
+  "client_capabilities_used": {
+    "textDocument.semanticTokens.tokenTypes": {
+      "behavior": "absent capability preserves the legacy custom legend; the complete 48-name custom list preserves its canonical order; otherwise the server selects advertised standard fallback types and omits unsupported categories",
+      "validation": "at most 256 unique nonempty strings, each at most 128 UTF-8 bytes; malformed types or duplicate decoded names/keys reject initialize with InvalidParams",
+      "test": "test/capabilities_test.sh"
+    },
+    "publishDiagnostics.relatedInformation": {
+      "behavior": "emitted when the client advertises support and the compiler carries a secondary span",
+      "test": "test/related_info_test.sh"
+    }
+  },
+  "configuration": {
+    "initializationOptions": {
+      "namespace": "elisa",
+      "analysisTimeoutMs": {
+        "type": "integer",
+        "default": 30000,
+        "minimum": 100,
+        "maximum": 300000,
+        "environment": "ELISA_LSP_ANALYSIS_TIMEOUT_MS"
+      }
+    },
+    "didChangeConfiguration": {
+      "method": "workspace/didChangeConfiguration",
+      "settings": {
+        "elisa": {
+          "analysisTimeoutMs": "integer 100..300000"
+        }
+      },
+      "unknown_members": "ignored",
+      "invalid_notification": "ignored without changing the current setting",
+      "test": "test/configuration_test.sh"
+    },
+    "workspace_configuration_requests": "not issued; no outbound request correlation or timeout is required yet"
+  },
+  "workspace_roots": {
+    "test": "test/workspace_roots_test.sh",
+    "documentation": "docs/workspace-and-configuration.md",
+    "behavior": "initialize-time canonical workspace folders are reported in client order; document ownership selects the longest path-boundary match, including roots ending in slash; standalone ownership is the valid JSON integer -1",
+    "compatibility": "an empty workspaceFolders list falls back to legacy rootUri; clients restart the session when root membership changes because dynamic workspace-folder notifications are not advertised",
+    "scope": "root routing only; project configuration, cross-file resolution, and per-root semantic contexts are not implemented"
+  },
+  "uri_file_path": {
+    "module": "src/uri.elisa:Uri::file_uri_to_path",
+    "test": "test/uri_path_test.sh",
+    "behavior": "strictly decodes file URI authority/path percent escapes into an explicit POSIX or Windows absolute lexical path; accepts UTF-8 and spaces, maps Windows drives and UNC authorities, and rejects malformed escapes, NUL, URI metadata, relative paths, and unsupported POSIX remote authorities",
+    "scope": "conversion is pure and filesystem-independent: no dot-segment normalization, case folding, symlink resolution, existence check, or remote fetch; URI canonical lookup identity remains separate"
+  },
+  "filesystem_identity": {
+    "implemented": "lexical overlay policy",
+    "test": "test/filesystem_identity_test.sh",
+    "behavior": "the validation probe measures case sensitivity per temporary filesystem/volume and verifies symlink-to-target physical identity when supported; the current server never aliases open URIs from either observation",
+    "case_policy": "a future resolver records sensitive, insensitive, or unknown from a filesystem query; it never infers behavior from the OS name, and unknown/missing/permission/unsupported results keep lexical entries distinct",
+    "symlink_policy": "a future resolver may attach realpath/file-identity metadata for successful existing targets for read/index deduplication, while preserving lexical URI/edit identity; cycles, depth failures, and unresolved targets fail closed",
+    "scope": "the shipped standalone server does no filesystem access; physical identity belongs to W02 project resolution"
+  },
+  "source_identity": {
+    "implemented": true,
+    "module": "src/diagnostics.elisa:tokenize_frontend_source",
+    "test": "test/source_identity_test.sh",
+    "behavior": "the LSP analyzes the accepted physical snapshot through the expanded-unit compiler entry point with stable display name <elisa-lsp>; compiler #line display paths/numbers cannot replace URI identity or move diagnostics, semantic tokens, symbols, or hover ranges outside snapshot coordinates"
+  },
+  "lifecycle": {
+    "states": [
+      "Uninitialized",
+      "Initializing",
+      "Running",
+      "Initialized",
+      "ShutdownRequested",
+      "Exited"
+    ],
+    "operational_after": "initialize response (Running)",
+    "initialized_notification": "first notification transitions Running to Initialized once without a response; the server remains operational if it is omitted for compatibility",
+    "shutdown_response": "null before transitioning to ShutdownRequested",
+    "exit_status": "0 only after shutdown; otherwise 1",
+    "clean_eof": "exit 0 between complete frames, independent of lifecycle state",
+    "test": "test/protocol_test.sh",
+    "transport_test": "test/transport_test.sh"
   },
   "legend": {
     "source": "src/semtokens.elisa",
     "count": 48,
     "manifest": "docs/semantic-token-schema.json",
-    "note": "custom names; standard fallback pending (H01)"
+    "test": "test/capabilities_test.sh",
+    "note": "legacy clients that omit semanticTokens and clients that advertise the complete custom tokenTypes list retain the canonical 48-entry legend; other tokenTypes arrays negotiate a supported standard-only subset and both full/range data map through it"
   },
   "frontend_adapter": {
     "module": "src/frontend_adapter.elisa",
-    "contract_version": 1,
+    "contract_version": 13,
     "test": "test/frontend_contract_test.sh",
-    "note": "only module touching Semantic::SymbolTable storage layout; ref_kind roles named OCC_PARAM/OCC_LOCAL"
+    "note": "only module touching Semantic::SymbolTable storage layout; ref_kind roles named OCC_PARAM/OCC_LOCAL; exact occurrence spans are validated, while source-line-only zero-span sentinels use bounded token fallback; definition edges expose exact token spans"
   },
   "json_validation": {
     "strict_gate": "src/json.elisa:is_valid",
@@ -196,5 +439,32 @@
   },
   "containment": {
     "incomplete_source": "providers stay alive and recover after malformed edits; see test/incomplete_source_test.sh"
+  },
+  "diagnostic_codes": {
+    "implemented": true,
+    "source": "src/diagnostics.elisa:diagnostic_json",
+    "generator": "scripts/generate_diagnostic_codes.py",
+    "format": "ELISA-<DiagnosticKind>",
+    "policy": "generated from the pinned compiler enum; independent of wording and severity; unknown fallback is ELISA-Unknown; server-owned truncation hint uses ELISA-LSP-DiagnosticsTruncated",
+    "test": "test/diagnostic_codes_test.sh"
+  },
+  "outgoing_range_validation": {
+    "implemented": true,
+    "environment": "ELISA_LSP_VALIDATE_RANGES",
+    "default": false,
+    "behavior": "debug-only validation of provider ranges/folding spans, semantic-token bounds, request URI identity, encoding boundaries, and direct-array source order immediately before framing",
+    "test": "test/provider_range_validation_test.sh"
+  },
+  "unsupported_constructs": {
+    "inventory": "docs/unsupported-constructs.json",
+    "test": "test/unsupported_constructs_test.sh",
+    "compiler_rejected": "removed or invalid language spellings are probed against the compiler pinned by the build manifest and remain diagnostic passthrough cases",
+    "lsp_provider_limits": "compiler-accepted constructs that a provider cannot identify exactly remain explicit no-match cases; these entries are not compiler or server regressions",
+    "triage": "a changed compiler probe or compiler source fingerprint is frontend/toolchain drift; a provider golden failure with unchanged compiler provenance is an LSP regression"
+  },
+  "known_issues": {
+    "documentation": "docs/known-issues.md",
+    "policy": "supported, experimental, and unavailable statuses are release-facing; unsupported features are not advertised",
+    "test": "test/manifest_test.sh"
   }
 }

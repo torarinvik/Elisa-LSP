@@ -1,0 +1,462 @@
+# Narrow F06 signature help backed by the existing frontend snapshot.
+#
+# Analysis writes an owned index while the parsed AST, resolver table, and lexer
+# tokens are alive. The wire handler reads only that index and the accepted text
+# snapshot; it never reparses. Normal targets are unique top-level source
+# functions with an exact compiler definition-reference edge. For unmatched
+# calls only, a bounded lexical recovery requires a unique same-file declaration
+# and no other same-spelled identifier, symbol, module member, or variant.
+# Named arguments, overloads, shadowing, member/qualified/dynamic callees,
+# variants, externs, and synthetic effect-handler rewrites decline.
+
+using Bytes
+
+const SIGNATURE_REC: u8 = 30
+const SIGNATURE_FS: u8 = 31
+
+
+def signature_is_open(kind: Lexer::TokenKind) -> bool:
+    return kind == Lexer::TokenKind.LParen or kind == Lexer::TokenKind.LBracket or kind == Lexer::TokenKind.LBrace
+
+
+def signature_delimiter_matches(open_kind: Lexer::TokenKind, close_kind: Lexer::TokenKind) -> bool:
+    return (open_kind == Lexer::TokenKind.LParen and close_kind == Lexer::TokenKind.RParen) or (open_kind == Lexer::TokenKind.LBracket and close_kind == Lexer::TokenKind.RBracket) or (open_kind == Lexer::TokenKind.LBrace and close_kind == Lexer::TokenKind.RBrace)
+
+
+def signature_push_field(out: mutable darray[u8]&, value: sview) -> void can[Memory.Allocate, Abort.Panic]:
+    out.push(SIGNATURE_FS)
+    out.extend(value)
+
+
+def signature_push_int_field(out: mutable darray[u8]&, value: i64) -> void can[Memory.Allocate, Abort.Panic]:
+    out.push(SIGNATURE_FS)
+    push_int(out, value)
+
+
+def signature_record_start(out: mutable darray[u8]&, kind: u8) -> void can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        out.push(SIGNATURE_REC)
+        out.push(kind)
+        out.push(SIGNATURE_FS)
+
+
+def signature_name_span_matches(src: u8&, src_len: usize, name: sview, pos: Ast::Pos) -> bool:
+    start: usize = pos.offset.usize()
+    finish: usize = pos.end_offset.usize()
+    return false if finish <= start or finish > src_len or finish - start != name.len.usize()
+    return string_views_eq(Positions::source_view_span(src, src_len, start, finish - start), name) != 0
+
+
+def signature_token_at_offset(tokens: darray[Lexer::Token], offset: u32, found: mutable usize&) -> bool:
+    lo: mutable usize = 0
+    hi: mutable usize = tokens.count
+    while lo < hi:
+        mid: usize = lo + (hi - lo) / 2
+        if tokens[mid].start < offset:
+            lo <- mid + 1
+        else:
+            hi <- mid
+    return false if lo >= tokens.count or tokens[lo].start != offset
+    found <- lo
+    return true
+
+
+# Best-effort target for one unmatched call in a broken source snapshot. The
+# normal path below remains resolver-backed. Recovery is deliberately stricter
+# than normal resolution because the compiler may not emit a DefinitionReference
+# for the unfinished expression: only an unqualified spelling with exactly one
+# top-level function row, no same-named symbol/member/variant, and no other
+# identifier occurrence in the file can be recovered.
+def signature_recovery_target(table: Semantic::SymbolTable&, signature_rows: darray[i64], tokens: darray[Lexer::Token], src: u8&, open_index: usize) -> i64:
+    return -1 if open_index == 0 or open_index >= tokens.count or tokens[open_index].kind != Lexer::TokenKind.LParen
+    callee_index: usize = open_index - 1
+    callee: Lexer::Token = tokens[callee_index]
+    return -1 if callee.kind != Lexer::TokenKind.Ident
+    if callee_index > 0:
+        previous: Lexer::Token = tokens[callee_index - 1]
+        return -1 if previous.kind == Lexer::TokenKind.Dot or previous.kind == Lexer::TokenKind.Scope
+    name: sview = Lexer::text_or_empty(callee, src)
+    return -1 if name.len == 0
+    return -1 if has_module_or_import_context(table)
+
+    target: mutable i64 = -1
+    for signature_row in signature_rows:
+        if symbol_name(table, signature_row.usize()) == name:
+            return -1 if target >= 0
+            target <- signature_row
+    return -1 if target < 0
+    target_position: Ast::Pos = symbol_name_position(table, target.usize())
+    return -1 if target_position.offset == callee.start
+
+    # An overload, constructor/type, global, or any other same-spelled symbol
+    # makes a name-only recovery unsafe. Mirror the compiler adapter's module
+    # member and variant ambiguity guards as well.
+    for symbol_index in 0..<symbol_count(table):
+        continue if symbol_index.i64() == target
+        return -1 if symbol_name(table, symbol_index) == name
+    return -1 if module_member_named(table, name)
+    return -1 if enum_variant_anywhere(table, name)
+
+    # The symbol table has no complete local-scope binding index. Fail closed
+    # whenever this spelling appears anywhere besides its declaration and this
+    # unfinished call. This deliberately trades some recall for safe recovery.
+    declaration_count: mutable usize = 0
+    call_count: mutable usize = 0
+    for token_index in 0..<tokens.count:
+        token: Lexer::Token = tokens[token_index]
+        continue if token.kind != Lexer::TokenKind.Ident or Lexer::text_or_empty(token, src) != name
+        if token_index == callee_index:
+            call_count <- call_count + 1
+        elif token.start == target_position.offset:
+            declaration_count <- declaration_count + 1
+        else:
+            return -1
+    return -1 if declaration_count != 1 or call_count != 1
+    return target
+
+
+# Serialize supported signatures plus exact resolver-linked call groups. The
+# first pass binds top-level AST function declarations to exact semantic rows;
+# the second uses DefinitionReference symbol indexes (never name-only search);
+# the final token pass records only delimiters and commas at each call's own
+# nesting depth. Record fields are ASCII/control-delimited and source names are
+# lexer identifiers, so the retained stream stays compact and unambiguous.
+def build_signature_help_index(file: Ast::File&, table: Semantic::SymbolTable&, tokens: darray[Lexer::Token], src: u8&, src_len: usize) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        out: mutable darray[u8] = []
+        signature_rows: mutable darray[i64] = []
+        for declaration in file.top_decls:
+            if declaration is Ast::Decl.Func(function_name, params, _, _, _, _, declaration_pos):
+                row: mutable i64 = -1
+                same_function_count: mutable usize = 0
+                for candidate_index in 0..<symbol_count(table):
+                    if symbol_category(table, candidate_index) == SYMBOL_KIND_FUNCTION and symbol_name(table, candidate_index) == function_name:
+                        same_function_count <- same_function_count + 1
+                        if symbol_source_offset(table, candidate_index) == declaration_pos.offset:
+                            row <- candidate_index.i64()
+                # Count only function rows: a constructor/type with the same
+                # spelling is rejected by resolver target kind, while multiple
+                # function rows keep overloads outside this first slice.
+                if row >= 0 and same_function_count == 1:
+                    if symbol_arity_max(table, row.usize()) != 4294967295 and signature_name_span_matches(src, src_len, function_name, symbol_name_position(table, row.usize())):
+                        valid_params: mutable bool = true
+                        for parameter in params:
+                            valid_params <- false if parameter.name.len == 0
+                        if valid_params:
+                            signature_rows.push(row)
+                            signature_record_start(out, 83)
+                            # The unique symbol-table row is a stable per-snapshot
+                            # signature identity; retaining only eligible rows keeps
+                            # the temporary lookup table proportional to signatures.
+                            push_int(out, row)
+                            signature_push_field(out, function_name)
+                            signature_push_int_field(out, params.count.i64())
+                            for parameter in params:
+                                signature_push_field(out, parameter.name)
+
+        # Map resolver edges to the exact identifier token followed by an opening
+        # parenthesis. Declaration self-edges are excluded by exact target span;
+        # unresolved or shadowed identifiers have no resolver edge to enter here.
+        candidate_call: mutable darray[i64] = []
+        for _ in 0..<tokens.count:
+            candidate_call.push(-1)
+        call_signature: mutable darray[i64] = []
+        call_open_end: mutable darray[u32] = []
+        call_close_start: mutable darray[u32] = []
+        call_named: mutable darray[bool] = []
+        call_valid: mutable darray[bool] = []
+        for reference_index in 0..<definition_reference_count(table):
+            target: usize = definition_reference_symbol_index(table, reference_index)
+            continue if target >= symbol_count(table)
+            is_supported_target: mutable bool = false
+            signature_row_index: mutable usize = 0
+            while signature_row_index < signature_rows.count:
+                is_supported_target <- true if signature_rows[signature_row_index] == target.i64()
+                signature_row_index <- signature_row_index + 1
+            continue if not is_supported_target
+            target_position: Ast::Pos = symbol_name_position(table, target)
+            target_name: sview = symbol_name(table, target)
+            source_pos: Ast::Pos = definition_reference_position(table, reference_index)
+            continue if source_pos.line == 0 or source_pos.offset == target_position.offset
+            continue if not signature_name_span_matches(src, src_len, target_name, source_pos)
+            token_index: mutable usize = 0
+            continue if not signature_token_at_offset(tokens, source_pos.offset, token_index)
+            token: Lexer::Token = tokens[token_index]
+            continue if token.kind != Lexer::TokenKind.Ident or token.length != source_pos.end_offset - source_pos.offset
+            continue if token_index + 1 >= tokens.count or tokens[token_index + 1].kind != Lexer::TokenKind.LParen
+            open_index: usize = token_index + 1
+            existing: i64 = candidate_call[open_index]
+            if existing >= 0:
+                if call_signature[existing.usize()] != target.i64():
+                    candidate_call[open_index] <- -2
+                continue
+            continue if existing == -2
+            call_id: i64 = call_signature.count.i64()
+            candidate_call[open_index] <- call_id
+            call_signature.push(target.i64())
+            call_open_end.push(tokens[open_index].start + tokens[open_index].length)
+            call_close_start.push(src_len.u32())
+            call_named.push(false)
+            call_valid.push(true)
+
+        # The compiler intentionally omits resolver edges for some unfinished
+        # expressions. Recover only a small number of unmatched direct calls at
+        # EOF, with the fail-closed name checks above; complete calls and all
+        # ordinary cases continue to require exact resolver edges.
+        recovery_stack_kind: mutable darray[Lexer::TokenKind] = []
+        recovery_stack_index: mutable darray[usize] = []
+        for token_index in 0..<tokens.count:
+            token: Lexer::Token = tokens[token_index]
+            if signature_is_open(token.kind):
+                recovery_stack_kind.push(token.kind)
+                recovery_stack_index.push(token_index)
+            elif token.kind == Lexer::TokenKind.RParen or token.kind == Lexer::TokenKind.RBracket or token.kind == Lexer::TokenKind.RBrace:
+                if recovery_stack_kind.count > 0:
+                    expected: Lexer::TokenKind = recovery_stack_kind[recovery_stack_kind.count - 1]
+                    if signature_delimiter_matches(expected, token.kind):
+                        recovery_stack_kind.truncate(recovery_stack_kind.count - 1)
+                        recovery_stack_index.truncate(recovery_stack_index.count - 1)
+                    else:
+                        recovery_stack_kind.truncate(0)
+                        recovery_stack_index.truncate(0)
+        recovery_cursor: mutable usize = recovery_stack_index.count
+        recovered_count: mutable usize = 0
+        while recovery_cursor > 0 and recovered_count < 32:
+            recovery_cursor <- recovery_cursor - 1
+            open_index: usize = recovery_stack_index[recovery_cursor]
+            if candidate_call[open_index] == -1:
+                target: i64 = signature_recovery_target(table, signature_rows, tokens, src, open_index)
+                if target >= 0:
+                    call_id: i64 = call_signature.count.i64()
+                    candidate_call[open_index] <- call_id
+                    call_signature.push(target)
+                    call_open_end.push(tokens[open_index].start + tokens[open_index].length)
+                    call_close_start.push(src_len.u32())
+                    call_named.push(false)
+                    call_valid.push(true)
+            recovered_count <- recovered_count + 1
+
+        # One lexical pass tracks all delimiter kinds. Only a comma whose
+        # immediately enclosing delimiter is a candidate call's own '(' becomes
+        # that call's separator; nested calls, collections, strings, and comments
+        # cannot perturb its active-argument count.
+        stack_kind: mutable darray[Lexer::TokenKind] = []
+        stack_call: mutable darray[i64] = []
+        events: mutable darray[u8] = []
+        for token_index in 0..<tokens.count:
+            token: Lexer::Token = tokens[token_index]
+            if signature_is_open(token.kind):
+                stack_kind.push(token.kind)
+                stack_call.push(candidate_call[token_index])
+            elif token.kind == Lexer::TokenKind.Comma or token.kind == Lexer::TokenKind.Colon:
+                if stack_kind.count > 0 and stack_kind[stack_kind.count - 1] == Lexer::TokenKind.LParen:
+                    call_id: i64 = stack_call[stack_call.count - 1]
+                    if call_id >= 0:
+                        if token.kind == Lexer::TokenKind.Colon:
+                            call_named[call_id.usize()] <- true
+                        else:
+                            signature_record_start(events, 69)
+                            push_int(events, call_id)
+                            signature_push_int_field(events, (token.start + token.length).i64())
+            elif token.kind == Lexer::TokenKind.RParen or token.kind == Lexer::TokenKind.RBracket or token.kind == Lexer::TokenKind.RBrace:
+                if stack_kind.count > 0:
+                    expected: Lexer::TokenKind = stack_kind[stack_kind.count - 1]
+                    if signature_delimiter_matches(expected, token.kind):
+                        call_id: i64 = stack_call[stack_call.count - 1]
+                        if call_id >= 0:
+                            call_close_start[call_id.usize()] <- token.start
+                        stack_kind.truncate(stack_kind.count - 1)
+                        stack_call.truncate(stack_call.count - 1)
+                    else:
+                        for open_call in stack_call:
+                            if open_call >= 0:
+                                call_valid[open_call.usize()] <- false
+                        stack_kind.truncate(0)
+                        stack_call.truncate(0)
+
+        call_id: mutable i64 = 0
+        while call_id < call_signature.count.i64():
+            signature_record_start(out, 67)
+            push_int(out, call_id)
+            signature_push_int_field(out, call_open_end[call_id.usize()].i64())
+            signature_push_int_field(out, call_close_start[call_id.usize()].i64())
+            signature_push_int_field(out, call_signature[call_id.usize()])
+            if call_named[call_id.usize()]:
+                signature_push_int_field(out, 1)
+            else:
+                signature_push_int_field(out, 0)
+            if call_valid[call_id.usize()]:
+                signature_push_int_field(out, 1)
+            else:
+                signature_push_int_field(out, 0)
+            call_id <- call_id + 1
+        out.extend(events)
+        return out
+
+
+def signature_record_next(blob: sview, cursor: mutable usize&, kind: mutable u8&, record_start: mutable usize&, record_end: mutable usize&) -> bool:
+    while cursor[0] < blob.len.usize() and sview_at(blob, cursor[0]) != SIGNATURE_REC:
+        cursor[0] <- cursor[0] + 1
+    return false if cursor[0] >= blob.len.usize()
+    record_start <- cursor[0]
+    kind <- sview_at(blob, cursor[0] + 1)
+    cursor[0] <- cursor[0] + 2
+    while cursor[0] < blob.len.usize() and sview_at(blob, cursor[0]) != SIGNATURE_REC:
+        cursor[0] <- cursor[0] + 1
+    record_end <- cursor[0]
+    return true
+
+
+def signature_record_field(blob: sview, record_start: usize, record_end: usize, field_index: usize, value_out: mutable sview&) -> bool:
+    start: mutable usize = record_start + 3
+    current: mutable usize = 0
+    i: mutable usize = start
+    while i <= record_end:
+        if i == record_end or sview_at(blob, i) == SIGNATURE_FS:
+            if current == field_index:
+                value_out <- string_view_slice(blob, start.i64(), i.i64())
+                return true
+            current <- current + 1
+            start <- i + 1
+        i <- i + 1
+    return false
+
+
+def signature_parse_integer(value: sview) -> i64:
+    return -1 if value.len == 0
+    parsed: mutable i64 = 0
+    for byte in value:
+        return -1 if byte < 48 or byte > 57
+        digit: i64 = byte.i64() - 48
+        return -1 if parsed > (2147483647 - digit) / 10
+        parsed <- parsed * 10 + digit
+    return parsed
+
+
+def signature_integer_field(blob: sview, record_start: usize, record_end: usize, field_index: usize) -> i64:
+    field: mutable sview = sview("", 0, 0)
+    return -1 if not signature_record_field(blob, record_start, record_end, field_index, field)
+    return signature_parse_integer(field)
+
+
+def signature_help_body(blob: sview, signature_id: i64, active_parameter: i64) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        body: mutable darray[u8] = []
+        cursor: mutable usize = 0
+        kind: mutable u8 = 0
+        start: mutable usize = 0
+        finish: mutable usize = 0
+        while signature_record_next(blob, cursor, kind, start, finish):
+            continue if kind != 83 or signature_integer_field(blob, start, finish, 0) != signature_id
+            name: mutable sview = sview("", 0, 0)
+            _ = signature_record_field(blob, start, finish, 1, name)
+            count: i64 = signature_integer_field(blob, start, finish, 2)
+            return body if count < 0
+            body.push_str("{\"signatures\":[{\"label\":\"")
+            json_escape_utf8(body, name)
+            body.push(40)
+            for parameter_index in 0..<count.usize():
+                body.push_str(", ") if parameter_index > 0
+                parameter_name: mutable sview = sview("", 0, 0)
+                if signature_record_field(blob, start, finish, parameter_index + 3, parameter_name):
+                    json_escape_utf8(body, parameter_name)
+            body.push(41)
+            body.push_str("\",\"parameters\":[")
+            for parameter_index in 0..<count.usize():
+                body.push_str(",") if parameter_index > 0
+                parameter_name: mutable sview = sview("", 0, 0)
+                _ = signature_record_field(blob, start, finish, parameter_index + 3, parameter_name)
+                body.push_str("{\"label\":\"")
+                json_escape_utf8(body, parameter_name)
+                body.push_str("\"}")
+            body.push_str("]}],\"activeSignature\":0")
+            if count > 0:
+                body.push_str(",\"activeParameter\":")
+                push_int(body, active_parameter)
+            body.push_str("}")
+            return body
+        return body
+
+
+def signature_cursor_byte(root: Json::Value, src: u8&, src_len: usize, utf8: bool, starts: darray[usize]&, span_start: usize, span_count: usize) -> i64 can[Memory.Allocate, Abort.Panic]:
+    line: i64 = request_hover_line(root)
+    character: i64 = request_hover_char(root)
+    return -1 if line < 0 or character < 0 or line.usize() >= span_count
+    byte_character: i64 = Positions::char_to_byte_col_span_indexed(src, src_len, starts, span_start, span_count, line, character, utf8)
+    return (Positions::line_start_offset_span_indexed(starts, span_start, span_count, src_len, line) + byte_character.usize()).i64()
+
+
+def handle_signature_help(root: Json::Value, snapshot: DocumentSnapshotView, document_storage: darray[u8]&, document_line_starts: darray[usize]&, result_body: mutable darray[u8]&, utf8: bool) -> ProviderOutcome can[Memory.Allocate, Abort.Panic]:
+    if not snapshot.valid or snapshot.lifecycle.analysis_state != DocumentAnalysisState.Ready or snapshot.source.text_len <= 1 or snapshot.caches.signature_len == 0:
+        return ProviderOutcome.NoMatchNull
+    document: DocumentSnapshotView = snapshot
+    signature_start: mutable usize = document.caches.signature_start
+    signature_len: usize = document.caches.signature_len
+    if document.source.text_start > document_storage.count:
+        return ProviderOutcome.InvalidRetainedCache
+    if document.source.text_len > document_storage.count - document.source.text_start:
+        return ProviderOutcome.InvalidRetainedCache
+    if signature_start > document_storage.count:
+        return ProviderOutcome.InvalidRetainedCache
+    if signature_len > document_storage.count - signature_start:
+        # A Ready snapshot with an invalid retained span violates the
+        # analysis adapter contract. Do not disguise cache corruption as an
+        # ordinary "no signature at this position" result.
+        return ProviderOutcome.InvalidRetainedCache
+    src: u8& = &document_storage[document.source.text_start]
+    src_len: usize = document.source.text_len - 1
+    cursor_byte: mutable i64 = -1
+    if document.caches.line_index_count > 0:
+        cursor_byte <- signature_cursor_byte(root, src, src_len, utf8, document_line_starts, document.caches.line_index_start, document.caches.line_index_count)
+    else:
+        fallback_starts: darray[usize] = Positions::build_line_starts(src, src_len)
+        lsp_line_index_fallback_build_calls <- lsp_line_index_fallback_build_calls + 1
+        cursor_byte <- signature_cursor_byte(root, src, src_len, utf8, &fallback_starts, 0, fallback_starts.count)
+    if cursor_byte < 0:
+        return ProviderOutcome.NoMatchNull
+    blob: sview = bytes_view_range_ref(document_storage, signature_start, signature_len)
+    selected_call: mutable i64 = -1
+    selected_open: mutable i64 = -1
+    selected_signature: mutable i64 = -1
+    selected_param_count: mutable i64 = -1
+    record_cursor: mutable usize = 0
+    record_kind: mutable u8 = 0
+    record_start: mutable usize = 0
+    record_end: mutable usize = 0
+    while signature_record_next(blob, record_cursor, record_kind, record_start, record_end):
+        continue if record_kind != 67
+        call_id: i64 = signature_integer_field(blob, record_start, record_end, 0)
+        open_end: i64 = signature_integer_field(blob, record_start, record_end, 1)
+        close_start: i64 = signature_integer_field(blob, record_start, record_end, 2)
+        signature_id: i64 = signature_integer_field(blob, record_start, record_end, 3)
+        named: i64 = signature_integer_field(blob, record_start, record_end, 4)
+        valid: i64 = signature_integer_field(blob, record_start, record_end, 5)
+        continue if call_id < 0 or open_end < 0 or close_start < 0 or signature_id < 0 or named != 0 or valid != 1
+        continue if open_end > cursor_byte or cursor_byte > close_start
+        if open_end > selected_open:
+            selected_call <- call_id
+            selected_open <- open_end
+            selected_signature <- signature_id
+    if selected_call < 0:
+        return ProviderOutcome.NoMatchNull
+    active_parameter: mutable i64 = 0
+    event_cursor: mutable usize = 0
+    while signature_record_next(blob, event_cursor, record_kind, record_start, record_end):
+        continue if record_kind != 69
+        event_call: i64 = signature_integer_field(blob, record_start, record_end, 0)
+        comma_end: i64 = signature_integer_field(blob, record_start, record_end, 1)
+        active_parameter <- active_parameter + 1 if event_call == selected_call and comma_end <= cursor_byte
+    signature_cursor: mutable usize = 0
+    while signature_record_next(blob, signature_cursor, record_kind, record_start, record_end):
+        if record_kind == 83 and signature_integer_field(blob, record_start, record_end, 0) == selected_signature:
+            selected_param_count <- signature_integer_field(blob, record_start, record_end, 2)
+            break
+    if selected_param_count < 0 or (selected_param_count > 0 and active_parameter >= selected_param_count):
+        return ProviderOutcome.NoMatchNull
+    result: darray[u8] = signature_help_body(blob, selected_signature, active_parameter)
+    if result.count == 0:
+        return ProviderOutcome.NoMatchNull
+    # The signature body is allocated in this handler's auto region; copy its
+    # bytes individually into the caller-owned response buffer.
+    result_body.extend([byte for byte in result])
+    return ProviderOutcome.Result

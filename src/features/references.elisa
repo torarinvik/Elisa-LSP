@@ -1,0 +1,255 @@
+# Exact, same-document textDocument/references results.
+#
+# `d` records are compiler-resolved global definition edges. `o` records retain
+# exact parameter/local spans and their resolver BindingId, so lexical shadowing
+# is handled by identity instead of spelling. Unsupported or ambiguous targets
+# return an empty array; this provider never guesses from names.
+
+struct ReferenceSpan:
+    start_line: mutable i64
+    start_char: mutable i64
+    end_line: mutable i64
+    end_char: mutable i64
+
+
+struct ReferenceTarget:
+    is_binding: mutable bool
+    owner: mutable i64
+    serial: mutable i64
+    name: sview
+    span: ReferenceSpan
+
+
+def reference_position_before(line_a: i64, char_a: i64, line_b: i64, char_b: i64) -> bool:
+    return line_a < line_b or (line_a == line_b and char_a < char_b)
+
+
+def reference_range_equal(a: ReferenceSpan, b: ReferenceSpan) -> bool:
+    return a.start_line == b.start_line and a.start_char == b.start_char and a.end_line == b.end_line and a.end_char == b.end_char
+
+
+def reference_span_before(a: ReferenceSpan, b: ReferenceSpan) -> bool:
+    if reference_position_before(a.start_line, a.start_char, b.start_line, b.start_char):
+        return true
+    if a.start_line == b.start_line and a.start_char == b.start_char:
+        return reference_position_before(a.end_line, a.end_char, b.end_line, b.end_char)
+    return false
+
+
+def reference_targets_equal(a: ReferenceTarget, b: ReferenceTarget) -> bool:
+    if a.is_binding != b.is_binding:
+        return false
+    if a.is_binding:
+        return a.owner == b.owner and a.serial == b.serial
+    return reference_range_equal(a.span, b.span)
+
+
+def reference_span_append_unique(spans: mutable darray[ReferenceSpan]&, candidate: ReferenceSpan) -> void can[Memory.Allocate, Abort.Panic]:
+    duplicate: mutable bool = false
+    j: mutable usize = 0
+    while j < spans.count:
+        duplicate <- true if reference_range_equal(spans[j], candidate)
+        j <- j + 1
+    spans.push(candidate) if not duplicate
+
+
+# Select a retained resolver target under the cursor. Source ranges are
+# half-open, matching LSP token spans; punctuation and positions after a token
+# therefore have no edge. Distinct targets at the same location are rejected.
+def reference_any_target_at(blob: sview, line: i64, character: i64, target_out: mutable ReferenceTarget&) -> bool:
+    rec_start: mutable usize = 0
+    i: mutable usize = 0
+    n: usize = blob.len.usize()
+    found: mutable bool = false
+    ambiguous: mutable bool = false
+    while i <= n:
+        if i == n or sview_at(blob, i) == HOVER_REC:
+            if i > rec_start and sview_at(blob, rec_start) == 111:
+                name_field: mutable sview = sview("", 0, 0)
+                owner_field: mutable sview = sview("", 0, 0)
+                serial_field: mutable sview = sview("", 0, 0)
+                start_line_field: mutable sview = sview("", 0, 0)
+                start_char_field: mutable sview = sview("", 0, 0)
+                end_line_field: mutable sview = sview("", 0, 0)
+                end_char_field: mutable sview = sview("", 0, 0)
+                if hover_field(blob, rec_start, i, 3, name_field) and hover_field(blob, rec_start, i, 5, owner_field) and hover_field(blob, rec_start, i, 6, serial_field) and hover_field(blob, rec_start, i, 7, start_line_field) and hover_field(blob, rec_start, i, 8, start_char_field) and hover_field(blob, rec_start, i, 9, end_line_field) and hover_field(blob, rec_start, i, 10, end_char_field):
+                    source_sl: i64 = hover_parse_i64(start_line_field)
+                    source_sc: i64 = hover_parse_i64(start_char_field)
+                    source_el: i64 = hover_parse_i64(end_line_field)
+                    source_ec: i64 = hover_parse_i64(end_char_field)
+                    at_or_after_start: bool = reference_position_before(source_sl, source_sc, line, character) or (source_sl == line and source_sc == character)
+                    before_end: bool = reference_position_before(line, character, source_el, source_ec)
+                    if at_or_after_start and before_end:
+                        candidate: ReferenceTarget = ReferenceTarget{is_binding: true, owner: hover_parse_i64(owner_field), serial: hover_parse_i64(serial_field), name: name_field, span: ReferenceSpan{start_line: source_sl, start_char: source_sc, end_line: source_el, end_char: source_ec}}
+                        differs: mutable bool = false
+                        if target_out.is_binding or candidate.is_binding:
+                            differs <- target_out.is_binding != candidate.is_binding or target_out.owner != candidate.owner or target_out.serial != candidate.serial
+                        else:
+                            differs <- not reference_range_equal(target_out.span, candidate.span)
+                        if found and differs:
+                            ambiguous <- true
+                        else:
+                            target_out <- candidate
+                            found <- true
+            elif i > rec_start and sview_at(blob, rec_start) == 100:
+                source_sl: mutable sview = sview("", 0, 0)
+                source_sc: mutable sview = sview("", 0, 0)
+                source_el: mutable sview = sview("", 0, 0)
+                source_ec: mutable sview = sview("", 0, 0)
+                target_sl: mutable sview = sview("", 0, 0)
+                target_sc: mutable sview = sview("", 0, 0)
+                target_el: mutable sview = sview("", 0, 0)
+                target_ec: mutable sview = sview("", 0, 0)
+                if hover_field(blob, rec_start, i, 1, source_sl) and hover_field(blob, rec_start, i, 2, source_sc) and hover_field(blob, rec_start, i, 3, source_el) and hover_field(blob, rec_start, i, 4, source_ec) and hover_field(blob, rec_start, i, 5, target_sl) and hover_field(blob, rec_start, i, 6, target_sc) and hover_field(blob, rec_start, i, 7, target_el) and hover_field(blob, rec_start, i, 8, target_ec):
+                    sl: i64 = hover_parse_i64(source_sl)
+                    sc: i64 = hover_parse_i64(source_sc)
+                    el: i64 = hover_parse_i64(source_el)
+                    ec: i64 = hover_parse_i64(source_ec)
+                    at_or_after_start: bool = reference_position_before(sl, sc, line, character) or (sl == line and sc == character)
+                    before_end: bool = reference_position_before(line, character, el, ec)
+                    if at_or_after_start and before_end:
+                        candidate: ReferenceTarget = ReferenceTarget{is_binding: false, owner: 0, serial: 0, name: sview("", 0, 0), span: ReferenceSpan{start_line: hover_parse_i64(target_sl), start_char: hover_parse_i64(target_sc), end_line: hover_parse_i64(target_el), end_char: hover_parse_i64(target_ec)}}
+                        differs: mutable bool = false
+                        if target_out.is_binding or candidate.is_binding:
+                            differs <- target_out.is_binding != candidate.is_binding or target_out.owner != candidate.owner or target_out.serial != candidate.serial
+                        else:
+                            differs <- not reference_range_equal(target_out.span, candidate.span)
+                        if found and differs:
+                            ambiguous <- true
+                        else:
+                            target_out <- candidate
+                            found <- true
+            rec_start <- i + 1
+        i <- i + 1
+    return found and not ambiguous
+
+
+def reference_any_collect(blob: sview, target: ReferenceTarget, include_declaration: bool) -> darray[ReferenceSpan]:
+    can Memory.Allocate, Abort.Panic:
+        spans: mutable darray[ReferenceSpan] = []
+        rec_start: mutable usize = 0
+        i: mutable usize = 0
+        n: usize = blob.len.usize()
+        binding_declaration_seen: mutable bool = false
+        while i <= n:
+            if i == n or sview_at(blob, i) == HOVER_REC:
+                if target.is_binding and i > rec_start and sview_at(blob, rec_start) == 111:
+                    owner_field: mutable sview = sview("", 0, 0)
+                    serial_field: mutable sview = sview("", 0, 0)
+                    start_line_field: mutable sview = sview("", 0, 0)
+                    start_char_field: mutable sview = sview("", 0, 0)
+                    end_line_field: mutable sview = sview("", 0, 0)
+                    end_char_field: mutable sview = sview("", 0, 0)
+                    if hover_field(blob, rec_start, i, 5, owner_field) and hover_field(blob, rec_start, i, 6, serial_field):
+                        same_binding: bool = hover_parse_i64(owner_field) == target.owner and hover_parse_i64(serial_field) == target.serial
+                        if same_binding:
+                            if hover_field(blob, rec_start, i, 7, start_line_field) and hover_field(blob, rec_start, i, 8, start_char_field) and hover_field(blob, rec_start, i, 9, end_line_field) and hover_field(blob, rec_start, i, 10, end_char_field):
+                                candidate: ReferenceSpan = ReferenceSpan{start_line: hover_parse_i64(start_line_field), start_char: hover_parse_i64(start_char_field), end_line: hover_parse_i64(end_line_field), end_char: hover_parse_i64(end_char_field)}
+                                # The resolver logs parameter/local declaration rows before
+                                # later references with that BindingId. A same-name shadow
+                                # has a different serial and therefore a separate declaration.
+                                is_declaration: bool = not binding_declaration_seen
+                                binding_declaration_seen <- true
+                                if include_declaration or not is_declaration:
+                                    reference_span_append_unique(spans, candidate)
+                elif not target.is_binding and i > rec_start and sview_at(blob, rec_start) == 100:
+                    source_sl: mutable sview = sview("", 0, 0)
+                    source_sc: mutable sview = sview("", 0, 0)
+                    source_el: mutable sview = sview("", 0, 0)
+                    source_ec: mutable sview = sview("", 0, 0)
+                    target_sl: mutable sview = sview("", 0, 0)
+                    target_sc: mutable sview = sview("", 0, 0)
+                    target_el: mutable sview = sview("", 0, 0)
+                    target_ec: mutable sview = sview("", 0, 0)
+                    if hover_field(blob, rec_start, i, 1, source_sl) and hover_field(blob, rec_start, i, 2, source_sc) and hover_field(blob, rec_start, i, 3, source_el) and hover_field(blob, rec_start, i, 4, source_ec) and hover_field(blob, rec_start, i, 5, target_sl) and hover_field(blob, rec_start, i, 6, target_sc) and hover_field(blob, rec_start, i, 7, target_el) and hover_field(blob, rec_start, i, 8, target_ec):
+                        same_target: bool = hover_parse_i64(target_sl) == target.span.start_line and hover_parse_i64(target_sc) == target.span.start_char and hover_parse_i64(target_el) == target.span.end_line and hover_parse_i64(target_ec) == target.span.end_char
+                        if same_target:
+                            candidate: ReferenceSpan = ReferenceSpan{start_line: hover_parse_i64(source_sl), start_char: hover_parse_i64(source_sc), end_line: hover_parse_i64(source_el), end_char: hover_parse_i64(source_ec)}
+                            is_declaration: bool = reference_range_equal(candidate, target.span)
+                            if include_declaration or not is_declaration:
+                                reference_span_append_unique(spans, candidate)
+                rec_start <- i + 1
+            i <- i + 1
+        # Deterministic source order, including the self-edge when requested.
+        i <- 1
+        while i < spans.count:
+            key: ReferenceSpan = spans[i]
+            j: mutable usize = i
+            while j > 0 and reference_span_before(key, spans[j - 1]):
+                spans[j] <- spans[j - 1]
+                j <- j - 1
+            spans[j] <- key
+            i <- i + 1
+        return spans
+
+
+# Compatibility helpers for callers that only address function-definition
+# edges. General providers should use the BindingId-aware target API above.
+def reference_target_at(blob: sview, line: i64, character: i64, target_out: mutable ReferenceSpan&) -> bool:
+    target: mutable ReferenceTarget = ReferenceTarget{is_binding: false, owner: 0, serial: 0, name: sview("", 0, 0), span: ReferenceSpan{start_line: 0, start_char: 0, end_line: 0, end_char: 0}}
+    return false if not reference_any_target_at(blob, line, character, target) or target.is_binding
+    target_out <- target.span
+    return true
+
+
+def reference_collect(blob: sview, target: ReferenceSpan, include_declaration: bool) -> darray[ReferenceSpan] can[Memory.Allocate, Abort.Panic]:
+    binding_target: ReferenceTarget = ReferenceTarget{is_binding: false, owner: 0, serial: 0, name: sview("", 0, 0), span: target}
+    return reference_any_collect(blob, binding_target, include_declaration)
+
+
+def references_result_body(uri: sview, spans: darray[ReferenceSpan]) -> darray[u8]:
+    can Memory.Allocate, Abort.Panic:
+        body: mutable darray[u8] = []
+        body.push(91)
+        i: mutable usize = 0
+        while i < spans.count:
+            span: ReferenceSpan = spans[i]
+            body.push(44) if i > 0
+            body.push_str("{\"uri\":\"")
+            json_escape_utf8(body, uri)
+            body.push_str("\",\"range\":{\"start\":{\"line\":")
+            body.push_int(span.start_line)
+            body.push_str(",\"character\":")
+            body.push_int(span.start_char)
+            body.push_str("},\"end\":{\"line\":")
+            body.push_int(span.end_line)
+            body.push_str(",\"character\":")
+            body.push_int(span.end_char)
+            body.push_str("}}}")
+            i <- i + 1
+        body.push(93)
+        return body
+
+
+def handle_references(root: Json::Value, snapshot: DocumentSnapshotView, document_storage: darray[u8]&, result_body: mutable darray[u8]&) -> ProviderOutcome can[Memory.Allocate, Abort.Panic]:
+    spell_bytes: mutable darray[u8] = []
+    canon_bytes: mutable darray[u8] = []
+    uri: sview = request_identity(root, spell_bytes, canon_bytes)
+    if not snapshot.valid or snapshot.lifecycle.analysis_state != DocumentAnalysisState.Ready or snapshot.caches.hover_len == 0:
+        return ProviderOutcome.NoMatchEmptyArray
+    document: DocumentSnapshotView = snapshot
+    references_start: mutable usize = document.caches.hover_start
+    references_len: usize = document.caches.hover_len
+    if references_start > document_storage.count:
+        return ProviderOutcome.InvalidRetainedCache
+    if references_len > document_storage.count - references_start:
+        return ProviderOutcome.InvalidRetainedCache
+    blob: sview = bytes_view_range_ref(document_storage, references_start, references_len)
+    target: mutable ReferenceTarget = ReferenceTarget{is_binding: false, owner: 0, serial: 0, name: sview("", 0, 0), span: ReferenceSpan{start_line: 0, start_char: 0, end_line: 0, end_char: 0}}
+    if not reference_any_target_at(blob, request_hover_line(root), request_hover_char(root), target):
+        return ProviderOutcome.NoMatchEmptyArray
+    include_declaration: mutable bool = false
+    if Json::get(root, "params") is params:
+        if Json::get(params, "context") is context:
+            if Json::get(context, "includeDeclaration") is include:
+                match include:
+                    Json::Value.Bool(value):
+                        include_declaration <- value
+                    _:
+                        pass
+    spans: darray[ReferenceSpan] = reference_any_collect(blob, target, include_declaration)
+    body: darray[u8] = references_result_body(uri, spans)
+    # `body` is local to this handler's auto region. Copy scalar bytes into the
+    # caller-owned response buffer instead of storing its container descriptor.
+    result_body.extend([byte for byte in body])
+    return ProviderOutcome.Result

@@ -1,0 +1,176 @@
+# Fail-closed, same-document rename for resolver-identified parameters/locals.
+#
+# The initial safe slice only renames one exact BindingId. To prevent capture
+# when the compiler does not expose lexical-scope intervals, a different new
+# spelling must be absent from the entire source snapshot (including comments
+# and strings). This deliberately rejects some safe renames; it never guesses.
+
+def rename_identifier_lexically_valid(name: sview) -> bool can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        return false if name.len == 0 or name.len > 1024
+        name_bytes: mutable darray[u8] = []
+        i: mutable usize = 0
+        while i < name.len.usize():
+            name_bytes.push(sview_at(name, i))
+            i <- i + 1
+        tokens: darray[Lexer::Token] = Lexer::frontend_tokenize_expanded_unit("<rename>", &name_bytes[0], name_bytes.count)
+        return false if tokens.count != 2
+        return false if tokens[0].kind != Lexer::TokenKind.Ident or tokens[0].start != 0 or tokens[0].length.usize() != name_bytes.count
+        # The latest lexer deliberately leaves many parser-context words as
+        # Ident. Until parser-context validation is available, accept a name
+        # only when it cannot equal one of those bare ASCII words. This keeps
+        # camelCase, snake_case, numeric-suffixed, and Unicode names usable.
+        context_disambiguated: mutable bool = false
+        i <- 0
+        while i < name.len.usize():
+            byte: u8 = sview_at(name, i)
+            context_disambiguated <- true if byte == 95 or (byte >= 48 and byte <= 57) or (byte >= 65 and byte <= 90) or byte >= 128
+            i <- i + 1
+        return false if not context_disambiguated
+        return tokens[1].kind == Lexer::TokenKind.Eof
+
+
+def rename_source_contains_name(source: sview, name: sview) -> bool:
+    return false if name.len == 0 or name.len > source.len
+    start: mutable usize = 0
+    while start + name.len.usize() <= source.len.usize():
+        equal: mutable bool = true
+        j: mutable usize = 0
+        while j < name.len.usize():
+            equal <- false if sview_at(source, start + j) != sview_at(name, j)
+            j <- j + 1
+        return true if equal
+        start <- start + 1
+    return false
+
+
+def rename_views_equal(left: sview, right: sview) -> bool:
+    return false if left.len != right.len
+    i: mutable usize = 0
+    while i < left.len.usize():
+        return false if sview_at(left, i) != sview_at(right, i)
+        i <- i + 1
+    return true
+
+
+def rename_spans_are_nonoverlapping(spans: darray[ReferenceSpan]) -> bool:
+    return false if spans.count == 0
+    i: mutable usize = 1
+    while i < spans.count:
+        previous: ReferenceSpan = spans[i - 1]
+        current: ReferenceSpan = spans[i]
+        return false if not reference_position_before(previous.start_line, previous.start_char, current.start_line, current.start_char)
+        return false if reference_position_before(current.start_line, current.start_char, previous.end_line, previous.end_char)
+        i <- i + 1
+    return true
+
+
+def rename_append_range(body: mutable darray[u8]&, span: ReferenceSpan) -> void can[Memory.Allocate, Abort.Panic]:
+    push_str(body, "{\"start\":{\"line\":")
+    body.push_int(span.start_line)
+    push_str(body, ",\"character\":")
+    body.push_int(span.start_char)
+    push_str(body, "},\"end\":{\"line\":")
+    body.push_int(span.end_line)
+    push_str(body, ",\"character\":")
+    body.push_int(span.end_char)
+    push_str(body, "}}")
+
+
+def rename_prepare_result_body(target: ReferenceTarget) -> darray[u8]:
+    can Memory.Allocate, Abort.Panic:
+        body: mutable darray[u8] = []
+        push_str(body, "{\"range\":")
+        rename_append_range(body, target.span)
+        push_str(body, ",\"placeholder\":\"")
+        json_escape_utf8(body, target.name)
+        push_str(body, "\"}")
+        return body
+
+
+def rename_workspace_edit_body(uri: sview, version: i64, new_name: sview, spans: darray[ReferenceSpan]) -> darray[u8]:
+    can Memory.Allocate, Abort.Panic:
+        body: mutable darray[u8] = []
+        push_str(body, "{\"documentChanges\":[{\"textDocument\":{\"uri\":\"")
+        json_escape_utf8(body, uri)
+        push_str(body, "\",\"version\":")
+        body.push_int(version)
+        push_str(body, "},\"edits\":[")
+        i: mutable usize = 0
+        while i < spans.count:
+            body.push(44) if i > 0
+            push_str(body, "{\"range\":")
+            rename_append_range(body, spans[i])
+            push_str(body, ",\"newText\":\"")
+            json_escape_utf8(body, new_name)
+            push_str(body, "\"}")
+            i <- i + 1
+        push_str(body, "]}]}")
+        return body
+
+
+def rename_analysis_views(snapshot: DocumentSnapshotView, storage: darray[u8]&, source_out: mutable sview&, records_out: mutable sview&) -> bool:
+    if not snapshot.valid or snapshot.lifecycle.analysis_state != DocumentAnalysisState.Ready or snapshot.caches.hover_len == 0:
+        return false
+    return false if snapshot.source.text_start > storage.count or snapshot.source.text_len > storage.count - snapshot.source.text_start
+    return false if snapshot.caches.hover_start > storage.count or snapshot.caches.hover_len > storage.count - snapshot.caches.hover_start
+    return false if snapshot.source.text_len == 0
+    source_out <- bytes_view_range_ref(storage, snapshot.source.text_start, snapshot.source.text_len - 1)
+    records_out <- bytes_view_range_ref(storage, snapshot.caches.hover_start, snapshot.caches.hover_len)
+    return true
+
+
+def handle_prepare_rename(root: Json::Value, snapshot: DocumentSnapshotView, storage: darray[u8]&, result_body: mutable darray[u8]&) -> ProviderOutcome can[Memory.Allocate, Abort.Panic]:
+    source: mutable sview = sview("", 0, 0)
+    records: mutable sview = sview("", 0, 0)
+    if not snapshot.valid or snapshot.lifecycle.analysis_state != DocumentAnalysisState.Ready or snapshot.caches.hover_len == 0:
+        return ProviderOutcome.NoMatchNull
+    if not rename_analysis_views(snapshot, storage, source, records):
+        return ProviderOutcome.InvalidRetainedCache
+    target: mutable ReferenceTarget = ReferenceTarget{is_binding: false, owner: 0, serial: 0, name: sview("", 0, 0), span: ReferenceSpan{start_line: 0, start_char: 0, end_line: 0, end_char: 0}}
+    if not reference_any_target_at(records, request_hover_line(root), request_hover_char(root), target) or not target.is_binding:
+        return ProviderOutcome.NoMatchNull
+    spans: darray[ReferenceSpan] = reference_any_collect(records, target, true)
+    return ProviderOutcome.NoMatchNull if not rename_spans_are_nonoverlapping(spans)
+    body: darray[u8] = rename_prepare_result_body(target)
+    result_body.extend([byte for byte in body])
+    return ProviderOutcome.Result
+
+
+def handle_rename(root: Json::Value, snapshot: DocumentSnapshotView, storage: darray[u8]&, result_body: mutable darray[u8]&) -> ProviderOutcome can[Memory.Allocate, Abort.Panic]:
+    source: mutable sview = sview("", 0, 0)
+    records: mutable sview = sview("", 0, 0)
+    if not snapshot.valid or snapshot.lifecycle.analysis_state != DocumentAnalysisState.Ready or snapshot.caches.hover_len == 0:
+        return ProviderOutcome.NoMatchNull
+    if not rename_analysis_views(snapshot, storage, source, records):
+        return ProviderOutcome.InvalidRetainedCache
+    target: mutable ReferenceTarget = ReferenceTarget{is_binding: false, owner: 0, serial: 0, name: sview("", 0, 0), span: ReferenceSpan{start_line: 0, start_char: 0, end_line: 0, end_char: 0}}
+    if not reference_any_target_at(records, request_hover_line(root), request_hover_char(root), target) or not target.is_binding or target.name.len == 0:
+        return ProviderOutcome.NoMatchNull
+    new_name_bytes: mutable darray[u8] = []
+    if Json::get(root, "params") is params:
+        if Json::get(params, "newName") is value:
+            Json::decode_into(value, new_name_bytes)
+        else:
+            return ProviderOutcome.NoMatchNull
+    else:
+        return ProviderOutcome.NoMatchNull
+    new_name: sview = bytes_view_range_ref(new_name_bytes, 0, new_name_bytes.count) if new_name_bytes.count > 0 else sview("", 0, 0)
+    return ProviderOutcome.NoMatchNull if not rename_identifier_lexically_valid(new_name)
+    if not rename_views_equal(target.name, new_name) and rename_source_contains_name(source, new_name):
+        return ProviderOutcome.NoMatchNull
+    spans: darray[ReferenceSpan] = reference_any_collect(records, target, true)
+    return ProviderOutcome.NoMatchNull if not rename_spans_are_nonoverlapping(spans)
+    selected_present: mutable bool = false
+    i: mutable usize = 0
+    while i < spans.count:
+        selected_present <- true if reference_range_equal(spans[i], target.span)
+        i <- i + 1
+    return ProviderOutcome.NoMatchNull if not selected_present
+    spell_bytes: mutable darray[u8] = []
+    canon_bytes: mutable darray[u8] = []
+    uri: sview = request_identity(root, spell_bytes, canon_bytes)
+    return ProviderOutcome.NoMatchNull if uri.len == 0
+    body: darray[u8] = rename_workspace_edit_body(uri, snapshot.lifecycle.version, new_name, spans)
+    result_body.extend([byte for byte in body])
+    return ProviderOutcome.Result

@@ -7,40 +7,43 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 SRV="$ROOT/build/elisa-lsp"
 [[ -x "$SRV" ]] || { echo "build first: bash build.sh" >&2; exit 2; }
 
-python3 - "$SRV" <<'PY'
-import json, subprocess, sys
+python3 - "$SRV" "$ROOT" <<'PY'
+import os
+import sys
+
+sys.path.insert(0, os.path.join(sys.argv[2], "test"))
+from lsp_client import LspSession
+
 srv = sys.argv[1]
-def frame(o):
-    b = json.dumps(o, separators=(",", ":")).encode()
-    return b"Content-Length: " + str(len(b)).encode() + b"\r\n\r\n" + b
-doc = ('def f(xs: darray[i64]) -> i64:\n'
-       '    r: i64 =\n'
-       '        for x in xs |a"b, c=d\\e| -> a:\n'
-       '            r <- r + 1\n'
-       '    return r\n')
-m = frame({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})
-m += frame({"jsonrpc":"2.0","method":"textDocument/didOpen",
-            "params":{"textDocument":{"uri":"file:///esc-hover.elisa","languageId":"Elisa","version":1,"text":doc}}})
-m += frame({"jsonrpc":"2.0","id":2,"method":"textDocument/hover",
-            "params":{"textDocument":{"uri":"file:///esc-hover.elisa"},"position":{"line":2,"character":20}}})
-m += frame({"jsonrpc":"2.0","id":9,"method":"shutdown"})
-m += frame({"jsonrpc":"2.0","method":"exit"})
-p = subprocess.run([srv], input=m, capture_output=True, timeout=30)
-assert p.returncode == 0, f"exit {p.returncode}"
-out, pos, res = p.stdout, 0, {}
-while pos < len(out):
-    sep = out.find(b"\r\n\r\n", pos)
-    assert sep >= 0, "truncated header"
-    ln = int(out[pos:sep].split(b":",1)[1].strip())
-    start = sep+4
-    raw = out[start:start+ln]
-    assert len(raw) == ln, "truncated body"
-    msg = json.loads(raw)  # every frame must be valid JSON
-    if "id" in msg:
-        res[msg["id"]] = msg.get("result")
-    pos = start+ln
-value = res[2]["contents"]["value"]
-assert 'a"b' in value, f"quote must survive escaped: {value!r}"
-assert "c" in value.split("accumulators:")[1], f"accumulator missing: {value!r}"
+doc = (
+    'def f(xs: darray[i64]) -> i64:\n'
+    '    r: i64 =\n'
+    '        for x in xs |a"b, c=d\\e| -> a:\n'
+    '            r <- r + 1\n'
+    '    return r\n'
+)
+
+with LspSession(srv, request_timeout=30, teardown_timeout=5) as client:
+    initialized = client.initialize({"capabilities": {}})
+    assert "result" in initialized, initialized
+    client.notify("textDocument/didOpen", {
+        "textDocument": {
+            "uri": "file:///esc-hover.elisa",
+            "languageId": "Elisa",
+            "version": 1,
+            "text": doc,
+        }
+    })
+    response = client.request("textDocument/hover", {
+        "textDocument": {"uri": "file:///esc-hover.elisa"},
+        "position": {"line": 2, "character": 20},
+    }, req_id=9)
+    assert "result" in response and response["result"] is not None, response
+    value = response["result"]["contents"]["value"]
+    assert 'a"b' in value, f"quote must survive escaped: {value!r}"
+    assert "c" in value.split("accumulators:")[1], f"accumulator missing: {value!r}"
+    client.finish(timeout=30)
+    client.assert_no_stderr_errors()
+
 print("hover escapes OK: hostile header text stays valid JSON with exact value")
 PY

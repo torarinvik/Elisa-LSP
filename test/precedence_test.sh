@@ -7,41 +7,47 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 SRV="$ROOT/build/elisa-lsp"
 [[ -x "$SRV" ]] || { echo "build first: bash build.sh" >&2; exit 2; }
 
-python3 - "$SRV" <<'PY'
-import json, subprocess, sys
+python3 - "$SRV" "$ROOT" <<'PY'
+import os
+import sys
+
+sys.path.insert(0, os.path.join(sys.argv[2], "test"))
+from lsp_client import LspSession
+
 srv = sys.argv[1]
 ST_BIND_PARAM, ST_BIND_LOCAL, ST_BIND_FIELD = 16, 17, 18
 ST_TYPE_USER, ST_DECL_SKELETON = 6, 30
-def frame(o):
-    b = json.dumps(o, separators=(",", ":")).encode()
-    return b"Content-Length: " + str(len(b)).encode() + b"\r\n\r\n" + b
+URI = "file:///prec.elisa"
+
+
 def classify(text):
-    m = frame({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})
-    m += frame({"jsonrpc":"2.0","method":"textDocument/didOpen",
-                "params":{"textDocument":{"uri":"file:///prec.elisa","languageId":"Elisa","version":1,"text":text}}})
-    m += frame({"jsonrpc":"2.0","id":2,"method":"textDocument/semanticTokens/full",
-                "params":{"textDocument":{"uri":"file:///prec.elisa"}}})
-    m += frame({"jsonrpc":"2.0","id":9,"method":"shutdown"})
-    m += frame({"jsonrpc":"2.0","method":"exit"})
-    p = subprocess.run([srv], input=m, capture_output=True, timeout=30)
-    assert p.returncode == 0
-    out, pos, data = p.stdout, 0, None
-    while pos < len(out):
-        sep = out.find(b"\r\n\r\n", pos)
-        ln = int(out[pos:sep].split(b":",1)[1].strip())
-        start = sep+4
-        msg = json.loads(out[start:start+ln])
-        if msg.get("id") == 2:
-            data = msg["result"]["data"]
-        pos = start+ln
+    with LspSession(srv, request_timeout=30, teardown_timeout=5) as client:
+        initialized = client.initialize({"capabilities": {}})
+        assert "result" in initialized, initialized
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": URI,
+                "languageId": "Elisa",
+                "version": 1,
+                "text": text,
+            }
+        })
+        response = client.request("textDocument/semanticTokens/full", {
+            "textDocument": {"uri": URI},
+        }, timeout=30)
+        assert "result" in response, response
+        data = response["result"]["data"]
+        client.finish(timeout=30)
     lines = text.split("\n")
     line = col = 0
     found = []
     for i in range(0, len(data), 5):
-        dl, dc, ln, tt, _ = data[i:i+5]
-        line += dl; col = (col + dc) if dl == 0 else dc
-        found.append((line, col, lines[line][col:col+ln], tt))
+        dl, dc, length, tt, _ = data[i:i + 5]
+        line += dl
+        col = (col + dc) if dl == 0 else dc
+        found.append((line, col, lines[line][col:col + length], tt))
     return found
+
 
 # 1. Contextual keywords used as parameters keep the binding kind everywhere.
 doc = ('def f(get: i64, of: i64, at: i64) -> i64:\n'

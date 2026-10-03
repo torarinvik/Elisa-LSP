@@ -1,0 +1,139 @@
+# Exact, resolver-backed textDocument/definition results (F03 subset).
+#
+# The analysis stream contains `d` records for unqualified value identifiers
+# whose compiler resolver target is one unique top-level function, plus exact
+# parameter/local occurrence rows keyed by BindingId. Matching uses retained
+# compiler spans and identity, never a lexical token/name search at request time.
+
+# Provider handlers return a typed outcome so dispatch can centralize JSON-RPC
+# completion and distinguish a legitimate no-match from corrupt retained data.
+# Other providers can adopt these variants incrementally.
+enum ProviderOutcome:
+    Result
+    NoMatchNull
+    NoMatchEmptyArray
+    NoMatchSemanticTokens
+    InvalidRetainedCache
+    OperationalFailure
+
+def definition_position_before(line_a: i64, char_a: i64, line_b: i64, char_b: i64) -> bool:
+    return line_a < line_b or (line_a == line_b and char_a < char_b)
+
+
+def definition_target_at(blob: sview, line: i64, character: i64, origin_out: mutable ReferenceSpan&, target_out: mutable ReferenceSpan&) -> bool:
+    rec_start: mutable usize = 0
+    i: mutable usize = 0
+    n: usize = blob.len.usize()
+    while i <= n:
+        if i == n or sview_at(blob, i) == HOVER_REC:
+            if i > rec_start and sview_at(blob, rec_start) == 100:
+                source_start_line: mutable sview = sview("", 0, 0)
+                source_start_char: mutable sview = sview("", 0, 0)
+                source_end_line: mutable sview = sview("", 0, 0)
+                source_end_char: mutable sview = sview("", 0, 0)
+                target_sl: mutable sview = sview("", 0, 0)
+                target_sc: mutable sview = sview("", 0, 0)
+                target_el: mutable sview = sview("", 0, 0)
+                target_ec: mutable sview = sview("", 0, 0)
+                if hover_field(blob, rec_start, i, 1, source_start_line) and hover_field(blob, rec_start, i, 2, source_start_char) and hover_field(blob, rec_start, i, 3, source_end_line) and hover_field(blob, rec_start, i, 4, source_end_char) and hover_field(blob, rec_start, i, 5, target_sl) and hover_field(blob, rec_start, i, 6, target_sc) and hover_field(blob, rec_start, i, 7, target_el) and hover_field(blob, rec_start, i, 8, target_ec):
+                    sl: i64 = hover_parse_i64(source_start_line)
+                    sc: i64 = hover_parse_i64(source_start_char)
+                    el: i64 = hover_parse_i64(source_end_line)
+                    ec: i64 = hover_parse_i64(source_end_char)
+                    after_start: bool = definition_position_before(sl, sc, line, character) or (sl == line and sc == character)
+                    before_end: bool = definition_position_before(line, character, el, ec)
+                    if after_start and before_end:
+                        origin_out <- ReferenceSpan{start_line: sl, start_char: sc, end_line: el, end_char: ec}
+                        target_out <- ReferenceSpan{start_line: hover_parse_i64(target_sl), start_char: hover_parse_i64(target_sc), end_line: hover_parse_i64(target_el), end_char: hover_parse_i64(target_ec)}
+                        return true
+            rec_start <- i + 1
+        i <- i + 1
+    return false
+
+
+def definition_location_body(uri: sview, start_line: i64, start_char: i64, end_line: i64, end_char: i64) -> darray[u8]:
+    can Memory.Allocate, Abort.Panic:
+        body: mutable darray[u8] = []
+        body.push_str("{\"uri\":\"")
+        json_escape_utf8(body, uri)
+        body.push_str("\",\"range\":{\"start\":{\"line\":")
+        body.push_int(start_line)
+        body.push_str(",\"character\":")
+        body.push_int(start_char)
+        body.push_str("},\"end\":{\"line\":")
+        body.push_int(end_line)
+        body.push_str(",\"character\":")
+        body.push_int(end_char)
+        body.push_str("}}}")
+        return body
+
+
+def definition_append_range(body: mutable darray[u8]&, span: ReferenceSpan) -> void:
+    can Memory.Allocate, Abort.Panic:
+        body.push_str("{\"start\":{\"line\":")
+        body.push_int(span.start_line)
+        body.push_str(",\"character\":")
+        body.push_int(span.start_char)
+        body.push_str("},\"end\":{\"line\":")
+        body.push_int(span.end_line)
+        body.push_str(",\"character\":")
+        body.push_int(span.end_char)
+        body.push_str("}}")
+
+
+def definition_link_body(uri: sview, origin: ReferenceSpan, target: ReferenceSpan) -> darray[u8]:
+    can Memory.Allocate, Abort.Panic:
+        body: mutable darray[u8] = []
+        body.push_str("[{\"originSelectionRange\":")
+        definition_append_range(body, origin)
+        body.push_str(",\"targetUri\":\"")
+        json_escape_utf8(body, uri)
+        body.push_str("\",\"targetRange\":")
+        # The retained resolver edge owns exact declaration-name spans but not
+        # enclosing syntax-node spans. The smallest exact containing range is
+        # therefore the selection itself; clients still receive precise,
+        # snapshot-validated navigation without a lexical range guess.
+        definition_append_range(body, target)
+        body.push_str(",\"targetSelectionRange\":")
+        definition_append_range(body, target)
+        body.push_str("}]")
+        return body
+
+
+def handle_definition(root: Json::Value, snapshot: DocumentSnapshotView, document_storage: darray[u8]&, result_body: mutable darray[u8]&, utf8: bool, link_support: bool) -> ProviderOutcome can[Memory.Allocate, Abort.Panic]:
+    spell_bytes: mutable darray[u8] = []
+    canon_bytes: mutable darray[u8] = []
+    uri: sview = request_identity(root, spell_bytes, canon_bytes)
+    if not snapshot.valid or snapshot.lifecycle.analysis_state != DocumentAnalysisState.Ready or snapshot.source.text_len <= 1 or snapshot.caches.hover_len == 0:
+        return ProviderOutcome.NoMatchNull
+    document: DocumentSnapshotView = snapshot
+    definition_start: mutable usize = document.caches.hover_start
+    definition_len: usize = document.caches.hover_len
+    # Subtraction-safe validation prevents an overflowing start+length from
+    # turning invalid retained cache data into a normal no-match result.
+    if definition_start > document_storage.count:
+        return ProviderOutcome.InvalidRetainedCache
+    if definition_len > document_storage.count - definition_start:
+        return ProviderOutcome.InvalidRetainedCache
+    line: i64 = request_hover_line(root)
+    character: i64 = request_hover_char(root)
+    blob: sview = bytes_view_range_ref(document_storage, definition_start, definition_len)
+    origin_span: mutable ReferenceSpan = ReferenceSpan{start_line: 0, start_char: 0, end_line: 0, end_char: 0}
+    target_span: mutable ReferenceSpan = ReferenceSpan{start_line: 0, start_char: 0, end_line: 0, end_char: 0}
+    binding_target: mutable ReferenceTarget = ReferenceTarget{is_binding: false, owner: 0, serial: 0, name: sview("", 0, 0), span: ReferenceSpan{start_line: 0, start_char: 0, end_line: 0, end_char: 0}}
+    if reference_any_target_at(blob, line, character, binding_target) and binding_target.is_binding:
+        binding_spans: darray[ReferenceSpan] = reference_any_collect(blob, binding_target, true)
+        if binding_spans.count > 0:
+            origin_span <- binding_target.span
+            declaration: ReferenceSpan = binding_spans[0]
+            target_span <- declaration
+            body: darray[u8] = definition_link_body(uri, origin_span, target_span) if link_support else definition_location_body(uri, target_span.start_line, target_span.start_char, target_span.end_line, target_span.end_char)
+            result_body.extend([byte for byte in body])
+            return ProviderOutcome.Result
+    if definition_target_at(blob, line, character, origin_span, target_span):
+        body: darray[u8] = definition_link_body(uri, origin_span, target_span) if link_support else definition_location_body(uri, target_span.start_line, target_span.start_char, target_span.end_line, target_span.end_char)
+        # `body` is owned by this handler's auto region; transfer only bytes
+        # into the caller's longer-lived response buffer.
+        result_body.extend([byte for byte in body])
+        return ProviderOutcome.Result
+    return ProviderOutcome.NoMatchNull

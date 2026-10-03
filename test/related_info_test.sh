@@ -6,36 +6,40 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 SRV="$ROOT/build/elisa-lsp"
 [[ -x "$SRV" ]] || { echo "build first: bash build.sh" >&2; exit 2; }
 
-python3 - "$SRV" <<'PY'
-import json, subprocess, sys
+python3 - "$SRV" "$ROOT" <<'PY'
+import os
+import sys
+
+sys.path.insert(0, os.path.join(sys.argv[2], "test"))
+from lsp_client import LspSession
+
 srv = sys.argv[1]
-def frame(o):
-    b = json.dumps(o, separators=(",", ":")).encode()
-    return b"Content-Length: " + str(len(b)).encode() + b"\r\n\r\n" + b
 DOC = ('module Foo:\n    def a() -> void:\n        pass\n\n'
        'module Foo:\n    def b() -> void:\n        pass\n')
 URI = "file:///dupmod.elisa"
-def diags(caps, uri=URI, text=DOC):
-    m = frame({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":caps}})
-    m += frame({"jsonrpc":"2.0","method":"textDocument/didOpen",
-                "params":{"textDocument":{"uri":uri,"languageId":"Elisa","version":1,"text":text}}})
-    m += frame({"jsonrpc":"2.0","id":9,"method":"shutdown"})
-    m += frame({"jsonrpc":"2.0","method":"exit"})
-    p = subprocess.run([srv], input=m, capture_output=True, timeout=30)
-    assert p.returncode == 0
-    out, pos, found = p.stdout, 0, []
-    while pos < len(out):
-        sep = out.find(b"\r\n\r\n", pos)
-        ln = int(out[pos:sep].split(b":",1)[1].strip())
-        start = sep+4
-        msg = json.loads(out[start:start+ln])
-        if msg.get("method") == "textDocument/publishDiagnostics" and msg["params"]["uri"] == uri:
-            found.append(msg["params"]["diagnostics"])
-        pos = start+ln
-    assert found, "no diagnostics published"
-    return found[-1]
 
-CAP = {"textDocument":{"publishDiagnostics":{"relatedInformation":True}}}
+
+def diags(caps, uri=URI, text=DOC):
+    with LspSession(srv, request_timeout=30, teardown_timeout=5) as client:
+        initialized = client.initialize({"capabilities": caps})
+        assert "result" in initialized, initialized
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": uri,
+                "languageId": "Elisa",
+                "version": 1,
+                "text": text,
+            }
+        })
+        client.finish(timeout=30)
+        found = [n["params"]["diagnostics"] for n in client.notifications
+                 if n.get("method") == "textDocument/publishDiagnostics"
+                 and n["params"]["uri"] == uri]
+        assert found, "no diagnostics published"
+        return found[-1]
+
+
+CAP = {"textDocument": {"publishDiagnostics": {"relatedInformation": True}}}
 
 # 1. Capable client: the redeclaration points at the ORIGINAL declaration.
 ds = diags(CAP)

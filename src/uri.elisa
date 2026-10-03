@@ -1,0 +1,426 @@
+# Structured URI parsing and lexical lookup-key conversion (D03).
+#
+# This module deliberately does not map URIs to filesystem paths, consult the
+# filesystem, resolve symlinks, or fetch non-file resources. It separates URI
+# structure from the server's compatibility identity rules so those rules can
+# be tested and revised without mixing JSON escaping or document storage into
+# the parser.
+module Uri:
+    public:
+        # Component offsets refer to the original UTF-8 byte sequence passed to
+        # `parse`. Delimiters are excluded from the component spans. Percent
+        # escape validity is reported separately; malformed escapes remain
+        # usable literal bytes to preserve established editor-session behavior.
+        struct Components:
+            scheme_start: usize
+            scheme_len: usize
+            authority_start: usize
+            authority_len: usize
+            path_start: usize
+            path_len: usize
+            query_start: usize
+            query_len: usize
+            fragment_start: usize
+            fragment_len: usize
+            has_scheme: bool
+            has_authority: bool
+            has_query: bool
+            has_fragment: bool
+            percent_escapes_valid: bool
+
+
+        # Parse URI component boundaries without interpreting or rewriting
+        # their bytes. A colon denotes a scheme under the same permissive
+        # delimiter rule used by the original cache-key implementation. This
+        # is intentional: existing document identities are preserved, while
+        # callers now receive explicit component spans and escape status.
+        def parse(raw: u8&, raw_len: usize) -> Components:
+            scheme_end: mutable i64 = -1
+            i: mutable usize = 0
+            while i < raw_len:
+                c: u8 = raw[i]
+                if c == 58:
+                    scheme_end <- i.i64()
+                    break
+                if c == 47 or c == 63 or c == 35:
+                    break
+                i <- i + 1
+
+            has_scheme: bool = scheme_end >= 0
+            after_scheme: usize = scheme_end.usize() + 1 if has_scheme else 0
+            authority_start: mutable usize = after_scheme
+            has_authority: mutable bool = false
+            if after_scheme + 1 < raw_len and raw[after_scheme] == 47 and raw[after_scheme + 1] == 47:
+                has_authority <- true
+                authority_start <- after_scheme + 2
+            authority_end: mutable usize = authority_start
+            if has_authority:
+                while authority_end < raw_len:
+                    c: u8 = raw[authority_end]
+                    break if c == 47 or c == 63 or c == 35
+                    authority_end <- authority_end + 1
+
+            path_start: mutable usize = authority_end if has_authority else after_scheme
+            path_end: mutable usize = path_start
+            while path_end < raw_len:
+                c: u8 = raw[path_end]
+                break if c == 63 or c == 35
+                path_end <- path_end + 1
+
+            has_query: mutable bool = false
+            query_start: mutable usize = path_end
+            query_end: mutable usize = path_end
+            if path_end < raw_len and raw[path_end] == 63:
+                has_query <- true
+                query_start <- path_end + 1
+                query_end <- query_start
+                while query_end < raw_len:
+                    break if raw[query_end] == 35
+                    query_end <- query_end + 1
+
+            has_fragment: bool = query_end < raw_len and raw[query_end] == 35
+            fragment_start: usize = query_end + 1 if has_fragment else query_end
+            fragment_len: usize = raw_len - fragment_start if has_fragment else 0
+
+            percent_escapes_valid: mutable bool = true
+            p: mutable usize = 0
+            while p < raw_len:
+                if raw[p] == 37:
+                    if p + 2 >= raw_len or hex_value(raw[p + 1]) < 0 or hex_value(raw[p + 2]) < 0:
+                        percent_escapes_valid <- false
+                        p <- p + 1
+                    else:
+                        p <- p + 3
+                else:
+                    p <- p + 1
+
+            return Components{
+                has_scheme: has_scheme,
+                scheme_start: 0,
+                scheme_len: scheme_end.usize() if has_scheme else 0,
+                has_authority: has_authority,
+                authority_start: authority_start,
+                authority_len: authority_end - authority_start if has_authority else 0,
+                path_start: path_start,
+                path_len: path_end - path_start,
+                has_query: has_query,
+                query_start: query_start,
+                query_len: query_end - query_start if has_query else 0,
+                has_fragment: has_fragment,
+                fragment_start: fragment_start,
+                fragment_len: fragment_len,
+                percent_escapes_valid: percent_escapes_valid
+            }
+
+
+        # Convert parsed components to the document cache's lexical identity.
+        # Compatibility rules: lowercase schemes; for file URIs lowercase the
+        # whole authority and drop localhost; decode escaped non-reserved bytes
+        # (including UTF-8 octets); retain reserved escapes in uppercase hex;
+        # preserve queries; omit fragments. Malformed escapes are copied
+        # literally. Non-file schemes remain in-memory identities and are
+        # never treated as network resources.
+        def canonical_key(raw: u8&, raw_len: usize, out: mutable darray[u8]&) -> void can[Memory.Allocate, Abort.Panic]:
+            parts: Components = parse(raw, raw_len)
+            if parts.has_scheme:
+                i: mutable usize = 0
+                while i < parts.scheme_len:
+                    out.push(lower(raw[parts.scheme_start + i]))
+                    i <- i + 1
+                out.push(58)
+
+            file_scheme: bool = is_file_scheme(raw, parts)
+            if parts.has_authority:
+                out.push(47)
+                out.push(47)
+                if file_scheme:
+                    authority: mutable darray[u8] = []
+                    append_percent_normalized(raw, parts.authority_start, parts.authority_len, authority)
+                    i: mutable usize = 0
+                    while i < authority.count:
+                        authority[i] <- lower(authority[i])
+                        i <- i + 1
+                    if not is_localhost(authority):
+                        out.extend(authority)
+                else:
+                    append_percent_normalized(raw, parts.authority_start, parts.authority_len, out)
+
+            append_percent_normalized(raw, parts.path_start, parts.path_len, out)
+            if parts.has_query:
+                out.push(63)
+                append_percent_normalized(raw, parts.query_start, parts.query_len, out)
+
+
+        # Decode a file URI into a lexical operating-system path. `windows`
+        # is explicit instead of being inferred from the host so the parser
+        # can be tested for both path grammars on every build machine. This is
+        # deliberately a conversion boundary, not filesystem access: it does
+        # not normalize dot segments, inspect case, resolve symlinks, or check
+        # whether the resulting path exists. The caller must keep this path
+        # separate from `canonical_key`, whose URI identity intentionally
+        # preserves distinctions such as `%2F` versus `/`.
+        #
+        # Success guarantees that `out` contains no NUL byte and represents an
+        # absolute path for the selected platform. Query and fragment
+        # components are rejected because they are URI metadata, not part of a
+        # filesystem path. Invalid percent escapes and unsupported remote file
+        # authorities are rejected rather than silently producing a different
+        # path. Spaces and UTF-8 bytes are retained after percent decoding.
+        def file_uri_to_path(raw: u8&, raw_len: usize, windows: bool, out: mutable darray[u8]&) -> bool can[Memory.Allocate, Abort.Panic]:
+            out.truncate(0)
+            parts: Components = parse(raw, raw_len)
+            return false if not is_file_scheme(raw, parts)
+            return false if parts.has_query or parts.has_fragment or not parts.percent_escapes_valid
+
+            authority: mutable darray[u8] = []
+            path: mutable darray[u8] = []
+            converted: mutable darray[u8] = []
+            return false if not append_percent_decoded(raw, parts.authority_start, parts.authority_len, authority)
+            return false if not append_percent_decoded(raw, parts.path_start, parts.path_len, path)
+
+            authority_local: bool = authority.count == 0 or file_authority_is_localhost(authority)
+            if not windows:
+                # A non-local authority names a host whose mount semantics are
+                # platform/provider-specific. Refuse it on POSIX rather than
+                # guessing that the host is a path component.
+                return false if not authority_local
+                if path.count == 0:
+                    return false if not parts.has_authority
+                    converted.push(47)
+                    out.extend(converted)
+                    return true
+                return false if path[0] != 47
+                converted.extend(path)
+                out.extend(converted)
+                return true
+
+            # Windows permits the URI spelling `file://C:/...` in addition to
+            # the standard `file:///C:/...`; treat that authority only as a
+            # drive prefix. Other non-local authorities become UNC roots.
+            if not authority_local:
+                if file_authority_is_drive(authority):
+                    return false if not file_uri_append_windows_drive(authority[0], path, converted)
+                else:
+                    return false if not file_uri_append_windows_unc(authority, path, converted)
+                out.extend(converted)
+                return true
+            if file_authority_is_drive(authority):
+                return false if not file_uri_append_windows_drive(authority[0], path, converted)
+            return false if not file_uri_append_windows_local(path, parts.has_authority, converted)
+            out.extend(converted)
+            return true
+
+
+        # Strict percent decoding for filesystem conversion. URI identity uses
+        # a compatibility decoder that retains malformed escapes; an OS path
+        # cannot safely do that because `%00` and malformed input could be
+        # interpreted differently by a filesystem API.
+        def append_percent_decoded(raw: u8&, start: usize, length: usize, out: mutable darray[u8]&) -> bool can[Memory.Allocate, Abort.Panic]:
+            end: usize = start + length
+            i: mutable usize = start
+            while i < end:
+                c: u8 = raw[i]
+                return false if c == 0 or c < 32 or c == 127
+                if c == 37:
+                    return false if i + 2 >= end
+                    hi: i64 = hex_value(raw[i + 1])
+                    lo: i64 = hex_value(raw[i + 2])
+                    return false if hi < 0 or lo < 0
+                    decoded: u8 = (hi * 16 + lo).u8()
+                    return false if decoded == 0
+                    out.push(decoded)
+                    i <- i + 3
+                else:
+                    out.push(c)
+                    i <- i + 1
+            return true
+
+
+        def file_authority_is_localhost(authority: darray[u8]) -> bool:
+            return false if authority.count != 9
+            localhost: sview = sview("localhost", 0, 9)
+            i: mutable usize = 0
+            while i < 9:
+                return false if lower(authority[i]) != sview_at(localhost, i)
+                i <- i + 1
+            return true
+
+
+        def file_drive_letter(c: u8) -> bool:
+            return (c >= 65 and c <= 90) or (c >= 97 and c <= 122)
+
+
+        def file_authority_is_drive(authority: darray[u8]) -> bool:
+            return authority.count == 2 and file_drive_letter(authority[0]) and (authority[1] == 58 or authority[1] == 124)
+
+
+        def file_path_separator(c: u8) -> bool:
+            return c == 47 or c == 92
+
+
+        # Windows rejects characters that cannot occur in a path component.
+        # Slash and backslash are handled as separators by the caller, while
+        # the remaining reserved bytes must never be copied into `out`.
+        def file_windows_component_byte_valid(c: u8) -> bool:
+            return false if c < 32 or c == 34 or c == 42 or c == 58 or c == 60 or c == 62 or c == 63 or c == 124
+            return c != 0
+
+
+        def file_uri_append_windows_drive(letter: u8, path: darray[u8], out: mutable darray[u8]&) -> bool can[Memory.Allocate, Abort.Panic]:
+            out.push(letter)
+            out.push(58)
+            if path.count == 0:
+                out.push(92)
+                return true
+            # A drive-qualified path must be rooted. `C:foo` is drive-relative
+            # and would depend on the process's per-drive working directory.
+            return false if not file_path_separator(path[0])
+            out.push(92)
+            i: mutable usize = 1
+            while i < path.count:
+                c: u8 = path[i]
+                if file_path_separator(c):
+                    out.push(92)
+                else:
+                    return false if not file_windows_component_byte_valid(c)
+                    out.push(c)
+                i <- i + 1
+            return true
+
+
+        def file_uri_append_windows_unc(authority: darray[u8], path: darray[u8], out: mutable darray[u8]&) -> bool can[Memory.Allocate, Abort.Panic]:
+            return false if authority.count == 0
+            out.push(92)
+            out.push(92)
+            i: mutable usize = 0
+            while i < authority.count:
+                c: u8 = authority[i]
+                return false if file_path_separator(c) or not file_windows_component_byte_valid(c)
+                out.push(c)
+                i <- i + 1
+            # The leading separator in the URI path supplies the separator
+            # between the UNC host and its share. An empty path addresses the
+            # host root and receives one trailing separator.
+            if path.count == 0:
+                out.push(92)
+                return true
+            return false if not file_path_separator(path[0])
+            i <- 0
+            while i < path.count:
+                c: u8 = path[i]
+                if file_path_separator(c):
+                    out.push(92)
+                else:
+                    return false if not file_windows_component_byte_valid(c)
+                    out.push(c)
+                i <- i + 1
+            return true
+
+
+        def file_uri_append_windows_local(path: darray[u8], has_authority: bool, out: mutable darray[u8]&) -> bool can[Memory.Allocate, Abort.Panic]:
+            if path.count == 0:
+                return false if not has_authority
+                out.push(92)
+                return true
+            # Standard drive form is `/C:/...`; accept legacy `/C|/...` and
+            # the URI-reference form `C:/...` when no authority is present.
+            drive_at: mutable usize = 0
+            has_drive: mutable bool = false
+            if path.count >= 3 and path[0] == 47 and file_drive_letter(path[1]) and (path[2] == 58 or path[2] == 124):
+                drive_at <- 1
+                has_drive <- true
+            elif path.count >= 3 and file_drive_letter(path[0]) and (path[1] == 58 or path[1] == 124):
+                drive_at <- 0
+                has_drive <- true
+            if has_drive:
+                letter: u8 = path[drive_at]
+                after_drive: usize = drive_at + 2
+                return false if after_drive < path.count and not file_path_separator(path[after_drive])
+                out.push(letter)
+                out.push(58)
+                out.push(92)
+                i: mutable usize = after_drive + 1 if after_drive < path.count else after_drive
+                while i < path.count:
+                    c: u8 = path[i]
+                    if file_path_separator(c):
+                        out.push(92)
+                    else:
+                        return false if not file_windows_component_byte_valid(c)
+                        out.push(c)
+                    i <- i + 1
+                return true
+            return false if not file_path_separator(path[0])
+            out.push(92)
+            i: mutable usize = 1
+            while i < path.count:
+                c: u8 = path[i]
+                if file_path_separator(c):
+                    out.push(92)
+                else:
+                    return false if not file_windows_component_byte_valid(c)
+                    out.push(c)
+                i <- i + 1
+            return true
+
+
+        def hex_value(c: u8) -> i64:
+            return -1 if c < 48
+            return c.i64() - 48 if c <= 57
+            return c.i64() - 87 if c >= 97 and c <= 102
+            return c.i64() - 55 if c >= 65 and c <= 70
+            return -1
+
+
+        def lower(c: u8) -> u8:
+            return (c.i64() + 32).u8() if c >= 65 and c <= 90 else c
+
+
+        def is_reserved(c: u8) -> bool:
+            # RFC 3986 gen-delims and sub-delims plus percent itself. Keeping
+            # these escaped prevents path/query structure changes and avoids
+            # accidental second-pass decoding such as %252F becoming %2F.
+            return c == 33 or c == 36 or c == 38 or c == 39 or c == 40 or c == 41 or c == 42 or c == 43 or c == 44 or c == 47 or c == 58 or c == 59 or c == 61 or c == 63 or c == 64 or c == 91 or c == 93 or c == 37
+
+
+        def hex_digit(value: i64) -> u8:
+            return (value + 48).u8() if value < 10 else (value + 55).u8()
+
+
+        def append_percent_normalized(raw: u8&, start: usize, length: usize, out: mutable darray[u8]&) -> void can[Memory.Allocate, Abort.Panic]:
+            end: usize = start + length
+            i: mutable usize = start
+            while i < end:
+                c: u8 = raw[i]
+                if c == 37 and i + 2 < end:
+                    hi: i64 = hex_value(raw[i + 1])
+                    lo: i64 = hex_value(raw[i + 2])
+                    if hi >= 0 and lo >= 0:
+                        decoded: u8 = (hi * 16 + lo).u8()
+                        if is_reserved(decoded):
+                            out.push(37)
+                            out.push(hex_digit(hi))
+                            out.push(hex_digit(lo))
+                        else:
+                            out.push(decoded)
+                        i <- i + 3
+                    else:
+                        out.push(c)
+                        i <- i + 1
+                else:
+                    out.push(c)
+                    i <- i + 1
+
+
+        def is_file_scheme(raw: u8&, parts: Components) -> bool:
+            return false if not parts.has_scheme or parts.scheme_len != 4
+            return lower(raw[parts.scheme_start]) == 102 and lower(raw[parts.scheme_start + 1]) == 105 and lower(raw[parts.scheme_start + 2]) == 108 and lower(raw[parts.scheme_start + 3]) == 101
+
+
+        def is_localhost(authority: darray[u8]) -> bool:
+            return false if authority.count != 9
+            localhost: sview = sview("localhost", 0, 9)
+            i: mutable usize = 0
+            while i < 9:
+                return false if authority[i] != sview_at(localhost, i)
+                i <- i + 1
+            return true

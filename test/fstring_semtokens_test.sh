@@ -4,15 +4,19 @@
 # `{`/`}` as punctuation, and the interpolated expression classified as real code
 # (`{name}` -> a param reference, `{b.c}` -> local + field). Escaped `{{`/`}}`
 # stay part of the surrounding string run. Non-overlapping, source-ordered.
-set -uo pipefail
+set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 SRV="$ROOT/build/elisa-lsp"
 [[ -x "$SRV" ]] || { echo "build first: bash build.sh" >&2; exit 2; }
 
-python3 - "$SRV" <<'PY'
-import json, subprocess, re, sys
-def frame(o):
-    b = json.dumps(o); return f"Content-Length: {len(b)}\r\n\r\n{b}".encode()
+python3 - "$SRV" "$ROOT" <<'PY'
+import os
+import sys
+
+sys.path.insert(0, os.path.join(sys.argv[2], "test"))
+from lsp_client import LspSession
+
+srv = sys.argv[1]
 # line1: single interpolation; line2: escaped braces + two interpolations w/ field access
 doc = ('def f(name: i64, b: i64) -> i64:\n'
        '    msg: dstr = f"hi {name}!"\n'
@@ -23,31 +27,102 @@ doc = ('def f(name: i64, b: i64) -> i64:\n'
        '    None\n'
        '\n'
        'def event_text(event: Event) -> dstr:\n'
-       '    return f"event={Event.None}"\n')
-m  = frame({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})
-m += frame({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///t.elisa","languageId":"Elisa","version":1,"text":doc}}})
-m += frame({"jsonrpc":"2.0","id":2,"method":"textDocument/semanticTokens/full","params":{"textDocument":{"uri":"file:///t.elisa"}}})
-m += frame({"jsonrpc":"2.0","method":"exit"})
-out = subprocess.run([sys.argv[1]], input=m, capture_output=True, timeout=30).stdout.decode(errors="replace")
-mm = re.search(r'"id":2,"result":\{"data":\[([^\]]*)\]', out)
-assert mm, "no tokens response"
-data = [int(x) for x in mm.group(1).split(",") if x.strip()]
+       '    return f"event={Event.None}"\n'
+       'def char_interp(name: i64) -> dstr:\n'
+       "    return f\"char={'}'} {name}\"\n"
+       'def escaped_char_interp(name: i64) -> dstr:\n'
+       "    return f\"escaped={'\\\\'} {name}\"\n"
+       'def nested_string_interp(name: i64) -> dstr:\n'
+       '    return f"nested={"brace }"} {name}"\n'
+       'def incomplete_interp(name: i64) -> dstr:\n'
+       '    return f"open {name\n'
+       'def unicode_interp(name: i64) -> dstr:\n'
+       '    return f"før={"inne } ø"} {name}"\n')
+lines = doc.split("\n")
+
+with LspSession(srv, request_timeout=30, teardown_timeout=5) as client:
+    initialized = client.initialize({"capabilities": {}})
+    assert "result" in initialized, initialized
+    client.notify("textDocument/didOpen", {
+        "textDocument": {
+            "uri": "file:///t.elisa",
+            "languageId": "Elisa",
+            "version": 1,
+            "text": doc,
+        }
+    })
+    response = client.request("textDocument/semanticTokens/full", {
+        "textDocument": {"uri": "file:///t.elisa"},
+    }, timeout=30)
+    assert "result" in response, response
+    data = response["result"]["data"]
+    char_line = 11
+    name_start = lines[char_line].rindex("name")
+    references = client.request("textDocument/references", {
+        "textDocument": {"uri": "file:///t.elisa"},
+        "position": {"line": char_line, "character": name_start + 1},
+        "context": {"includeDeclaration": True},
+    }, timeout=30)
+    assert "result" in references, references
+    client.finish(timeout=30)
 assert len(data) % 5 == 0
 
 ST_LIT_STRING, ST_PUNCTUATION = 11, 41
 ST_BIND_PARAM, ST_BIND_LOCAL, ST_BIND_FIELD = 16, 17, 18
-ST_ENUM_VARIANT = 47
+ST_LIT_CHAR, ST_ENUM_VARIANT = 10, 47
 
-toks = []
-line = col = 0
-for i in range(0, len(data), 5):
-    dl, dc, ln, tt, mods = data[i:i+5]
-    line += dl; col = (col + dc) if dl == 0 else dc
-    assert mods == 0
-    toks.append((line, col, ln, tt))
+def decode_tokens(data):
+    assert len(data) % 5 == 0
+    tokens = []
+    line = col = 0
+    for i in range(0, len(data), 5):
+        dl, dc, length, token_type, modifiers = data[i:i + 5]
+        line += dl
+        col = (col + dc) if dl == 0 else dc
+        assert modifiers == 0
+        tokens.append((line, col, length, token_type))
+    return tokens
 
-lines = doc.split("\n")
-def text(t): return lines[t[0]][t[1]:t[1]+t[2]]
+
+toks = decode_tokens(data)
+
+char_line = 11
+
+
+def protocol_units(value, encoding):
+    if encoding == "utf-8":
+        return len(value.encode("utf-8"))
+    return len(value.encode("utf-16-le")) // 2
+
+
+def text(t, encoding="utf-16"):
+    line = lines[t[0]]
+    def python_index(protocol_column):
+        units = 0
+        for index, char in enumerate(line):
+            if units == protocol_column:
+                return index
+            units += protocol_units(char, encoding)
+        assert units == protocol_column, (line, protocol_column, units, encoding)
+        return len(line)
+    start = python_index(t[1])
+    end = python_index(t[1] + t[2])
+    return line[start:end]
+
+
+def protocol_column(line, python_index, encoding="utf-16"):
+    return protocol_units(line[:python_index], encoding)
+
+
+# Every emitted token must be nonempty, in-bounds, and aligned to UTF-16 source
+# boundaries before any feature-specific span expectations are checked.
+for token in toks:
+    token_line, token_col, token_length = token[:3]
+    assert 0 <= token_line < len(lines), token
+    line_units = protocol_units(lines[token_line], "utf-16")
+    assert token_col >= 0 and token_length > 0 and token_col + token_length <= line_units, token
+    text(token)
+
 
 # Non-overlapping + strictly source-ordered (LSP requires this).
 for a, b in zip(toks, toks[1:]):
@@ -80,6 +155,98 @@ for txt, k in seq2:
 l9 = [t for t in toks if t[0] == 9]
 assert ('None', ST_ENUM_VARIANT) in [(text(t), t[3]) for t in l9], \
        f"enum variant interpolation missing: {[(text(t), t[3]) for t in l9]}"
+
+# A right brace inside a single-quoted character literal is part of the
+# expression. It must not close the interpolation or consume the following
+# parameter interpolation, which must keep its exact resolver identity.
+l11 = [t for t in toks if t[0] == char_line]
+seq11 = [(text(t), t[3]) for t in l11 if t[1] >= lines[char_line].index('f"')]
+assert seq11 == [('f"char=', ST_LIT_STRING), ('{', ST_PUNCTUATION),
+                 ("'}'", ST_LIT_CHAR), ('}', ST_PUNCTUATION),
+                 (' ', ST_LIT_STRING), ('{', ST_PUNCTUATION),
+                 ('name', ST_BIND_PARAM), ('}', ST_PUNCTUATION),
+                 ('"', ST_LIT_STRING)], f"char-literal interpolation spans wrong: {seq11}"
+name_start = lines[char_line].rindex("name")
+expected_references = [
+    {"uri": "file:///t.elisa", "range": {
+        "start": {"line": 10, "character": lines[10].index("name")},
+        "end": {"line": 10, "character": lines[10].index("name") + 4},
+    }},
+    {"uri": "file:///t.elisa", "range": {
+        "start": {"line": char_line, "character": name_start},
+        "end": {"line": char_line, "character": name_start + 4},
+    }},
+]
+assert references["result"] == expected_references, references
+
+# Backslash-escaped content inside a character literal must not end the quote
+# scan early; the following interpolation must still be a separate expression.
+escaped_line = 13
+l13 = [t for t in toks if t[0] == escaped_line]
+seq13 = [(text(t), t[3]) for t in l13 if t[1] >= lines[escaped_line].index('f"')]
+assert seq13 == [('f"escaped=', ST_LIT_STRING), ('{', ST_PUNCTUATION),
+                 (r"'\\'", ST_LIT_CHAR), ('}', ST_PUNCTUATION),
+                 (' ', ST_LIT_STRING), ('{', ST_PUNCTUATION),
+                 ('name', ST_BIND_PARAM), ('}', ST_PUNCTUATION),
+                 ('"', ST_LIT_STRING)], f"escaped-char interpolation spans wrong: {seq13}"
+
+# Quotes nested in the expression protect braces from ending the interpolation.
+nested_line = 15
+l15 = [t for t in toks if t[0] == nested_line]
+seq15 = [(text(t), t[3]) for t in l15 if t[1] >= lines[nested_line].index('f"')]
+assert seq15 == [('f"nested=', ST_LIT_STRING), ('{', ST_PUNCTUATION),
+                 ('"brace }"', ST_LIT_STRING), ('}', ST_PUNCTUATION),
+                 (' ', ST_LIT_STRING), ('{', ST_PUNCTUATION),
+                 ('name', ST_BIND_PARAM), ('}', ST_PUNCTUATION),
+                 ('"', ST_LIT_STRING)], f"nested-string interpolation spans wrong: {seq15}"
+
+# An unfinished interpolation still yields bounded, ordered spans and does not
+# invent a closing brace or consume bytes beyond the incomplete source line.
+malformed_line = 17
+l17 = [t for t in toks if t[0] == malformed_line]
+seq17 = [(text(t), t[3]) for t in l17 if t[1] >= lines[malformed_line].index('f"')]
+assert seq17 == [('f"open ', ST_LIT_STRING), ('{', ST_PUNCTUATION),
+                 ('name', ST_BIND_PARAM)], f"incomplete interpolation spans wrong: {seq17}"
+
+# Source text before and inside interpolations may be non-ASCII. Semantic-token
+# positions are UTF-16 units, so text reconstruction above checks code-point
+# boundaries instead of accidentally slicing Python strings by protocol units.
+unicode_line = 19
+l19 = [t for t in toks if t[0] == unicode_line]
+f_column = protocol_column(lines[unicode_line], lines[unicode_line].index('f"'))
+seq19 = [(text(t), t[3]) for t in l19 if t[1] >= f_column]
+assert seq19 == [('f"før=', ST_LIT_STRING), ('{', ST_PUNCTUATION),
+                 ('"inne } ø"', ST_LIT_STRING), ('}', ST_PUNCTUATION),
+                 (' ', ST_LIT_STRING), ('{', ST_PUNCTUATION),
+                 ('name', ST_BIND_PARAM), ('}', ST_PUNCTUATION),
+                 ('"', ST_LIT_STRING)], f"unicode interpolation spans wrong: {seq19}"
+
+# Repeat the same Unicode interpolation with UTF-8 position encoding negotiated.
+with LspSession(srv, request_timeout=30, teardown_timeout=5) as client:
+    initialized = client.initialize({"capabilities": {"general": {
+        "positionEncodings": ["utf-8"]
+    }}})
+    assert "result" in initialized, initialized
+    client.notify("textDocument/didOpen", {
+        "textDocument": {
+            "uri": "file:///utf8.elisa",
+            "languageId": "Elisa",
+            "version": 1,
+            "text": doc,
+        }
+    })
+    response = client.request("textDocument/semanticTokens/full", {
+        "textDocument": {"uri": "file:///utf8.elisa"},
+    }, timeout=30)
+    assert "result" in response, response
+    data_utf8 = response["result"]["data"]
+    client.finish(timeout=30)
+
+toks_utf8 = decode_tokens(data_utf8)
+l19_utf8 = [t for t in toks_utf8 if t[0] == unicode_line]
+f_column_utf8 = protocol_column(lines[unicode_line], lines[unicode_line].index('f"'), "utf-8")
+seq19_utf8 = [(text(t, "utf-8"), t[3]) for t in l19_utf8 if t[1] >= f_column_utf8]
+assert seq19_utf8 == seq19, f"UTF-8 interpolation spans differ: {seq19_utf8}"
 
 print("fstring semtokens OK: %d spans; interpolations coloured as code" % len(toks))
 PY

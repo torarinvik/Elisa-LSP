@@ -1,23 +1,162 @@
-# Document symbols, flat outline (F02 v1).
+# Document symbols (F02 v2).
 #
 # Renders the frontend's file symbol table (`Semantic::SymbolTable.symbols`)
-# as an LSP outline. Scope discipline, honest and documented:
+# as an LSP outline. The compiler's symbol table is the source of truth for
+# declaration rows; this module derives only presentation ranges and
+# parent/child links from the accepted snapshot. Scope discipline:
 # - Only symbols WITH a source line (`line > 0`) are emitted. Line-0 entries
 #   are prelude/primitive scope, not file content — they must never appear as
 #   document symbols.
-# - The enclosing `range` is the declaration line's extent: the compiler does
-#   not yet expose declaration end lines, so no nesting is invented
-#   (`children: []` always). Declaration extents arrive with A02.
-# - `selectionRange` is the exact name span when the symbol carries a byte
-#   `offset` that validates inside its own line; otherwise it equals `range`.
-#   Offsets are trusted only after bounds checks, never blindly.
-# - Enum variants live in the frontend's parallel registries without lines and
-#   are omitted until A02 gives them identities.
+# - Prefer the compiler's exact `name_pos` for declaration identifiers. For
+#   older or synthetic rows, an exact token is accepted only when the source
+#   line contains one unambiguous match. Ambiguous or absent evidence falls
+#   back to the declaration line; no spelling-only location is fabricated.
+# - The enclosing `range` extends over the indentation block opened by the
+#   declaration. This is a source-coordinate projection, not a replacement
+#   for compiler declaration extents. It is used for containment only when a
+#   module row and a child row have the compiler's source-order evidence.
+# - Hierarchical output attaches source-ordered named rows to the nearest
+#   enclosing module row. Struct fields and enum variants remain omitted:
+#   current semantic registries expose their names but no declaration lines or
+#   stable identities, so emitting them would create un-navigable children.
 # - `Unknown` kinds are omitted rather than guessed at.
 # Shape follows the session: hierarchical clients get `DocumentSymbol`,
 # others get `SymbolInformation` (both spec-legal). Kinds clamp to the
 # client's `symbolKind.valueSet` when one was offered, via per-category
 # fallbacks; unrestricted otherwise. Table order (source order) is preserved.
+
+struct DocSymbolEntry:
+    name: sview
+    kind: i64
+    line: i64
+    end_line: i64
+    name_start: usize
+    name_end: usize
+    parent: i64
+    module: bool
+    name_exact: bool
+
+
+def docsym_line_indent(src: u8&, src_len: usize, line_starts: darray[usize]&, span_start: usize, span_count: usize, line0: i64) -> i64:
+    start: usize = Positions::line_start_offset_span_indexed(line_starts, span_start, span_count, src_len, line0)
+    length: i64 = Positions::line_byte_length_span_indexed(src, src_len, line_starts, span_start, span_count, line0)
+    end: usize = start + length.usize()
+    cursor: mutable usize = start
+    width: mutable i64 = 0
+    while cursor < end and (src[cursor] == 32 or src[cursor] == 9):
+        width <- width + 4 if src[cursor] == 9 else width + 1
+        cursor <- cursor + 1
+    return -1 if cursor >= end
+    return width
+
+
+# Last non-blank line in the indentation block beginning at `header`. The
+# lexer uses the same four-column tab policy; blank lines are transparent.
+def docsym_block_end(indent: darray[i64]&, nlines: i64, header: i64) -> i64:
+    return header if header < 0 or header >= nlines or indent[header.usize()] < 0
+    base: i64 = indent[header.usize()]
+    end: mutable i64 = header
+    cursor: mutable i64 = header + 1
+    while cursor < nlines:
+        current: i64 = indent[cursor.usize()]
+        if current >= 0:
+            break if current <= base
+            end <- cursor
+        cursor <- cursor + 1
+    return end
+
+
+def docsym_name_matches_token(name: sview, category: i64, token_name: sview) -> bool:
+    return true if string_views_eq(token_name, name) != 0
+    false return if category != SYMBOL_KIND_MODULE
+    leaf_start: mutable usize = 0
+    separator: mutable usize = 0
+    while separator + 1.usize() < sview_len(name):
+        leaf_start <- separator + 2.usize() if sview_at(name, separator) == 58 and sview_at(name, separator + 1.usize()) == 58
+        separator <- separator + 1.usize()
+    false return if sview_len(name) - leaf_start != sview_len(token_name)
+    i: mutable usize = 0
+    while i < sview_len(token_name):
+        false return if sview_at(name, leaf_start + i) != sview_at(token_name, i)
+        i <- i + 1.usize()
+    return true
+
+
+# The current compiler leaves alias Symbol.name_pos absent. In the grammar, a
+# source alias binder is the identifier immediately following the contextual
+# `alias` word. This syntactic anchor remains exact even when the alias name is
+# repeated in its target (for example, `alias Num = Num.Num`).
+def docsym_alias_binder_candidate(token_start: usize, src: u8&, src_len: usize) -> bool:
+    return false if token_start > src_len
+    line_start: mutable usize = token_start
+    while line_start > 0 and src[line_start - 1] != 10:
+        line_start <- line_start - 1
+    cursor: mutable usize = line_start
+    while cursor < token_start and (src[cursor] == 32 or src[cursor] == 9):
+        cursor <- cursor + 1
+    return false if token_start - cursor < 5
+    return false if src[cursor] != 97 or src[cursor + 1] != 108 or src[cursor + 2] != 105 or src[cursor + 3] != 97 or src[cursor + 4] != 115
+    cursor <- cursor + 5
+    return false if cursor >= token_start or (src[cursor] != 32 and src[cursor] != 9)
+    while cursor < token_start and (src[cursor] == 32 or src[cursor] == 9):
+        cursor <- cursor + 1
+    return cursor == token_start
+
+
+def docsym_token_name_span(name: sview, category: i64, source_line: u32, tokens: darray[Lexer::Token], src: u8&, src_len: usize, start_out: mutable usize&, end_out: mutable usize&) -> bool:
+    matches: mutable i64 = 0
+    matched_start: mutable usize = 0
+    matched_end: mutable usize = 0
+    for token in tokens:
+        continue if token.line != source_line or token.kind != Lexer::TokenKind.Ident
+        token_start: usize = token.start.usize()
+        token_length: usize = token.length.usize()
+        continue if token_start > src_len or token_length > src_len - token_start
+        token_name: sview = Lexer::text_or_empty(token, src)
+        if docsym_name_matches_token(name, category, token_name):
+            if category == SYMBOL_KIND_ALIAS and docsym_alias_binder_candidate(token_start, src, src_len):
+                start_out <- token_start
+                end_out <- token_start + token_length
+                return true
+            matches <- matches + 1
+            matched_start <- token_start
+            matched_end <- token_start + token_length
+    return false if matches != 1
+    start_out <- matched_start
+    end_out <- matched_end
+    return true
+
+
+# Prefer the compiler's exact declaration-name span, then accept one
+# unambiguous identifier token on the declaration line. The byte/content check
+# is intentionally repeated because `name_pos` is optional frontend metadata.
+def docsym_name_span(name: sview, category: i64, source_line: u32, name_pos: Ast::Pos, tokens: darray[Lexer::Token], src: u8&, src_len: usize, start_out: mutable usize&, end_out: mutable usize&) -> bool:
+    if name_pos.end_offset > name_pos.offset and name_pos.line == source_line and name_pos.end_line == name_pos.line:
+        candidate_start: usize = name_pos.offset.usize()
+        candidate_end: usize = name_pos.end_offset.usize()
+        if candidate_start <= src_len and candidate_end >= candidate_start and candidate_end <= src_len:
+            candidate_length: usize = candidate_end - candidate_start
+            expected_start: mutable usize = 0
+            expected_length: mutable usize = sview_len(name)
+            if candidate_length != expected_length and category == SYMBOL_KIND_MODULE:
+                separator: mutable usize = 0
+                while separator + 1.usize() < sview_len(name):
+                    expected_start <- separator + 2.usize() if sview_at(name, separator) == 58 and sview_at(name, separator + 1.usize()) == 58
+                    separator <- separator + 1.usize()
+                expected_length <- sview_len(name) - expected_start
+            if candidate_length == expected_length:
+                matches: mutable bool = true
+                i: mutable usize = 0
+                while i < expected_length:
+                    matches <- false if src[candidate_start + i] != sview_at(name, expected_start + i)
+                    i <- i + 1.usize()
+                if matches:
+                    start_out <- candidate_start
+                    end_out <- candidate_end
+                    return true
+    return docsym_token_name_span(name, category, source_line, tokens, src, src_len, start_out, end_out)
+
+
 def docsym_allowed(allowed: darray[i64]&, k: i64) -> bool:
     return true if allowed.count == 0
     i: mutable usize = 0
@@ -33,118 +172,176 @@ def docsym_pick(c0: i64, c1: i64, allowed: darray[i64]&) -> i64:
     return -1
 
 
-def docsym_select_kind(kind: Semantic::SymbolKind, allowed: darray[i64]&) -> i64:
-    return when kind:
-        Semantic::SymbolKind.Func | Semantic::SymbolKind.Extern -> docsym_pick(12, 6, allowed)
-        Semantic::SymbolKind.Struct -> docsym_pick(23, 5, allowed)
-        Semantic::SymbolKind.Enum -> docsym_pick(10, 5, allowed)
-        Semantic::SymbolKind.Alias -> docsym_pick(5, 23, allowed)
-        Semantic::SymbolKind.Const -> docsym_pick(14, 13, allowed)
-        Semantic::SymbolKind.Module | Semantic::SymbolKind.Import -> docsym_pick(2, 4, allowed)
-        Semantic::SymbolKind.Law -> docsym_pick(11, 5, allowed)
-        Semantic::SymbolKind.Unknown -> -1
-        _ -> -1
+def docsym_select_kind(kind: i64, allowed: darray[i64]&) -> i64:
+    return docsym_pick(12, 6, allowed) if kind == SYMBOL_KIND_FUNCTION or kind == SYMBOL_KIND_EXTERN
+    return docsym_pick(23, 5, allowed) if kind == SYMBOL_KIND_STRUCT
+    return docsym_pick(10, 5, allowed) if kind == SYMBOL_KIND_ENUM
+    return docsym_pick(5, 23, allowed) if kind == SYMBOL_KIND_ALIAS
+    return docsym_pick(14, 13, allowed) if kind == SYMBOL_KIND_CONST
+    return docsym_pick(2, 4, allowed) if kind == SYMBOL_KIND_MODULE or kind == SYMBOL_KIND_IMPORT
+    return docsym_pick(11, 5, allowed) if kind == SYMBOL_KIND_LAW
+    return -1
 
 
-def docsym_push_range(body: mutable darray[u8]&, line0: i64, scol: i64, ecol: i64) -> void can[Memory.Allocate, Abort.Panic]:
+def docsym_push_symbol_range(body: mutable darray[u8]&, start_line: i64, start_character: i64, end_line: i64, end_character: i64) -> void can[Memory.Allocate, Abort.Panic]:
     body.push_str("{\"start\":{\"line\":")
-    body.push_int(line0)
+    body.push_int(start_line)
     body.push_str(",\"character\":")
-    body.push_int(scol)
+    body.push_int(start_character)
     body.push_str("},\"end\":{\"line\":")
-    body.push_int(line0)
+    body.push_int(end_line)
     body.push_str(",\"character\":")
-    body.push_int(ecol)
+    body.push_int(end_character)
     # Close the end object AND the enclosing range object.
     body.push_str("}}")
 
 
-def docsym_append(body: mutable darray[u8]&, uri: sview, sym: Semantic::Symbol, src: u8&, utf8: bool, kind: i64, hier: bool, line0: i64, lstart: usize, llen: i64, w: i64) -> void can[Memory.Allocate, Abort.Panic]:
-    # selectionRange: exact name span only when `offset` validates inside the
-    # symbol's own line; otherwise the line extent (never invented). The line
-    # cursor is supplied by the caller (H04) so no per-symbol file rescan.
-    scol: mutable i64 = 0
-    ecol: mutable i64 = w
-    if sym.offset > 0:
-        off: usize = sym.offset.usize()
-        name_b: usize = sview_len(sym.name)
-        if off >= lstart and off + name_b <= lstart + llen.usize():
-            scol_bytes: usize = off - lstart
-            scol <- scol_bytes.i64() if utf8 else Positions::utf16_units_for_bytes(src, lstart, scol_bytes)
-            ecol <- scol + Positions::sview_unit_length(sym.name)
-            ecol <- w if ecol > w
+# Compatibility helper used by the existing hover provider. Its historical
+# three-argument shape is intentionally same-line; document symbols use the
+# explicit four-coordinate helper above.
+def docsym_push_range(body: mutable darray[u8]&, line0: i64, scol: i64, ecol: i64) -> void can[Memory.Allocate, Abort.Panic]:
+    docsym_push_symbol_range(body, line0, scol, line0, ecol)
+
+
+def docsym_append_header(body: mutable darray[u8]&, name: sview, kind: i64, start_line: i64, end_line: i64, end_character: i64, selection_start: i64, selection_end: i64) -> void can[Memory.Allocate, Abort.Panic]:
     body.push_str("{\"name\":\"")
-    json_escape_utf8(body, sym.name)
+    json_escape_utf8(body, name)
     body.push_str("\",\"kind\":")
     body.push_int(kind)
-    if hier:
-        body.push_str(",\"range\":")
-        docsym_push_range(body, line0, 0, w)
-        body.push_str(",\"selectionRange\":")
-        docsym_push_range(body, line0, scol, ecol)
-        body.push_str(",\"children\":[]}")
-    else:
-        body.push_str(",\"location\":{\"uri\":\"")
-        json_escape_utf8(body, uri)
-        body.push_str("\",\"range\":")
-        docsym_push_range(body, line0, 0, w)
-        body.push_str("}}")
+    body.push_str(",\"range\":")
+    docsym_push_symbol_range(body, start_line, 0, end_line, end_character)
+    body.push_str(",\"selectionRange\":")
+    docsym_push_symbol_range(body, start_line, selection_start, start_line, selection_end)
 
 
-def build_symbols_body(uri: sview, table: Semantic::SymbolTable, src: u8&, src_len: usize, utf8: bool, hier: bool, allowed: darray[i64]&) -> darray[u8]:
+def docsym_append_flat(body: mutable darray[u8]&, uri: sview, name: sview, kind: i64, line: i64, end_line: i64, end_character: i64, selection_start: i64, selection_end: i64) -> void can[Memory.Allocate, Abort.Panic]:
+    body.push_str("{\"name\":\"")
+    json_escape_utf8(body, name)
+    body.push_str("\",\"kind\":")
+    body.push_int(kind)
+    body.push_str(",\"location\":{\"uri\":\"")
+    json_escape_utf8(body, uri)
+    body.push_str("\",\"range\":")
+    docsym_push_symbol_range(body, line, 0, end_line, end_character)
+    body.push_str("}}")
+
+
+def docsym_emit_children(body: mutable darray[u8]&, entries: darray[DocSymbolEntry], parent: i64, uri: sview, src: u8&, src_len: usize, line_starts: darray[usize]&, span_start: usize, span_count: usize, utf8: bool, first: mutable bool&) -> void can[Memory.Allocate, Abort.Panic]:
+    i: mutable usize = 0
+    while i < entries.count:
+        entry: DocSymbolEntry = entries[i]
+        if entry.parent == parent:
+            body.push_str(",") if not first[0]
+            first[0] <- false
+            lstart: usize = Positions::line_start_offset_span_indexed(line_starts, span_start, span_count, src_len, entry.line)
+            header_length: i64 = Positions::line_byte_length_span_indexed(src, src_len, line_starts, span_start, span_count, entry.line)
+            header_width: i64 = header_length if utf8 else Positions::utf16_units_for_bytes(src, lstart, header_length.usize())
+            end_start: usize = Positions::line_start_offset_span_indexed(line_starts, span_start, span_count, src_len, entry.end_line)
+            end_length: i64 = Positions::line_byte_length_span_indexed(src, src_len, line_starts, span_start, span_count, entry.end_line)
+            end_width: i64 = end_length if utf8 else Positions::utf16_units_for_bytes(src, end_start, end_length.usize())
+            selection_start: mutable i64 = 0
+            selection_end: mutable i64 = header_width
+            if entry.name_exact:
+                selection_start <- (entry.name_start - lstart).i64() if utf8 else Positions::utf16_units_for_bytes(src, lstart, entry.name_start - lstart)
+                selection_end <- selection_start + (entry.name_end - entry.name_start).i64() if utf8 else Positions::utf16_units_for_bytes(src, entry.name_start, entry.name_end - entry.name_start) + selection_start
+                selection_end <- header_width if selection_end > header_width
+            docsym_append_header(body, entry.name, entry.kind, entry.line, entry.end_line, end_width, selection_start, selection_end)
+            body.push_str(",\"children\":[")
+            child_first: mutable bool = true
+            docsym_emit_children(body, entries, i.i64(), uri, src, src_len, line_starts, span_start, span_count, utf8, child_first)
+            body.push_str("]}")
+        i <- i + 1
+
+
+def build_symbols_body(uri: sview, table: Semantic::SymbolTable, tokens: darray[Lexer::Token], src: u8&, src_len: usize, line_starts: darray[usize]&, span_start: usize, span_count: usize, utf8: bool, hier: bool, allowed: darray[i64]&) -> darray[u8]:
     can Memory.Allocate, Abort.Panic:
-        body: mutable darray[u8] = []
-        body.push_str("[")
-        nlines: i64 = Positions::line_count(src, src_len)
+        nlines: i64 = span_count.i64()
         last: i64 = nlines - 1
-        first: mutable bool = true
-        # H04: symbols are in definition order, so stream a line cursor rather
-        # than rescanning to each line from offset 0. A backward jump (rare)
-        # falls back to the direct lookup.
-        cur_line: mutable i64 = 0
-        cur_start: mutable usize = 0
+        indent: mutable darray[i64] = []
+        line: mutable i64 = 0
+        while line < nlines:
+            indent.push(docsym_line_indent(src, src_len, line_starts, span_start, span_count, line))
+            line <- line + 1
+        entries: mutable darray[DocSymbolEntry] = []
+        # The hierarchy pass below reads prior entries while appending each current
+        # symbol. Reserve the exact number that will be emitted so those reads cannot
+        # retain element addresses across a backing-buffer growth.
+        entry_capacity: mutable usize = 0
         i: mutable usize = 0
         while i < symbol_count(table):
-            sym: Semantic::Symbol = symbol_at(table, i)
-            # Prelude/primitive scope has no file line — never a document symbol.
-            if sym.line > 0:
-                kind: i64 = docsym_select_kind(sym.kind, allowed)
+            source_line: u32 = symbol_source_line(table, i)
+            name: sview = symbol_name(table, i)
+            if source_line > 0 and name.len > 0:
+                kind: i64 = docsym_select_kind(symbol_category(table, i), allowed)
+                entry_capacity <- entry_capacity + 1 if kind >= 0
+            i <- i + 1
+        entries.reserve(entry_capacity)
+        i <- 0
+        while i < symbol_count(table):
+            source_line: u32 = symbol_source_line(table, i)
+            name: sview = symbol_name(table, i)
+            if source_line > 0 and name.len > 0:
+                category: i64 = symbol_category(table, i)
+                kind: i64 = docsym_select_kind(category, allowed)
                 if kind >= 0:
-                    line0: mutable i64 = sym.line.i64() - 1
+                    line0: mutable i64 = source_line.i64() - 1
                     line0 <- last if line0 > last
                     line0 <- 0 if line0 < 0
-                    lstart: mutable usize = 0
-                    if line0 >= cur_line:
-                        while cur_line < line0:
-                            while cur_start < src_len and src[cur_start] != 10:
-                                cur_start <- cur_start + 1
-                            cur_start <- cur_start + 1 if cur_start < src_len
-                            cur_line <- cur_line + 1
-                        lstart <- cur_start
-                    else:
-                        lstart <- Positions::line_start_offset(src, src_len, line0)
-                    lend: mutable usize = lstart
-                    while lend < src_len and src[lend] != 10:
-                        lend <- lend + 1
-                    lend <- lend - 1 if lend > lstart and src[lend - 1] == 13
-                    llen: i64 = (lend - lstart).i64()
-                    w: i64 = llen if utf8 else Positions::utf16_units_for_bytes(src, lstart, llen.usize())
-                    body.push_str(",") if not first
-                    docsym_append(body, uri, sym, src, utf8, kind, hier, line0, lstart, llen, w)
-                    first <- false
+                    name_start: mutable usize = 0
+                    name_end: mutable usize = 0
+                    name_exact: bool = docsym_name_span(name, category, source_line, symbol_name_position(table, i), tokens, src, src_len, name_start, name_end)
+                    parent: mutable i64 = -1
+                    if hier:
+                        j: mutable i64 = entries.count.i64() - 1
+                        while j >= 0:
+                            candidate: DocSymbolEntry = entries[j.usize()]
+                            if candidate.module and candidate.line < line0 and line0 <= candidate.end_line and indent[line0.usize()] >= 0 and indent[candidate.line.usize()] >= 0 and indent[line0.usize()] > indent[candidate.line.usize()]:
+                                parent <- j
+                                break
+                            j <- j - 1
+                    entries.push(clone[DocSymbolEntry](DocSymbolEntry{name: name, kind: kind, module: category == SYMBOL_KIND_MODULE, line: line0, end_line: docsym_block_end(indent, nlines, line0), name_start: name_start, name_end: name_end, name_exact: name_exact, parent: parent}))
             i <- i + 1
+        body: mutable darray[u8] = []
+        body.push_str("[")
+        first: mutable bool = true
+        if hier:
+            docsym_emit_children(body, entries, -1, uri, src, src_len, line_starts, span_start, span_count, utf8, first)
+        else:
+            i <- 0
+            while i < entries.count:
+                entry: DocSymbolEntry = entries[i]
+                body.push_str(",") if not first
+                first <- false
+                end_start: usize = Positions::line_start_offset_span_indexed(line_starts, span_start, span_count, src_len, entry.end_line)
+                end_length: i64 = Positions::line_byte_length_span_indexed(src, src_len, line_starts, span_start, span_count, entry.end_line)
+                end_width: i64 = end_length if utf8 else Positions::utf16_units_for_bytes(src, end_start, end_length.usize())
+                selection_start: mutable i64 = 0
+                selection_end: mutable i64 = end_width
+                line_start: usize = Positions::line_start_offset_span_indexed(line_starts, span_start, span_count, src_len, entry.line)
+                if entry.name_exact:
+                    selection_start <- (entry.name_start - line_start).i64() if utf8 else Positions::utf16_units_for_bytes(src, line_start, entry.name_start - line_start)
+                    selection_end <- selection_start + (entry.name_end - entry.name_start).i64() if utf8 else Positions::utf16_units_for_bytes(src, entry.name_start, entry.name_end - entry.name_start) + selection_start
+                    selection_end <- end_width if selection_end > end_width
+                docsym_append_flat(body, uri, entry.name, entry.kind, entry.line, entry.end_line, end_width, selection_start, selection_end)
+                i <- i + 1
         body.push_str("]")
         return body
 
 
-def handle_document_symbols(root: Json::Value, documents: darray[LspDocument]&, document_storage: darray[u8]&, document_heads: dict[u64, u32]&) -> void can[Console, Memory.Allocate, Abort.Panic]:
-    id_raw: darray[u8] = extract_id(root)
-    spell_bytes: mutable darray[u8] = []
-    canon_bytes: mutable darray[u8] = []
-    uri: sview = request_identity(root, spell_bytes, canon_bytes)
-    found: i64 = document_index(documents, document_storage, document_heads, uri)
-    if found < 0 or not documents[found.usize()].open or documents[found.usize()].text_len <= 1:
-        send_result(id_raw, "[]")
-        return
-    document: LspDocument = documents[found.usize()]
-    send_result_storage(id_raw, document_storage, document.symbols_start, document.symbols_len)
+def handle_document_symbols(root: Json::Value, snapshot: DocumentSnapshotView, document_storage: darray[u8]&, retained_start_out: mutable usize&, retained_len_out: mutable usize&) -> ProviderOutcome can[Memory.Allocate, Abort.Panic]:
+    if not snapshot.valid or snapshot.lifecycle.analysis_state != DocumentAnalysisState.Ready or snapshot.source.text_len <= 1:
+        return ProviderOutcome.NoMatchEmptyArray
+    document: DocumentSnapshotView = snapshot
+    symbols_start: mutable usize = document.caches.symbols_start
+    symbols_len: usize = document.caches.symbols_len
+    if symbols_start > document_storage.count:
+        return ProviderOutcome.InvalidRetainedCache
+    if symbols_len > document_storage.count - symbols_start:
+        return ProviderOutcome.InvalidRetainedCache
+    # Worker-validated symbol payloads are JSON arrays, so a zero-length
+    # retained result cannot represent even the legitimate no-symbol case.
+    if symbols_len == 0:
+        return ProviderOutcome.InvalidRetainedCache
+    retained_start_out <- symbols_start
+    retained_len_out <- symbols_len
+    return ProviderOutcome.Result

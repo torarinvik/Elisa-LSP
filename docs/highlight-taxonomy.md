@@ -110,11 +110,22 @@ These are the scaffolding — one calm hue so the *contents* carry the color.
 - **11d. Modules/namespaces** [S]: `Ast::` qualifiers — quiet steel-blue
 
 ## Cross-cutting modifier dimensions (not colors)
-- **definition vs use**: weight/brightness (bold at def site)
-- **mutable**: brightness/underline overlay (4f)
-- **unsafe/trusted context**: red-shift overlay (5c)
-- **ghost/spec-only**: desaturation overlay (9c)
-- **deprecated** (future): strikethrough
+- **declaration / definition**: weight/brightness (bold at a concrete def site;
+  an `extern` name is declaration-only)
+- **readonly**: a client styling overlay for immutable `const` names
+- **modification**: an overlay on direct identifier/field write targets and
+  `rebind` targets
+- **mutable / unsafe / trusted / ghost**: semantic dimensions reserved for a
+  future compiler-backed modifier contract; they are not emitted as standard
+  modifiers today
+- **deprecated** (future): strikethrough once the compiler exposes authoritative
+  metadata
+
+The LSP server negotiates the standard modifier legend independently from the
+48 token types. It emits `declaration`, `definition`, `readonly`, and
+`modification` only when the client advertises those names in
+`textDocument.semanticTokens.tokenModifiers`; the canonical bit assignments
+and conservative applicability rules live in `docs/semantic-token-schema.json`.
 
 ## Implementation phases
 1. **Lexical layer** — everything [L]: a TextMate grammar (or LSP4IJ

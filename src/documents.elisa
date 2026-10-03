@@ -1,0 +1,693 @@
+# D01 document model and retained snapshot/index operations. This file is included
+# into the LSP translation unit so every provider shares the same document ABI.
+
+enum DocumentVersionState:
+    Present(value: i64)
+    Invalid
+
+enum DocumentAnalysisState:
+    Pending
+    Ready
+    Failed
+
+enum DocumentCacheTarget:
+    Semantic
+    Symbols
+    Hover
+    Signature
+
+# The document slot is a small composition of independently owned metadata.
+# URI identity, client-visible lifecycle, source bytes, and derived provider
+# caches have separate records even though their byte spans share flat stores.
+# Keeping darrays out of these records avoids region/lifetime hazards and lets
+# compaction rewrite spans without moving nested allocations.
+struct DocumentUriIndex:
+    uri_start: mutable usize
+    uri_len: mutable usize
+    hash: mutable u64
+    next: mutable u32
+
+struct DocumentSource:
+    text_start: mutable usize
+    text_len: mutable usize
+    text_capacity: mutable usize
+
+struct DocumentDerivedCaches:
+    semantic_start: mutable usize
+    semantic_len: mutable usize
+    semantic_capacity: mutable usize
+    symbols_start: mutable usize
+    symbols_len: mutable usize
+    symbols_capacity: mutable usize
+    hover_start: mutable usize
+    hover_len: mutable usize
+    hover_capacity: mutable usize
+    signature_start: mutable usize
+    signature_len: mutable usize
+    signature_capacity: mutable usize
+    line_index_start: mutable usize
+    line_index_count: mutable usize
+    line_index_capacity: mutable usize
+    # Monotonic session-local recency for aggregate-cache-budget eviction.
+    last_access: mutable u64
+
+struct DocumentLifecycle:
+    # Client version and internal generation are deliberately independent:
+    # clients may skip versions, while close/reopen always changes generation.
+    version: mutable i64
+    generation: mutable u64
+    analysis_job_id: mutable i64
+    analysis_state: mutable DocumentAnalysisState
+    open: mutable bool
+    last_diag_version: mutable i64
+    last_diag_fp: mutable u64
+    last_diag_valid: mutable bool
+    free: mutable bool
+
+struct LspDocument:
+    uri_index: mutable DocumentUriIndex
+    source: mutable DocumentSource
+    caches: mutable DocumentDerivedCaches
+    lifecycle: mutable DocumentLifecycle
+
+# Provider code receives this immutable projection rather than the mutable
+# document record. Its spans are valid only for the current message: accepted
+# snapshots, worker completion, close, eviction, or storage compaction replace
+# or invalidate them. Dispatch never retains a view across a message boundary.
+struct DocumentSourceView:
+    text_start: usize
+    text_len: usize
+
+struct DocumentDerivedCachesView:
+    semantic_start: usize
+    semantic_len: usize
+    symbols_start: usize
+    symbols_len: usize
+    hover_start: usize
+    hover_len: usize
+    signature_start: usize
+    signature_len: usize
+    line_index_start: usize
+    line_index_count: usize
+
+struct DocumentLifecycleView:
+    version: i64
+    generation: u64
+    analysis_state: DocumentAnalysisState
+    open: bool
+
+struct DocumentSnapshotView:
+    valid: bool
+    source: DocumentSourceView
+    caches: DocumentDerivedCachesView
+    lifecycle: DocumentLifecycleView
+
+
+def document_snapshot_view(document: LspDocument) -> DocumentSnapshotView:
+    return DocumentSnapshotView{
+        valid: document.lifecycle.open and not document.lifecycle.free,
+        source: DocumentSourceView{text_start: document.source.text_start, text_len: document.source.text_len},
+        caches: DocumentDerivedCachesView{
+            semantic_start: document.caches.semantic_start, semantic_len: document.caches.semantic_len,
+            symbols_start: document.caches.symbols_start, symbols_len: document.caches.symbols_len,
+            hover_start: document.caches.hover_start, hover_len: document.caches.hover_len,
+            signature_start: document.caches.signature_start, signature_len: document.caches.signature_len,
+            line_index_start: document.caches.line_index_start, line_index_count: document.caches.line_index_count
+        },
+        lifecycle: DocumentLifecycleView{
+            version: document.lifecycle.version, generation: document.lifecycle.generation,
+            analysis_state: document.lifecycle.analysis_state, open: document.lifecycle.open
+        }
+    }
+
+
+def document_empty_snapshot_view() -> DocumentSnapshotView:
+    return DocumentSnapshotView{
+        valid: false,
+        source: DocumentSourceView{text_start: 0, text_len: 0},
+        caches: DocumentDerivedCachesView{
+            semantic_start: 0, semantic_len: 0, symbols_start: 0, symbols_len: 0,
+            hover_start: 0, hover_len: 0, signature_start: 0, signature_len: 0,
+            line_index_start: 0, line_index_count: 0
+        },
+        lifecycle: DocumentLifecycleView{version: -1, generation: 0, analysis_state: DocumentAnalysisState.Pending, open: false}
+    }
+
+
+# Keep generation and state transitions inside the document store. Dispatch
+# owns protocol policy and side effects, while these operations preserve the
+# invariants shared by open/change, analysis completion, failure, and close.
+def document_advance_generation(document: mutable LspDocument&) -> u64:
+    document.lifecycle.generation <- document.lifecycle.generation + 1
+    return document.lifecycle.generation
+
+
+def document_begin_snapshot(document: mutable LspDocument&, version: i64) -> void:
+    document.lifecycle.open <- true
+    document.lifecycle.version <- version
+    document.lifecycle.analysis_state <- DocumentAnalysisState.Pending
+    document.lifecycle.analysis_job_id <- 0
+    document.caches.semantic_len <- 0
+    document.caches.symbols_len <- 0
+    document.caches.hover_len <- 0
+    document.caches.signature_len <- 0
+
+
+def document_assign_analysis_job(document: mutable LspDocument&, job_id: i64) -> void:
+    document.lifecycle.analysis_job_id <- job_id
+
+
+def document_analysis_is_current(document: LspDocument, job_id: i64, generation: i64, version: i64) -> bool:
+    return document.lifecycle.open and document.lifecycle.analysis_job_id == job_id and document.lifecycle.generation.i64() == generation and document.lifecycle.version == version
+
+
+def document_mark_analysis_failed(document: mutable LspDocument&) -> void:
+    document.lifecycle.analysis_state <- DocumentAnalysisState.Failed
+    document.caches.semantic_len <- 0
+    document.caches.symbols_len <- 0
+    document.caches.hover_len <- 0
+    document.caches.signature_len <- 0
+    document.lifecycle.last_diag_valid <- false
+
+
+def document_mark_analysis_ready(document: mutable LspDocument&) -> void:
+    document.lifecycle.analysis_state <- DocumentAnalysisState.Ready
+
+
+def document_close(document: mutable LspDocument&) -> void:
+    document.lifecycle.open <- false
+    document.lifecycle.free <- true
+    document.source.text_len <- 0
+    document.source.text_capacity <- 0
+    document.caches.semantic_len <- 0
+    document.caches.semantic_capacity <- 0
+    document.caches.symbols_len <- 0
+    document.caches.symbols_capacity <- 0
+    document.caches.hover_len <- 0
+    document.caches.hover_capacity <- 0
+    document.caches.signature_len <- 0
+    document.caches.signature_capacity <- 0
+    document.caches.line_index_start <- 0
+    document.caches.line_index_count <- 0
+    document.caches.line_index_capacity <- 0
+    document.lifecycle.analysis_state <- DocumentAnalysisState.Pending
+    document.lifecycle.generation <- document.lifecycle.generation + 1
+    document.lifecycle.analysis_job_id <- 0
+    document.lifecycle.last_diag_version <- -1
+    document.lifecycle.last_diag_fp <- 0
+    document.lifecycle.last_diag_valid <- false
+    document.caches.last_access <- 0
+
+
+def document_clear_derived_cache(document: mutable LspDocument&) -> usize:
+    released: usize = document.caches.semantic_capacity + document.caches.symbols_capacity + document.caches.hover_capacity + document.caches.signature_capacity
+    document.caches.semantic_start <- 0
+    document.caches.semantic_len <- 0
+    document.caches.semantic_capacity <- 0
+    document.caches.symbols_start <- 0
+    document.caches.symbols_len <- 0
+    document.caches.symbols_capacity <- 0
+    document.caches.hover_start <- 0
+    document.caches.hover_len <- 0
+    document.caches.hover_capacity <- 0
+    document.caches.signature_start <- 0
+    document.caches.signature_len <- 0
+    document.caches.signature_capacity <- 0
+    # Eviction retains the accepted source/version, but semantic providers must
+    # decline the result until a later analysis replaces the missing caches.
+    document.lifecycle.analysis_state <- DocumentAnalysisState.Pending if document.lifecycle.open and not document.lifecycle.free
+    document.caches.last_access <- 0
+    return released
+
+
+def document_diagnostics_already_published(document: LspDocument, version: i64, fingerprint: u64) -> bool:
+    return document.lifecycle.last_diag_valid and document.lifecycle.last_diag_version == version and document.lifecycle.version == version and document.lifecycle.last_diag_fp == fingerprint
+
+
+def document_record_published_diagnostics(document: mutable LspDocument&, version: i64, fingerprint: u64) -> void:
+    document.lifecycle.last_diag_fp <- fingerprint
+    document.lifecycle.last_diag_version <- version
+    document.lifecycle.last_diag_valid <- true
+
+
+def document_store_blob_span(start: mutable usize&, length: mutable usize&, capacity: mutable usize&, storage: mutable darray[u8]&, source: darray[u8]&, source_start: usize, needed: usize) -> bool can[Memory.Allocate, Abort.Panic]:
+    return false if source_start > source.count or needed > source.count - source_start
+    if capacity >= needed and capacity > 0:
+        for i in 0..<needed:
+            storage[start + i] <- source[source_start + i]
+        length <- needed
+        return true
+    start <- storage.count
+    for i in 0..<needed:
+        storage.push(source[source_start + i])
+    extra: mutable usize = needed
+    extra <- 1 if extra == 0
+    for i in 0..<extra:
+        storage.push(0)
+    length <- needed
+    capacity <- needed + extra
+    return true
+
+
+def document_store_cache_blob(document: mutable LspDocument&, target: DocumentCacheTarget, storage: mutable darray[u8]&, source: darray[u8]&, source_start: usize, needed: usize) -> bool can[Memory.Allocate, Abort.Panic]:
+    match target:
+        DocumentCacheTarget.Semantic:
+            return document_store_blob_span(document.caches.semantic_start, document.caches.semantic_len, document.caches.semantic_capacity, storage, source, source_start, needed)
+        DocumentCacheTarget.Symbols:
+            return document_store_blob_span(document.caches.symbols_start, document.caches.symbols_len, document.caches.symbols_capacity, storage, source, source_start, needed)
+        DocumentCacheTarget.Hover:
+            return document_store_blob_span(document.caches.hover_start, document.caches.hover_len, document.caches.hover_capacity, storage, source, source_start, needed)
+        DocumentCacheTarget.Signature:
+            return document_store_blob_span(document.caches.signature_start, document.caches.signature_len, document.caches.signature_capacity, storage, source, source_start, needed)
+
+
+def document_touch_cache(documents: mutable darray[LspDocument]&, slot: usize, access_clock: mutable i64&) -> void:
+    # Saturating wrap is practically unreachable, but resetting all access
+    # stamps preserves ordering if a long-lived embedded session reaches it.
+    if access_clock >= 9223372036854775806:
+        access_clock <- 0
+        for d in documents:
+            d.caches.last_access <- 0
+    access_clock <- access_clock + 1
+    documents[slot].caches.last_access <- access_clock.u64()
+
+# FNV-1a keeps the URI index compact and matches the compiler's existing hash
+# discipline. Equality is still checked after hashing, so collisions are safe.
+def document_hash(uri: sview) -> u64:
+    hash: mutable u64 = 14695981039346656037
+    i: mutable usize = 0
+    while i < uri.len.usize():
+        hash <- (hash ^ sview_at(uri, i).u64()) * 1099511628211
+        i <- i + 1
+    return hash
+
+
+# Return the cached document index for `uri`, or -1 when it is not open. The
+# hash table narrows lookup to one collision chain instead of scanning every
+# open document.
+def document_index(documents: darray[LspDocument]&, storage: darray[u8]&, heads: dict[u64, u32]&, uri: sview) -> i64 can[Abort.Panic]:
+    if heads.get(document_hash(uri)) is head:
+        current: mutable u32 = head
+        while current != 4294967295:
+            document: LspDocument = documents[current.usize()]
+            if document.uri_index.uri_len == uri.len.usize():
+                cached: sview = bytes_view_range_ref(storage, document.uri_index.uri_start, document.uri_index.uri_len)
+                return current.i64() if string_views_eq(uri, cached) != 0
+            current <- document.uri_index.next
+    return -1
+
+
+def document_snapshot_for_uri(documents: darray[LspDocument]&, storage: darray[u8]&, heads: dict[u64, u32]&, uri: sview) -> DocumentSnapshotView can[Abort.Panic]:
+    found: i64 = document_index(documents, storage, heads, uri)
+    return document_empty_snapshot_view() if found < 0
+    return document_snapshot_view(documents[found.usize()])
+
+# Find an existing cache entry, reuse a freed slot (D04), or append a new one.
+# Reusing a freed slot keeps the slot table bounded under URI churn; the reused
+# slot's generation is bumped so no old lifetime can publish into the new one.
+def document_slot(documents: mutable darray[LspDocument]&, storage: mutable darray[u8]&, heads: mutable dict[u64, u32]&, uri: sview) -> usize can[Memory.Allocate, Abort.Panic]:
+    found: i64 = document_index(documents, storage, heads, uri)
+    return found.usize() if found >= 0
+    hash: u64 = document_hash(uri)
+    previous: mutable u32 = 4294967295
+    previous <- head if heads.get(hash) is head
+    reuse: mutable i64 = -1
+    i: mutable usize = 0
+    while i < documents.count:
+        if documents[i].lifecycle.free:
+            reuse <- i.i64()
+            break
+        i <- i + 1
+    if reuse >= 0:
+        slot: usize = reuse.usize()
+        d: mutable LspDocument& = &documents[slot]
+        d.lifecycle.generation <- d.lifecycle.generation + 1
+        d.uri_index.uri_start <- storage.count
+        d.uri_index.uri_len <- uri.len.usize()
+        d.source.text_start <- storage.count
+        d.source.text_len <- 0
+        d.source.text_capacity <- 0
+        d.caches.semantic_start <- 0
+        d.caches.semantic_len <- 0
+        d.caches.semantic_capacity <- 0
+        d.caches.symbols_start <- 0
+        d.caches.symbols_len <- 0
+        d.caches.symbols_capacity <- 0
+        d.caches.hover_start <- 0
+        d.caches.hover_len <- 0
+        d.caches.hover_capacity <- 0
+        d.caches.signature_start <- 0
+        d.caches.signature_len <- 0
+        d.caches.signature_capacity <- 0
+        d.caches.line_index_start <- 0
+        d.caches.line_index_count <- 0
+        d.caches.line_index_capacity <- 0
+        d.uri_index.hash <- hash
+        d.uri_index.next <- previous
+        d.lifecycle.version <- -1
+        d.caches.last_access <- 0
+        d.lifecycle.analysis_job_id <- 0
+        d.lifecycle.analysis_state <- DocumentAnalysisState.Pending
+        d.lifecycle.open <- false
+        d.lifecycle.free <- false
+        d.lifecycle.last_diag_version <- -1
+        d.lifecycle.last_diag_fp <- 0
+        d.lifecycle.last_diag_valid <- false
+        j: mutable usize = 0
+        while j < uri.len.usize():
+            storage.push(sview_at(uri, j))
+            j <- j + 1
+        heads <- heads.put(hash, slot.u32())
+        return slot
+    uri_start: usize = storage.count
+    documents.push(LspDocument{
+        uri_index: DocumentUriIndex{uri_start: uri_start, uri_len: uri.len.usize(), hash: hash, next: previous},
+        source: DocumentSource{text_start: 0, text_len: 0, text_capacity: 0},
+        caches: DocumentDerivedCaches{
+            semantic_start: 0, semantic_len: 0, semantic_capacity: 0,
+            symbols_start: 0, symbols_len: 0, symbols_capacity: 0,
+            hover_start: 0, hover_len: 0, hover_capacity: 0,
+            signature_start: 0, signature_len: 0, signature_capacity: 0,
+            line_index_start: 0, line_index_count: 0, line_index_capacity: 0,
+            last_access: 0
+        },
+        lifecycle: DocumentLifecycle{
+            version: -1, generation: 0, analysis_job_id: 0,
+            analysis_state: DocumentAnalysisState.Pending, open: false,
+            last_diag_version: -1, last_diag_fp: 0, last_diag_valid: false, free: false
+        }
+    })
+    slot: usize = documents.count - 1
+    for i in 0..<uri.len.usize():
+        storage.push(sview_at(uri, i))
+    heads <- heads.put(hash, slot.u32())
+    return slot
+
+
+# Remove `slot` from its hash chain so a freed slot can be reused without a
+# stale chain reaching it. A missing key is a no-op.
+def chain_remove(documents: mutable darray[LspDocument]&, heads: mutable dict[u64, u32]&, slot: usize) -> void can[Abort.Panic]:
+    h: u64 = documents[slot].uri_index.hash
+    chain_head: mutable u32 = 4294967295
+    found_chain: mutable bool = false
+    if heads.get(h) is existing:
+        chain_head <- existing
+        found_chain <- true
+    return if not found_chain
+    previous: mutable u32 = 4294967295
+    current: mutable u32 = chain_head
+    while current != 4294967295:
+        if current == slot.u32():
+            if previous == 4294967295:
+                if documents[slot].uri_index.next == 4294967295:
+                    _ = heads.remove(h)
+                else:
+                    heads <- heads.put(h, documents[slot].uri_index.next)
+            else:
+                documents[previous.usize()].uri_index.next <- documents[slot].uri_index.next
+            return
+        previous <- current
+        current <- documents[current.usize()].uri_index.next
+
+
+# Rebuild the open-document hash chains in the existing dictionary backing
+# when tombstones begin to dominate. `dict.remove` preserves probe chains by
+# leaving tombstones, so deleting each historical URI alone would still grow
+# `used` and eventually double the table under sustained URI churn. A clear
+# keeps the allocation at the peak concurrent-open-document capacity while
+# resetting tombstones; rebuilding from open slots preserves collision chains.
+def document_heads_rebuild(documents: mutable darray[LspDocument]&, heads: mutable dict[u64, u32]&) -> void can[Abort.Panic]:
+    heads.clear()
+    i: mutable usize = 0
+    while i < documents.count:
+        if documents[i].lifecycle.open and not documents[i].lifecycle.free:
+            hash: u64 = documents[i].uri_index.hash
+            previous: mutable u32 = 4294967295
+            if heads.get(hash) is head:
+                previous <- head
+            documents[i].uri_index.next <- previous
+            heads <- heads.put(hash, i.u32())
+        i <- i + 1
+
+
+def document_heads_compact_if_needed(documents: mutable darray[LspDocument]&, heads: mutable dict[u64, u32]&) -> void can[Abort.Panic]:
+    return if heads.capacity == 0
+    # With no open hash keys, clear immediately so no closed URI remains in
+    # either the occupied count or tombstone count.
+    if heads.count == 0:
+        heads.clear()
+        return
+    stale: usize = heads.used - heads.count
+    # Compact once tombstones use a quarter of the table. This stays ahead of
+    # the dictionary's 3/4 used-capacity growth threshold during mixed churn.
+    if stale * 4 >= heads.capacity:
+        document_heads_rebuild(documents, heads)
+
+
+# Commit a decoded source snapshot into reusable flat storage. Same-sized edits
+# overwrite the existing reservation; only growth appends a new reservation.
+def store_document_text(document: mutable LspDocument&, storage: mutable darray[u8]&, source: darray[u8]) -> void can[Memory.Allocate, Abort.Panic]:
+    needed: usize = source.count
+    if document.source.text_capacity >= needed and document.source.text_capacity > 0:
+        for i in 0..<needed:
+            storage[document.source.text_start + i] <- source[i]
+        document.source.text_len <- needed
+        return
+    document.source.text_start <- storage.count
+    storage.extend(source)
+    extra: mutable usize = needed
+    extra <- 1 if extra == 0
+    for i in 0..<extra:
+        storage.push(0)
+    document.source.text_len <- needed
+    document.source.text_capacity <- needed + extra
+
+
+# The session-level line-start sidecar is flat so document records retain only
+# scalar offsets. This keeps every span valid when the darray grows or is
+# compacted. A document whose line index would exceed the session budget uses
+# the providers' temporary scan/index fallback instead.
+def line_index_reserved_entries(documents: darray[LspDocument]&, excluded: usize) -> usize:
+    total: mutable usize = 0
+    i: mutable usize = 0
+    while i < documents.count:
+        if i != excluded and documents[i].lifecycle.open and not documents[i].lifecycle.free:
+            total <- total + documents[i].caches.line_index_capacity
+        i <- i + 1
+    return total
+
+
+def line_index_live_entries(documents: darray[LspDocument]&) -> usize:
+    total: mutable usize = 0
+    i: mutable usize = 0
+    while i < documents.count:
+        if documents[i].lifecycle.open and not documents[i].lifecycle.free:
+            total <- total + documents[i].caches.line_index_count
+        i <- i + 1
+    return total
+
+
+def line_index_cached_documents(documents: darray[LspDocument]&) -> usize:
+    total: mutable usize = 0
+    i: mutable usize = 0
+    while i < documents.count:
+        total <- total + 1 if documents[i].lifecycle.open and not documents[i].lifecycle.free and documents[i].caches.line_index_count > 0
+        i <- i + 1
+    return total
+
+
+# Copy all reserved spans through a temporary array before rebasing any starts.
+# Capacity beyond the current line count is retained, allowing edits with fewer
+# lines to overwrite their existing span without another allocation.
+def line_index_compact(documents: mutable darray[LspDocument]&, entries: mutable darray[usize]&) -> void can[Memory.Allocate, Abort.Panic]:
+    temp: mutable darray[usize] = []
+    i: mutable usize = 0
+    while i < documents.count:
+        d: mutable LspDocument& = &documents[i]
+        if d.lifecycle.open and not d.lifecycle.free and d.caches.line_index_count > 0 and d.caches.line_index_capacity > 0:
+            old_start: usize = d.caches.line_index_start
+            d.caches.line_index_start <- temp.count
+            j: mutable usize = 0
+            while j < d.caches.line_index_capacity:
+                temp.push(entries[old_start + j])
+                j <- j + 1
+        else:
+            d.caches.line_index_start <- 0
+            d.caches.line_index_count <- 0
+            d.caches.line_index_capacity <- 0
+        i <- i + 1
+    entries.truncate(0)
+    entries.extend([value for value in temp])
+
+
+def line_index_reclaim_if_needed(documents: mutable darray[LspDocument]&, entries: mutable darray[usize]&) -> void can[Memory.Allocate, Abort.Panic]:
+    reserved: usize = line_index_reserved_entries(documents, documents.count)
+    if reserved == 0:
+        entries.truncate(0)
+        return
+    if entries.count > reserved * 2:
+        line_index_compact(documents, entries)
+
+
+def line_index_fill(src: u8&, src_len: usize, entries: mutable darray[usize]&, start: usize, append: bool) -> usize can[Memory.Allocate, Abort.Panic]:
+    count: mutable usize = 0
+    if append:
+        entries.push(0)
+    else:
+        entries[start] <- 0
+    count <- 1
+    i: mutable usize = 0
+    while i < src_len:
+        if src[i] == 10:
+            if append:
+                entries.push(i + 1)
+            else:
+                entries[start + count] <- i + 1
+            count <- count + 1
+        i <- i + 1
+    return count
+
+
+def update_document_line_index(slot: usize, documents: mutable darray[LspDocument]&, storage: darray[u8]&, entries: mutable darray[usize]&) -> void can[Memory.Allocate, Abort.Panic]:
+    d: mutable LspDocument& = &documents[slot]
+    src: u8& = &storage[d.source.text_start]
+    src_len: usize = d.source.text_len - 1
+    needed: usize = Positions::line_count(src, src_len).usize()
+    if d.caches.line_index_capacity >= needed and d.caches.line_index_capacity > 0 and line_index_reserved_entries(documents, slot) + d.caches.line_index_capacity <= MAX_RETAINED_LINE_INDEX_ENTRIES:
+        d.caches.line_index_count <- line_index_fill(src, src_len, entries, d.caches.line_index_start, false)
+        lsp_line_index_build_calls <- lsp_line_index_build_calls + 1
+        return
+
+    # Drop this document's previous reservation before considering growth. If
+    # an append would cross the logical budget, compact first so closed and
+    # superseded spans do not crowd out current documents.
+    d.caches.line_index_start <- 0
+    d.caches.line_index_count <- 0
+    d.caches.line_index_capacity <- 0
+    if needed > MAX_RETAINED_LINE_INDEX_ENTRIES or entries.count + needed > MAX_RETAINED_LINE_INDEX_ENTRIES:
+        line_index_compact(documents, entries)
+    return if needed > MAX_RETAINED_LINE_INDEX_ENTRIES
+    return if line_index_reserved_entries(documents, slot) + needed > MAX_RETAINED_LINE_INDEX_ENTRIES
+    return if entries.count + needed > MAX_RETAINED_LINE_INDEX_ENTRIES
+    # `line_index_compact` may relocate document records. Reacquire the target
+    # by stable slot after that mutable borrow instead of reusing `d`.
+    documents[slot].caches.line_index_start <- entries.count
+    documents[slot].caches.line_index_count <- line_index_fill(src, src_len, entries, documents[slot].caches.line_index_start, true)
+    documents[slot].caches.line_index_capacity <- documents[slot].caches.line_index_count
+    lsp_line_index_build_calls <- lsp_line_index_build_calls + 1
+
+
+# D04 storage reclamation. Growth appends a new reservation and leaves the old
+# one as dead space until `storage_reclaim` rebuilds live data into a temporary
+# buffer and swaps it back once storage is at least twice the live size and over
+# the floor. It retains each active URI and, for open documents, source and
+# derived caches; freed slots retain no bytes. Safe to call between messages:
+# no request holds a view into the buffer once it has returned.
+const COMPACT_MIN_BYTES: usize = 65536
+
+
+def storage_live_bytes(documents: darray[LspDocument]&) -> usize:
+    live: mutable usize = 0
+    i: mutable usize = 0
+    while i < documents.count:
+        d: LspDocument = documents[i]
+        if not d.lifecycle.free:
+            live <- live + d.uri_index.uri_len
+            if d.lifecycle.open:
+                live <- live + d.source.text_len + d.caches.semantic_len + d.caches.symbols_len + d.caches.hover_len + d.caches.signature_len
+        i <- i + 1
+    return live
+
+
+def storage_reclaim(documents: mutable darray[LspDocument]&, storage: mutable darray[u8]&) -> void can[Memory.Allocate, Abort.Panic]:
+    if storage.count < COMPACT_MIN_BYTES:
+        return
+    live: usize = storage_live_bytes(documents)
+    if storage.count < live * 2:
+        return
+    temp: mutable darray[u8] = []
+    i: mutable usize = 0
+    while i < documents.count:
+        d: mutable LspDocument& = &documents[i]
+        if d.lifecycle.free:
+            # Freed slots retain nothing; reclaim their URI bytes too.
+            d.uri_index.uri_start <- temp.count
+            d.uri_index.uri_len <- 0
+            d.source.text_start <- temp.count
+            d.source.text_len <- 0
+            d.source.text_capacity <- 0
+            d.caches.semantic_start <- temp.count
+            d.caches.semantic_len <- 0
+            d.caches.semantic_capacity <- 0
+            d.caches.symbols_start <- temp.count
+            d.caches.symbols_len <- 0
+            d.caches.symbols_capacity <- 0
+            d.caches.hover_start <- temp.count
+            d.caches.hover_len <- 0
+            d.caches.hover_capacity <- 0
+            d.caches.signature_start <- temp.count
+            d.caches.signature_len <- 0
+            d.caches.signature_capacity <- 0
+            i <- i + 1
+            continue
+        old_uri: usize = d.uri_index.uri_start
+        d.uri_index.uri_start <- temp.count
+        j: mutable usize = 0
+        while j < d.uri_index.uri_len:
+            temp.push(storage[old_uri + j])
+            j <- j + 1
+        if d.lifecycle.open:
+            old_text: usize = d.source.text_start
+            d.source.text_start <- temp.count
+            j <- 0
+            while j < d.source.text_len:
+                temp.push(storage[old_text + j])
+                j <- j + 1
+            d.source.text_capacity <- d.source.text_len
+            old_sem: usize = d.caches.semantic_start
+            d.caches.semantic_start <- temp.count
+            j <- 0
+            while j < d.caches.semantic_len:
+                temp.push(storage[old_sem + j])
+                j <- j + 1
+            d.caches.semantic_capacity <- d.caches.semantic_len
+            old_sym: usize = d.caches.symbols_start
+            d.caches.symbols_start <- temp.count
+            j <- 0
+            while j < d.caches.symbols_len:
+                temp.push(storage[old_sym + j])
+                j <- j + 1
+            d.caches.symbols_capacity <- d.caches.symbols_len
+            old_hov: usize = d.caches.hover_start
+            d.caches.hover_start <- temp.count
+            j <- 0
+            while j < d.caches.hover_len:
+                temp.push(storage[old_hov + j])
+                j <- j + 1
+            d.caches.hover_capacity <- d.caches.hover_len
+            old_signature: usize = d.caches.signature_start
+            d.caches.signature_start <- temp.count
+            j <- 0
+            while j < d.caches.signature_len:
+                temp.push(storage[old_signature + j])
+                j <- j + 1
+            d.caches.signature_capacity <- d.caches.signature_len
+        else:
+            d.source.text_start <- temp.count
+            d.source.text_len <- 0
+            d.source.text_capacity <- 0
+            d.caches.semantic_start <- temp.count
+            d.caches.semantic_len <- 0
+            d.caches.semantic_capacity <- 0
+            d.caches.symbols_start <- temp.count
+            d.caches.symbols_len <- 0
+            d.caches.symbols_capacity <- 0
+            d.caches.hover_start <- temp.count
+            d.caches.hover_len <- 0
+            d.caches.hover_capacity <- 0
+            d.caches.signature_start <- temp.count
+            d.caches.signature_len <- 0
+            d.caches.signature_capacity <- 0
+        i <- i + 1
+    storage.truncate(0)
+    storage.extend([b for b in temp])

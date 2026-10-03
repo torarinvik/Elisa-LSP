@@ -75,11 +75,11 @@
     "elisa.effect.grant": "keyword",
     "elisa.effect.name": "type",
     "elisa.effect.unsafe": "macro",
-    "elisa.effect.error": "exception",
+    "elisa.effect.error": "keyword",
     "elisa.mem.region": "keyword",
     "elisa.mem.qualifier": "modifier",
     "elisa.flow.branch": "keyword",
-    "elisa.flow.error": "exception",
+    "elisa.flow.error": "keyword",
     "elisa.flow.concurrent": "keyword",
     "elisa.decl.skeleton": "keyword",
     "elisa.contract.clause": "comment",
@@ -92,7 +92,7 @@
     "elisa.meta.directive": "macro",
     "elisa.meta.module": "namespace",
     "elisa.comment": "comment",
-    "elisa.punctuation": "punctuation",
+    "elisa.punctuation": "operator",
     "elisa.op.arithmetic": "operator",
     "elisa.op.comparison": "operator",
     "elisa.op.logical": "operator",
@@ -100,5 +100,21 @@
     "elisa.op.assign": "operator",
     "elisa.enum.variant": "enumMember"
   },
-  "note": "custom names preserved for JetBrains client; generic clients should map via standard_fallback (H01 pending negotiation)"
+  "modifiers": {
+    "legend": ["declaration", "definition", "readonly", "modification"],
+    "canonical_bits": {
+      "declaration": 1,
+      "definition": 2,
+      "readonly": 4,
+      "modification": 8
+    },
+    "policy": {
+      "declaration": "extern names only; a declaration has no body",
+      "definition": "concrete declaration names identified by declaration syntax",
+      "readonly": "immutable const names recorded by the compiler",
+      "modification": "direct identifier/field write targets and rebind targets"
+    },
+    "unsupported": ["static", "deprecated", "abstract", "async", "documentation", "defaultLibrary", "mutable", "unsafe", "ghost"]
+  },
+  "note": "Clients that omit textDocument.semanticTokens or advertise the complete custom tokenTypes list retain the canonical 48-entry legend. Other clients receive the standard_fallback categories they advertised; unsupported categories are omitted from both full and range results. Modifier names are negotiated independently from tokenTypes; the server advertises and emits only the supported names present in the client's tokenModifiers list."
 }

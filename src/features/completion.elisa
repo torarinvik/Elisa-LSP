@@ -1,0 +1,812 @@
+# F05 safe completion slice.
+#
+# The retained hover stream owns same-file declaration names plus exact
+# function declaration IDs and parameter occurrences. Completion queries that
+# accepted snapshot without lexing or parsing again. It suggests visible
+# parameters only when the function header and enclosing indentation are
+# unambiguous; local variables and all workspace/member/type inference remain
+# outside this slice. `isIncomplete` stays true until candidate sources are
+# indexed and validated.
+
+const MAX_COMPLETION_ITEMS: usize = 64
+const MAX_COMPLETION_SNIPPET_PARAMETERS: i64 = 32
+const MAX_COMPLETION_RESOLVE_URI_BYTES: usize = 2048
+
+struct CompletionCandidate:
+    label: sview
+    category: sview
+    detail: sview
+    kind: i64
+    quality: i64
+    ambiguous: bool
+
+
+struct CompletionFunctionScope:
+    owner: i64
+    body_indent: usize
+
+
+def completion_starts_with(text: sview, prefix: sview) -> bool:
+    return false if prefix.len > text.len
+    i: mutable usize = 0
+    while i < prefix.len.usize():
+        return false if sview_at(text, i) != sview_at(prefix, i)
+        i <- i + 1
+    return true
+
+
+def completion_text_equal(a: sview, b: sview) -> bool:
+    return a.len == b.len and string_views_eq(a, b) != 0
+
+
+def completion_lexical_before(a: sview, b: sview) -> bool:
+    i: mutable usize = 0
+    limit: usize = a.len.usize() if a.len < b.len else b.len.usize()
+    while i < limit:
+        left: u8 = sview_at(a, i)
+        right: u8 = sview_at(b, i)
+        return left < right if left != right
+        i <- i + 1
+    return a.len < b.len
+
+
+def completion_candidate_before(a: CompletionCandidate, b: CompletionCandidate) -> bool:
+    return a.quality < b.quality if a.quality != b.quality
+    return completion_lexical_before(a.label, b.label)
+
+
+def completion_category_kind(category: sview) -> i64:
+    return 3 if string_view_eq(category, "fn") == 1
+    return 7 if string_view_eq(category, "struct") == 1
+    return 13 if string_view_eq(category, "enum") == 1
+    return 18 if string_view_eq(category, "alias") == 1
+    return 21 if string_view_eq(category, "const") == 1
+    return 20 if string_view_eq(category, "variant") == 1
+    return -1
+
+
+def completion_category_detail(category: sview) -> sview:
+    return "function" if string_view_eq(category, "fn") == 1
+    return "struct" if string_view_eq(category, "struct") == 1
+    return "enum" if string_view_eq(category, "enum") == 1
+    return "type alias" if string_view_eq(category, "alias") == 1
+    return "constant" if string_view_eq(category, "const") == 1
+    return "enum variant" if string_view_eq(category, "variant") == 1
+    return ""
+
+
+def completion_category_allowed(category: sview, type_context: bool) -> bool:
+    if type_context:
+        return string_view_eq(category, "struct") == 1 or string_view_eq(category, "enum") == 1 or string_view_eq(category, "alias") == 1
+    return string_view_eq(category, "fn") == 1 or string_view_eq(category, "struct") == 1 or string_view_eq(category, "enum") == 1 or string_view_eq(category, "const") == 1
+
+
+# Scan only the current source line. Comments and ordinary quoted strings are
+# declined; f-string interpolation and multiline-string state are intentionally
+# outside this first lexical candidate slice.
+def completion_line_is_code(src: u8&, line_start: usize, cursor: usize) -> bool:
+    quote: mutable u8 = 0
+    escaped: mutable bool = false
+    i: mutable usize = line_start
+    while i < cursor:
+        byte: u8 = src[i]
+        if quote != 0:
+            if escaped:
+                escaped <- false
+            elif byte == 92:
+                escaped <- true
+            elif byte == quote:
+                quote <- 0
+        elif byte == 35:
+            return false
+        elif byte == 34 or byte == 39:
+            quote <- byte
+        i <- i + 1
+    return quote == 0
+
+
+def completion_word_byte(byte: u8) -> bool:
+    return hover_is_ident_byte(byte)
+
+
+def completion_line_indent(src: u8&, src_len: usize, offset: usize) -> usize:
+    return 0 if offset > src_len
+    line_start: mutable usize = offset
+    while line_start > 0 and src[line_start - 1] != 10:
+        line_start <- line_start - 1
+    cursor: mutable usize = line_start
+    while cursor < offset and (src[cursor] == 32 or src[cursor] == 9):
+        cursor <- cursor + 1
+    return cursor - line_start
+
+
+# Require a complete parameter list and the function header's top-level colon
+# before treating an indented cursor as function-body context. This prevents
+# parameter names from leaking into multiline signatures while the user is
+# still typing them.
+def completion_function_header_end(src: u8&, src_len: usize, start: usize, cursor: usize, end_out: mutable usize&) -> bool:
+    return false if start >= cursor or cursor > src_len
+    round_depth: mutable i64 = 0
+    square_depth: mutable i64 = 0
+    brace_depth: mutable i64 = 0
+    saw_parameter_list: mutable bool = false
+    quote: mutable u8 = 0
+    triple_quote: mutable bool = false
+    escaped: mutable bool = false
+    comment: mutable bool = false
+    i: mutable usize = start
+    while i < cursor:
+        byte: u8 = src[i]
+        if comment:
+            comment <- false if byte == 10
+        elif quote != 0:
+            if escaped:
+                escaped <- false
+            elif byte == 92:
+                escaped <- true
+            elif triple_quote:
+                if byte == quote and i + 2 < cursor and src[i + 1] == quote and src[i + 2] == quote:
+                    quote <- 0
+                    triple_quote <- false
+                    i <- i + 2
+            elif byte == quote:
+                quote <- 0
+        elif byte == 35:
+            comment <- true
+        elif byte == 34 or byte == 39:
+            quote <- byte
+            triple_quote <- i + 2 < cursor and src[i + 1] == byte and src[i + 2] == byte
+            i <- i + 2 if triple_quote
+        elif byte == 40:
+            round_depth <- round_depth + 1
+            saw_parameter_list <- true if round_depth == 1 and square_depth == 0 and brace_depth == 0
+        elif byte == 41:
+            round_depth <- round_depth - 1 if round_depth > 0
+        elif byte == 91:
+            square_depth <- square_depth + 1
+        elif byte == 93:
+            square_depth <- square_depth - 1 if square_depth > 0
+        elif byte == 123:
+            brace_depth <- brace_depth + 1
+        elif byte == 125:
+            brace_depth <- brace_depth - 1 if brace_depth > 0
+        elif byte == 58 and saw_parameter_list and round_depth == 0 and square_depth == 0 and brace_depth == 0:
+            end_out <- i
+            return true
+        i <- i + 1
+    return false
+
+
+def completion_function_body_indent(src: u8&, src_len: usize, header_end: usize, declaration_indent: usize, indent_out: mutable usize&) -> bool:
+    return false if header_end >= src_len
+    cursor: mutable usize = header_end
+    while cursor < src_len and src[cursor] != 10:
+        cursor <- cursor + 1
+    return false if cursor >= src_len
+    cursor <- cursor + 1
+    while cursor < src_len:
+        line_start: usize = cursor
+        while cursor < src_len and (src[cursor] == 32 or src[cursor] == 9):
+            cursor <- cursor + 1
+        if cursor < src_len and src[cursor] != 10 and src[cursor] != 13 and src[cursor] != 35:
+            indent: usize = cursor - line_start
+            return false if indent <= declaration_indent
+            indent_out <- indent
+            return true
+        while cursor < src_len and src[cursor] != 10:
+            cursor <- cursor + 1
+        cursor <- cursor + 1 if cursor < src_len
+    return false
+
+
+def completion_active_function_scope(blob: sview, src: u8&, src_len: usize, cursor: usize, cursor_indent: usize) -> CompletionFunctionScope:
+    best_offset: mutable i64 = -1
+    best_id: mutable i64 = -1
+    record: mutable usize = 0
+    while record < blob.len.usize():
+        record_end: mutable usize = 0
+        return CompletionFunctionScope{owner: -1, body_indent: 0} if not completion_record_bounds(blob, record, record_end)
+        if sview_at(blob, record + 1) == 115:
+            record_start: usize = record + 1
+            category: mutable sview = sview("", 0, 0)
+            offset_text: mutable sview = sview("", 0, 0)
+            id_text: mutable sview = sview("", 0, 0)
+            if hover_field(blob, record_start, record_end, 2, category) and hover_field(blob, record_start, record_end, 5, offset_text) and hover_field(blob, record_start, record_end, 6, id_text) and category == "fn":
+                declaration_offset: i64 = hover_parse_i64(offset_text)
+                declaration_id: i64 = hover_parse_i64(id_text)
+                if declaration_offset >= 0 and declaration_offset.usize() < cursor and declaration_id >= 0 and declaration_offset > best_offset:
+                    start: usize = declaration_offset.usize()
+                    if completion_line_indent(src, src_len, start) < cursor_indent:
+                        best_offset <- declaration_offset
+                        best_id <- declaration_id
+        record <- record_end
+    return CompletionFunctionScope{owner: -1, body_indent: 0} if best_id < 0
+    declaration_indent: usize = completion_line_indent(src, src_len, best_offset.usize())
+    header_end: mutable usize = 0
+    return CompletionFunctionScope{owner: -1, body_indent: 0} if not completion_function_header_end(src, src_len, best_offset.usize(), cursor, header_end)
+    body_indent: mutable usize = 0
+    return CompletionFunctionScope{owner: -1, body_indent: 0} if not completion_function_body_indent(src, src_len, header_end, declaration_indent, body_indent)
+    return CompletionFunctionScope{owner: -1, body_indent: 0} if cursor_indent < body_indent
+    return CompletionFunctionScope{owner: best_id, body_indent: body_indent}
+
+
+# Use the complete identifier as the edit range, even when the cursor is in
+# its middle. At whitespace/punctuation, insert at the cursor instead of
+# replacing the identifier to its left.
+def completion_word_range(src: u8&, src_len: usize, line_start: usize, line_length: usize, cursor_col: usize, utf8: bool, line: i64, line_starts: darray[usize]&, span_start: usize, span_count: usize, prefix_out: mutable sview&, start_char_out: mutable i64&, end_char_out: mutable i64&, start_offset_out: mutable usize&, end_offset_out: mutable usize&) -> bool can[Abort.Panic]:
+    return false if cursor_col > line_length
+    cursor_offset: usize = line_start + cursor_col
+    start_col: mutable usize = cursor_col
+    end_col: mutable usize = cursor_col
+    inside_word: bool = cursor_col < line_length and completion_word_byte(src[cursor_offset])
+    before_word_end: bool = cursor_col > 0 and completion_word_byte(src[cursor_offset - 1])
+    if inside_word:
+        while start_col > 0 and completion_word_byte(src[line_start + start_col - 1]):
+            start_col <- start_col - 1
+        end_col <- cursor_col
+        while end_col < line_length and completion_word_byte(src[line_start + end_col]):
+            end_col <- end_col + 1
+    elif before_word_end:
+        start_col <- cursor_col - 1
+        while start_col > 0 and completion_word_byte(src[line_start + start_col - 1]):
+            start_col <- start_col - 1
+        end_col <- cursor_col
+    start_char_out <- Positions::byte_col_to_units_span_indexed(src, src_len, line_starts, span_start, span_count, line, start_col.i64(), utf8)
+    end_char_out <- Positions::byte_col_to_units_span_indexed(src, src_len, line_starts, span_start, span_count, line, end_col.i64(), utf8)
+    start_offset_out <- line_start + start_col
+    end_offset_out <- line_start + end_col
+    prefix_end: usize = cursor_offset if inside_word or before_word_end else start_offset_out
+    prefix_out <- string_view_slice(Positions::source_view_span(src, src_len, 0, src_len), start_offset_out.i64(), prefix_end.i64())
+    return true
+
+
+def completion_followed_by_open_paren(src: u8&, src_len: usize, token_end: usize) -> bool:
+    return false if token_end > src_len
+    cursor: mutable usize = token_end
+    while cursor < src_len and (src[cursor] == 32 or src[cursor] == 9):
+        cursor <- cursor + 1
+    return cursor < src_len and src[cursor] == 40
+
+
+def completion_type_context(src: u8&, line_start: usize, prefix_start: usize) -> bool:
+    cursor: mutable usize = prefix_start
+    while cursor > line_start and (src[cursor - 1] == 32 or src[cursor - 1] == 9):
+        cursor <- cursor - 1
+    return false if cursor == line_start
+    last: u8 = src[cursor - 1]
+    return true if last == 58 or last == 62 or last == 91
+    return false
+
+
+def completion_unhandled_context(src: u8&, line_start: usize, prefix_start: usize) -> bool:
+    cursor: mutable usize = prefix_start
+    while cursor > line_start and (src[cursor - 1] == 32 or src[cursor - 1] == 9):
+        cursor <- cursor - 1
+    return false if cursor == line_start
+    last: u8 = src[cursor - 1]
+    return true if last == 46
+    return true if last == 58 and cursor >= line_start + 2 and src[cursor - 2] == 58
+    word_end: usize = cursor
+    word_start: mutable usize = cursor
+    while word_start > line_start and completion_word_byte(src[word_start - 1]):
+        word_start <- word_start - 1
+    previous: sview = string_view_slice(Positions::source_view_span(src, cursor, 0, cursor), word_start.i64(), word_end.i64())
+    return true if previous == "import" or previous == "include" or previous == "def" or previous == "struct" or previous == "enum" or previous == "alias" or previous == "const"
+    return false
+
+
+def completion_record_bounds(blob: sview, cursor: usize, record_end_out: mutable usize&) -> bool:
+    return false if cursor >= blob.len.usize() or sview_at(blob, cursor) != HOVER_REC
+    end: mutable usize = cursor + 1
+    while end < blob.len.usize() and sview_at(blob, end) != HOVER_REC:
+        end <- end + 1
+    record_end_out <- end
+    return end > cursor + 1 and end - cursor >= 4 and sview_at(blob, cursor + 2) == HOVER_FS
+
+
+def completion_candidate_add(candidates: mutable darray[CompletionCandidate]&, label: sview, category: sview, detail: sview, kind: i64, quality: i64, truncated_out: mutable bool&) -> void:
+    i: mutable usize = 0
+    while i < candidates.count:
+        current: CompletionCandidate = candidates[i]
+        if completion_text_equal(current.label, label):
+            candidates[i] <- CompletionCandidate{label: current.label, category: current.category, detail: current.detail, kind: current.kind, quality: current.quality, ambiguous: true}
+            return
+        i <- i + 1
+    candidate: CompletionCandidate = CompletionCandidate{label: label, category: category, detail: detail, kind: kind, quality: quality, ambiguous: false}
+    if candidates.count < MAX_COMPLETION_ITEMS:
+        candidates.push(candidate)
+        return
+    truncated_out <- true
+    worst: mutable usize = 0
+    i <- 1
+    while i < candidates.count:
+        worst <- i if completion_candidate_before(candidates[worst], candidates[i])
+        i <- i + 1
+    if completion_candidate_before(candidate, candidates[worst]):
+        candidates[worst] <- candidate
+
+
+def completion_binding_candidate_add(candidates: mutable darray[CompletionCandidate]&, label: sview, category: sview, detail: sview, prefix: sview, truncated_out: mutable bool&) -> void:
+    quality: i64 = 0 if completion_text_equal(label, prefix) else 1
+    i: mutable usize = 0
+    while i < candidates.count:
+        current: CompletionCandidate = candidates[i]
+        if completion_text_equal(current.label, label):
+            return if current.category == category
+            return if category == "parameter" and current.category == "local"
+            candidates[i] <- CompletionCandidate{label: label, category: category, detail: detail, kind: 6, quality: quality, ambiguous: false}
+            return
+        i <- i + 1
+    completion_candidate_add(candidates, label, category, detail, 6, quality, truncated_out)
+
+
+def completion_candidates_sort(candidates: mutable darray[CompletionCandidate]&) -> void:
+    i: mutable usize = 1
+    while i < candidates.count:
+        value: CompletionCandidate = candidates[i]
+        j: mutable usize = i
+        while j > 0 and completion_candidate_before(value, candidates[j - 1]):
+            candidates[j] <- candidates[j - 1]
+            j <- j - 1
+        candidates[j] <- value
+        i <- i + 1
+
+
+# Local/parameter visibility is not fully represented in this first candidate
+# set. If a resolver occurrence has the same spelling anywhere in the file,
+# suppress that global row instead of attaching an incorrect global kind to a
+# potentially shadowing local. This is deliberately conservative across scopes.
+def completion_suppress_local_conflicts(candidates: mutable darray[CompletionCandidate]&, blob: sview) -> void:
+    cursor: mutable usize = 0
+    while cursor < blob.len.usize():
+        record_end: mutable usize = 0
+        return if not completion_record_bounds(blob, cursor, record_end)
+        if sview_at(blob, cursor + 1) == 111:
+            record_start: usize = cursor + 1
+            name: mutable sview = sview("", 0, 0)
+            role_text: mutable sview = sview("", 0, 0)
+            if hover_field(blob, record_start, record_end, 3, name) and hover_field(blob, record_start, record_end, 4, role_text):
+                role: i64 = hover_parse_i64(role_text)
+                if role == OCC_PARAM or role == OCC_LOCAL:
+                    i: mutable usize = 0
+                    while i < candidates.count:
+                        candidate: CompletionCandidate = candidates[i]
+                        if completion_text_equal(candidate.label, name):
+                            candidates[i] <- CompletionCandidate{label: candidate.label, category: candidate.category, detail: candidate.detail, kind: candidate.kind, quality: candidate.quality, ambiguous: true}
+                        i <- i + 1
+        cursor <- record_end
+
+
+def completion_add_active_parameters(candidates: mutable darray[CompletionCandidate]&, blob: sview, active_owner: i64, prefix: sview, cursor_offset: usize, truncated_out: mutable bool&) -> void:
+    return if active_owner < 0
+    cursor: mutable usize = 0
+    while cursor < blob.len.usize():
+        record_end: mutable usize = 0
+        return if not completion_record_bounds(blob, cursor, record_end)
+        if sview_at(blob, cursor + 1) == 111:
+            record_start: usize = cursor + 1
+            start_text: mutable sview = sview("", 0, 0)
+            name: mutable sview = sview("", 0, 0)
+            role_text: mutable sview = sview("", 0, 0)
+            owner_text: mutable sview = sview("", 0, 0)
+            if hover_field(blob, record_start, record_end, 1, start_text) and hover_field(blob, record_start, record_end, 3, name) and hover_field(blob, record_start, record_end, 4, role_text) and hover_field(blob, record_start, record_end, 5, owner_text):
+                start: i64 = hover_parse_i64(start_text)
+                role: i64 = hover_parse_i64(role_text)
+                owner: i64 = hover_parse_i64(owner_text)
+                if role == OCC_PARAM and owner == active_owner and start >= 0 and start.usize() < cursor_offset and completion_starts_with(name, prefix):
+                    shadowed_by_local: mutable bool = false
+                    local_cursor: mutable usize = 0
+                    while local_cursor < blob.len.usize():
+                        local_end: mutable usize = 0
+                        return if not completion_record_bounds(blob, local_cursor, local_end)
+                        if sview_at(blob, local_cursor + 1) == 111:
+                            local_start: usize = local_cursor + 1
+                            local_name: mutable sview = sview("", 0, 0)
+                            local_role_text: mutable sview = sview("", 0, 0)
+                            local_owner_text: mutable sview = sview("", 0, 0)
+                            if hover_field(blob, local_start, local_end, 3, local_name) and hover_field(blob, local_start, local_end, 4, local_role_text) and hover_field(blob, local_start, local_end, 5, local_owner_text):
+                                if hover_parse_i64(local_role_text) == OCC_LOCAL and hover_parse_i64(local_owner_text) == active_owner and completion_text_equal(local_name, name):
+                                    shadowed_by_local <- true
+                        local_cursor <- local_end
+                    if not shadowed_by_local:
+                        completion_binding_candidate_add(candidates, name, "parameter", "parameter", prefix, truncated_out)
+        cursor <- record_end
+
+
+def completion_local_binder_span(src: u8&, src_len: usize, start: usize, finish: usize, body_indent: usize) -> bool:
+    return false if start >= finish or finish > src_len
+    line_start: mutable usize = start
+    while line_start > 0 and src[line_start - 1] != 10:
+        line_start <- line_start - 1
+    cursor: mutable usize = line_start
+    while cursor < start and (src[cursor] == 32 or src[cursor] == 9):
+        cursor <- cursor + 1
+    return false if cursor != start or cursor - line_start != body_indent
+    cursor <- finish
+    while cursor < src_len and (src[cursor] == 32 or src[cursor] == 9):
+        cursor <- cursor + 1
+    return cursor < src_len and (src[cursor] == 58 or src[cursor] == 61)
+
+
+def completion_add_active_root_locals(candidates: mutable darray[CompletionCandidate]&, blob: sview, src: u8&, src_len: usize, active_owner: i64, body_indent: usize, prefix: sview, cursor_offset: usize, truncated_out: mutable bool&) -> void:
+    return if active_owner < 0
+    cursor: mutable usize = 0
+    while cursor < blob.len.usize():
+        record_end: mutable usize = 0
+        return if not completion_record_bounds(blob, cursor, record_end)
+        if sview_at(blob, cursor + 1) == 111:
+            record_start: usize = cursor + 1
+            start_text: mutable sview = sview("", 0, 0)
+            finish_text: mutable sview = sview("", 0, 0)
+            name: mutable sview = sview("", 0, 0)
+            role_text: mutable sview = sview("", 0, 0)
+            owner_text: mutable sview = sview("", 0, 0)
+            if hover_field(blob, record_start, record_end, 1, start_text) and hover_field(blob, record_start, record_end, 2, finish_text) and hover_field(blob, record_start, record_end, 3, name) and hover_field(blob, record_start, record_end, 4, role_text) and hover_field(blob, record_start, record_end, 5, owner_text):
+                start: i64 = hover_parse_i64(start_text)
+                finish: i64 = hover_parse_i64(finish_text)
+                if hover_parse_i64(role_text) == OCC_LOCAL and hover_parse_i64(owner_text) == active_owner and start >= 0 and finish > start and start.usize() < cursor_offset and completion_starts_with(name, prefix) and completion_local_binder_span(src, src_len, start.usize(), finish.usize(), body_indent):
+                    completion_binding_candidate_add(candidates, name, "local", "local variable", prefix, truncated_out)
+        cursor <- record_end
+
+
+# Variants have no declaration Symbol row. Their owner/name records are emitted
+# from the validated compiler enum registry and are offered only as unqualified
+# names when unique; duplicate spellings remain suppressed by candidate merge.
+def completion_add_enum_variants(candidates: mutable darray[CompletionCandidate]&, blob: sview, prefix: sview, type_context: bool, truncated_out: mutable bool&) -> void:
+    return if type_context
+    cursor: mutable usize = 0
+    while cursor < blob.len.usize():
+        record_end: mutable usize = 0
+        return if not completion_record_bounds(blob, cursor, record_end)
+        if sview_at(blob, cursor + 1) == 118:
+            record_start: usize = cursor + 1
+            owner: mutable sview = sview("", 0, 0)
+            name: mutable sview = sview("", 0, 0)
+            return if not hover_field(blob, record_start, record_end, 1, owner) or not hover_field(blob, record_start, record_end, 2, name)
+            if owner.len > 0 and name.len > 0 and completion_starts_with(name, prefix):
+                quality: i64 = 0 if completion_text_equal(name, prefix) else 1
+                completion_candidate_add(candidates, name, "variant", "enum variant", 20, quality, truncated_out)
+        cursor <- record_end
+
+
+def completion_item_kind_supported(kind: i64, limited: bool, allowed_kinds: darray[i64]&) -> bool:
+    return true if not limited
+    for allowed in allowed_kinds:
+        return true if allowed == kind
+    return false
+
+
+def completion_snippet_escape_default(out: mutable darray[u8]&, value: sview) -> void:
+    i: mutable usize = 0
+    while i < value.len.usize():
+        byte: u8 = sview_at(value, i)
+        if byte == 92 or byte == 36 or byte == 125:
+            out.push(92)
+        out.push(byte)
+        i <- i + 1
+
+
+# Function completion presentation is based only on the worker-validated,
+# retained S record for one unambiguous top-level function signature. Snippet
+# and label-detail output share one validated record scan. Overloads and
+# unusually large signatures omit both optional representations.
+def completion_function_presentation(signature_blob: sview, function_name: sview, make_snippet: bool, make_label_details: bool, snippet_out: mutable darray[u8]&, label_details_out: mutable darray[u8]&) -> bool can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        snippet_out.truncate(0)
+        label_details_out.truncate(0)
+        return false if not make_snippet and not make_label_details
+        matching_start: mutable usize = 0
+        matching_end: mutable usize = 0
+        matches: mutable i64 = 0
+        cursor: mutable usize = 0
+        kind: mutable u8 = 0
+        record_start: mutable usize = 0
+        record_end: mutable usize = 0
+        while signature_record_next(signature_blob, cursor, kind, record_start, record_end):
+            continue if kind != 83
+            name: mutable sview = sview("", 0, 0)
+            if signature_record_field(signature_blob, record_start, record_end, 1, name) and completion_text_equal(name, function_name):
+                matches <- matches + 1
+                matching_start <- record_start
+                matching_end <- record_end
+        return false if matches != 1
+        arity: i64 = signature_integer_field(signature_blob, matching_start, matching_end, 2)
+        return false if arity < 0 or arity > MAX_COMPLETION_SNIPPET_PARAMETERS
+        # Validate every parameter before writing any placeholder, so a
+        # corrupted or unexpectedly incomplete record falls back cleanly.
+        for parameter_index in 0..<arity.usize():
+            parameter_name: mutable sview = sview("", 0, 0)
+            return false if not signature_record_field(signature_blob, matching_start, matching_end, parameter_index + 3, parameter_name) or parameter_name.len == 0
+        if make_label_details:
+            label_details_out.push(40)
+            for parameter_index in 0..<arity.usize():
+                label_details_out.push_str(", ") if parameter_index > 0
+                parameter_name: mutable sview = sview("", 0, 0)
+                _ = signature_record_field(signature_blob, matching_start, matching_end, parameter_index + 3, parameter_name)
+                label_details_out.extend(parameter_name)
+            label_details_out.push(41)
+        if make_snippet:
+            snippet_out.extend(function_name)
+            snippet_out.push(40)
+            for parameter_index in 0..<arity.usize():
+                snippet_out.push_str(", ") if parameter_index > 0
+                snippet_out.push(36)
+                snippet_out.push(123)
+                push_int(snippet_out, parameter_index.i64() + 1)
+                snippet_out.push(58)
+                parameter_name: mutable sview = sview("", 0, 0)
+                _ = signature_record_field(signature_blob, matching_start, matching_end, parameter_index + 3, parameter_name)
+                completion_snippet_escape_default(snippet_out, parameter_name)
+                snippet_out.push(125)
+            snippet_out.push(41)
+            snippet_out.push(36)
+            snippet_out.push(48)
+        return true
+
+
+def completion_append_position(body: mutable darray[u8]&, line: i64, character: i64) -> void can[Memory.Allocate, Abort.Panic]:
+    body.push_str("{\"line\":")
+    body.push_int(line)
+    body.push_str(",\"character\":")
+    body.push_int(character)
+    body.push(125)
+
+
+def completion_append_resolve_data(body: mutable darray[u8]&, candidate: CompletionCandidate, uri: sview, version: i64, generation: i64, resolvable: bool) -> void can[Memory.Allocate, Abort.Panic]:
+    return if not resolvable or string_view_eq(candidate.category, "fn") != 1 or uri.len == 0 or uri.len.usize() > MAX_COMPLETION_RESOLVE_URI_BYTES
+    body.push_str(",\"data\":{\"uri\":\"")
+    json_escape_utf8(body, uri)
+    body.push_str("\",\"version\":")
+    body.push_int(version)
+    body.push_str(",\"generation\":")
+    body.push_int(generation)
+    body.push(125)
+
+
+def completion_append_item(body: mutable darray[u8]&, candidate: CompletionCandidate, prefix: sview, start_line: i64, start_char: i64, cursor_char: i64, end_line: i64, end_char: i64, limited: bool, allowed_kinds: darray[i64]&, insertion_text: sview, snippet_enabled: bool, insert_replace_support: bool, commit_open_paren: bool, label_details: sview, label_details_enabled: bool, resolve_uri: sview, resolve_version: i64, resolve_generation: i64, resolvable: bool) -> void can[Memory.Allocate, Abort.Panic]:
+    body.push_str("{\"label\":\"")
+    json_escape_utf8(body, candidate.label)
+    body.push_str("\"")
+    if label_details_enabled:
+        body.push_str(",\"labelDetails\":{\"detail\":\"")
+        json_escape_utf8(body, label_details)
+        body.push_str("\"}")
+    completion_append_resolve_data(body, candidate, resolve_uri, resolve_version, resolve_generation, resolvable)
+    if completion_item_kind_supported(candidate.kind, limited, allowed_kinds):
+        body.push_str(",\"kind\":")
+        body.push_int(candidate.kind)
+    if snippet_enabled:
+        body.push_str(",\"insertTextFormat\":2")
+    body.push_str(",\"detail\":\"")
+    json_escape_utf8(body, candidate.detail)
+    body.push_str("\",\"sortText\":\"")
+    body.push_str("0:" if completion_text_equal(candidate.label, prefix) else "1:")
+    json_escape_utf8(body, candidate.label)
+    body.push(34)
+    body.push_str(",\"commitCharacters\":[\"(\"]") if commit_open_paren
+    body.push_str(",\"textEdit\":{\"range\":")
+    if insert_replace_support:
+        body.push_str("{\"insert\":{\"start\":")
+        completion_append_position(body, start_line, start_char)
+        body.push_str(",\"end\":")
+        completion_append_position(body, start_line, cursor_char)
+        body.push_str("},\"replace\":{\"start\":")
+        completion_append_position(body, start_line, start_char)
+        body.push_str(",\"end\":")
+        completion_append_position(body, end_line, end_char)
+        body.push_str("}}")
+    else:
+        body.push_str("{\"start\":")
+        completion_append_position(body, start_line, start_char)
+        body.push_str(",\"end\":")
+        completion_append_position(body, end_line, end_char)
+        body.push_str("}")
+    body.push_str(",\"newText\":\"")
+    json_escape_utf8(body, insertion_text)
+    body.push_str("\"}}")
+
+
+def handle_completion(root: Json::Value, snapshot: DocumentSnapshotView, document_storage: darray[u8]&, line_starts: darray[usize]&, result_body: mutable darray[u8]&, utf8: bool, kind_limited: bool, allowed_kinds: darray[i64]&, snippet_support: bool, insert_replace_support: bool, commit_characters_support: bool, label_details_support: bool) -> ProviderOutcome can[Memory.Allocate, Abort.Panic]:
+    if not snapshot.valid or snapshot.lifecycle.analysis_state != DocumentAnalysisState.Ready or snapshot.source.text_len <= 1:
+        return ProviderOutcome.NoMatchEmptyArray
+    document: DocumentSnapshotView = snapshot
+    if document.caches.hover_start > document_storage.count or document.caches.hover_len > document_storage.count - document.caches.hover_start:
+        return ProviderOutcome.InvalidRetainedCache
+    return ProviderOutcome.InvalidRetainedCache if document.caches.hover_len == 0
+    if document.caches.signature_len > 0 and (document.caches.signature_start > document_storage.count or document.caches.signature_len > document_storage.count - document.caches.signature_start):
+        return ProviderOutcome.InvalidRetainedCache
+    if document.source.text_start > document_storage.count or document.source.text_len > document_storage.count - document.source.text_start:
+        return ProviderOutcome.InvalidRetainedCache
+    return ProviderOutcome.InvalidRetainedCache if document.caches.line_index_count == 0 or document.caches.line_index_start > line_starts.count or document.caches.line_index_count > line_starts.count - document.caches.line_index_start
+    line: i64 = request_hover_line(root)
+    character: i64 = request_hover_char(root)
+    return ProviderOutcome.NoMatchEmptyArray if line < 0 or line.usize() >= document.caches.line_index_count or character < 0
+    src: u8& = &document_storage[document.source.text_start]
+    src_len: usize = document.source.text_len
+    line_start: usize = Positions::line_start_offset_span_indexed(line_starts, document.caches.line_index_start, document.caches.line_index_count, src_len, line)
+    line_length: i64 = Positions::line_byte_length_span_indexed(src, src_len, line_starts, document.caches.line_index_start, document.caches.line_index_count, line)
+    line_units: i64 = Positions::line_unit_length_span_indexed(src, src_len, line_starts, document.caches.line_index_start, document.caches.line_index_count, line, utf8)
+    return ProviderOutcome.NoMatchEmptyArray if character > line_units or line_length < 0
+    cursor_col: i64 = Positions::char_to_byte_col_span_indexed(src, src_len, line_starts, document.caches.line_index_start, document.caches.line_index_count, line, character, utf8)
+    return ProviderOutcome.NoMatchEmptyArray if cursor_col < 0 or cursor_col > line_length
+    cursor_offset: usize = line_start + cursor_col.usize()
+    return ProviderOutcome.NoMatchEmptyArray if not completion_line_is_code(src, line_start, cursor_offset)
+    prefix: mutable sview = sview("", 0, 0)
+    start_char: mutable i64 = character
+    end_char: mutable i64 = character
+    start_offset: mutable usize = cursor_offset
+    end_offset: mutable usize = cursor_offset
+    return ProviderOutcome.NoMatchEmptyArray if not completion_word_range(src, src_len, line_start, line_length.usize(), cursor_col.usize(), utf8, line, line_starts, document.caches.line_index_start, document.caches.line_index_count, prefix, start_char, end_char, start_offset, end_offset)
+    return ProviderOutcome.NoMatchEmptyArray if completion_unhandled_context(src, line_start, start_offset)
+    type_context: bool = completion_type_context(src, line_start, start_offset)
+
+    blob: sview = bytes_view_range_ref(document_storage, document.caches.hover_start, document.caches.hover_len)
+    signature_blob: sview = bytes_view_range_ref(document_storage, document.caches.signature_start, document.caches.signature_len) if (snippet_support or label_details_support) and document.caches.signature_len > 0 else sview("", 0, 0)
+    resolve_spelling: mutable darray[u8] = []
+    resolve_uri_storage: mutable darray[u8] = []
+    resolve_uri: sview = request_identity(root, resolve_spelling, resolve_uri_storage)
+    cursor_indent: usize = completion_line_indent(src, src_len, cursor_offset)
+    active_scope: CompletionFunctionScope = completion_active_function_scope(blob, src, src_len, cursor_offset, cursor_indent)
+    candidates: mutable darray[CompletionCandidate] = []
+    truncated: mutable bool = false
+    completion_add_enum_variants(candidates, blob, prefix, type_context, truncated)
+    cursor: mutable usize = 0
+    while cursor < blob.len.usize():
+        record_end: mutable usize = 0
+        return ProviderOutcome.InvalidRetainedCache if not completion_record_bounds(blob, cursor, record_end)
+        if sview_at(blob, cursor + 1) == 115:
+            record_start: usize = cursor + 1
+            label: mutable sview = sview("", 0, 0)
+            category: mutable sview = sview("", 0, 0)
+            return ProviderOutcome.InvalidRetainedCache if not hover_field(blob, record_start, record_end, 1, label) or not hover_field(blob, record_start, record_end, 2, category)
+            kind: i64 = completion_category_kind(category)
+            if kind >= 0 and completion_category_allowed(category, type_context) and completion_starts_with(label, prefix):
+                detail: sview = completion_category_detail(category)
+                quality: i64 = 0 if completion_text_equal(label, prefix) else 1
+                completion_candidate_add(candidates, label, category, detail, kind, quality, truncated)
+        cursor <- record_end
+    completion_suppress_local_conflicts(candidates, blob)
+    completion_add_active_parameters(candidates, blob, -1 if type_context else active_scope.owner, prefix, cursor_offset, truncated)
+    completion_add_active_root_locals(candidates, blob, src, src_len, -1 if type_context else active_scope.owner, active_scope.body_indent, prefix, cursor_offset, truncated)
+    completion_candidates_sort(candidates)
+    result_body.push_str("{\"isIncomplete\":true,\"items\":[")
+    first: mutable bool = true
+    start_pos: (line: i64, character: i64) = (line, start_char)
+    end_pos: (line: i64, character: i64) = (line, end_char)
+    i: mutable usize = 0
+    while i < candidates.count:
+        candidate: CompletionCandidate = candidates[i]
+        if not candidate.ambiguous:
+            result_body.push_str(",") if not first
+            first <- false
+            snippet_text: mutable darray[u8] = []
+            label_details_text: mutable darray[u8] = []
+            insertion_text: mutable sview = candidate.label
+            function_presentation_available: bool = string_view_eq(candidate.category, "fn") == 1 and completion_function_presentation(signature_blob, candidate.label, snippet_support, label_details_support, snippet_text, label_details_text)
+            snippet_enabled: bool = snippet_support and function_presentation_available
+            label_details_enabled: bool = label_details_support and function_presentation_available
+            insertion_text <- bytes_view_range_ref(snippet_text, 0, snippet_text.count) if snippet_enabled
+            commit_open_paren: bool = commit_characters_support and candidate.kind == 3 and not snippet_enabled and not completion_followed_by_open_paren(src, src_len, end_offset)
+            label_details: sview = bytes_view_range_ref(label_details_text, 0, label_details_text.count) if label_details_enabled else sview("", 0, 0)
+            completion_append_item(result_body, candidate, prefix, start_pos.line, start_pos.character, character, end_pos.line, end_pos.character, kind_limited, allowed_kinds, insertion_text, snippet_enabled, insert_replace_support, commit_open_paren, label_details, label_details_enabled, resolve_uri, document.lifecycle.version, document.lifecycle.generation.i64(), document.caches.signature_len > 0)
+        i <- i + 1
+    result_body.push_str("]}")
+    return ProviderOutcome.Result
+
+
+def completion_resolve_detail(item: Json::Value, documents: darray[LspDocument]&, document_storage: darray[u8]&, document_heads: dict[u64, u32]&, detail_out: mutable darray[u8]&) -> bool can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        return false if not root_is_object(item) or Json::count_key(item, "data") != 1 or Json::count_key(item, "label") != 1
+        data: mutable Json::Value = Json::Value.Null
+        label_value: mutable Json::Value = Json::Value.Null
+        if Json::get(item, "data") is data_value:
+            data <- data_value
+        else:
+            return false
+        if Json::get(item, "label") is item_label:
+            label_value <- item_label
+        else:
+            return false
+        return false if not root_is_object(data)
+        return false if Json::count_key(data, "uri") != 1 or Json::count_key(data, "version") != 1 or Json::count_key(data, "generation") != 1
+        uri_bytes: mutable darray[u8] = []
+        label_bytes: mutable darray[u8] = []
+        uri_value: mutable Json::Value = Json::Value.Null
+        version_value: mutable Json::Value = Json::Value.Null
+        generation_value: mutable Json::Value = Json::Value.Null
+        if Json::get(data, "uri") is found_uri:
+            uri_value <- found_uri
+        else:
+            return false
+        if Json::get(data, "version") is found_version:
+            version_value <- found_version
+        else:
+            return false
+        if Json::get(data, "generation") is found_generation:
+            generation_value <- found_generation
+        else:
+            return false
+        match uri_value:
+            Json::Value.Str(_):
+                Json::decode_into(uri_value, uri_bytes)
+            _:
+                return false
+        match label_value:
+            Json::Value.Str(_):
+                Json::decode_into(label_value, label_bytes)
+            _:
+                return false
+        return false if uri_bytes.count == 0 or uri_bytes.count > MAX_COMPLETION_RESOLVE_URI_BYTES
+        version: mutable i64 = -1
+        generation: mutable i64 = -1
+        match Json::as_i64_result(version_value):
+            Json::I64ParseOutcome.Valid(value):
+                version <- value
+            Json::I64ParseOutcome.Invalid:
+                return false
+        match Json::as_i64_result(generation_value):
+            Json::I64ParseOutcome.Valid(value):
+                generation <- value
+            Json::I64ParseOutcome.Invalid:
+                return false
+        return false if generation < 0
+        canonical_uri: mutable darray[u8] = []
+        Uri::canonical_key(&uri_bytes[0], uri_bytes.count, canonical_uri)
+        canonical_view: sview = bytes_view_range_ref(canonical_uri, 0, canonical_uri.count)
+        snapshot: DocumentSnapshotView = document_snapshot_for_uri(documents, document_storage, document_heads, canonical_view)
+        return false if not snapshot.valid or snapshot.lifecycle.analysis_state != DocumentAnalysisState.Ready
+        return false if snapshot.lifecycle.version != version or snapshot.lifecycle.generation.i64() != generation
+        return false if snapshot.caches.signature_len == 0 or snapshot.caches.signature_start > document_storage.count or snapshot.caches.signature_len > document_storage.count - snapshot.caches.signature_start
+        signature_blob: sview = bytes_view_range_ref(document_storage, snapshot.caches.signature_start, snapshot.caches.signature_len)
+        label: sview = bytes_view_range_ref(label_bytes, 0, label_bytes.count)
+        snippet: mutable darray[u8] = []
+        parameters: mutable darray[u8] = []
+        return false if not completion_function_presentation(signature_blob, label, false, true, snippet, parameters)
+        detail_out.truncate(0)
+        detail_out.extend(label_bytes)
+        detail_out.extend(parameters)
+        return true
+
+
+def completion_resolved_item_json(item: Json::Value, detail: sview, body: mutable darray[u8]&) -> void can[Memory.Allocate, Abort.Panic]:
+    match item:
+        Json::Value.Obj(fields):
+            body.push(123)
+            first: mutable bool = true
+            for field in fields:
+                key_bytes: mutable darray[u8] = []
+                Json::decode_into(Json::Value.Str(field.key), key_bytes)
+                key: sview = bytes_view_range_ref(key_bytes, 0, key_bytes.count)
+                continue if string_view_eq(key, "detail") == 1
+                body.push(44) if not first
+                first <- false
+                json_append_raw_string(body, field.key)
+                body.push(58)
+                _ = json_append_raw_value(body, field.value, 1)
+            body.push(44) if not first
+            body.push_str("\"detail\":\"")
+            json_escape_utf8(body, detail)
+            body.push_str("\"}")
+        _:
+            _ = json_append_raw_value(body, item, 0)
+
+
+def handle_completion_resolve(root: Json::Value, documents: darray[LspDocument]&, document_storage: darray[u8]&, document_heads: dict[u64, u32]&, result_body: mutable darray[u8]&) -> void can[Memory.Allocate, Abort.Panic]:
+    item: mutable Json::Value = Json::Value.Null
+    params: mutable Json::Value = Json::Value.Null
+    if Json::get(root, "params") is found_params:
+        params <- found_params
+    else:
+        result_body.push_str("null")
+        return
+    if Json::get(params, "item") is found_item:
+        item <- found_item
+    else:
+        result_body.push_str("null")
+        return
+    detail_bytes: mutable darray[u8] = []
+    if completion_resolve_detail(item, documents, document_storage, document_heads, detail_bytes):
+        detail: sview = bytes_view_range_ref(detail_bytes, 0, detail_bytes.count)
+        completion_resolved_item_json(item, detail, result_body)
+    else:
+        _ = json_append_raw_value(result_body, item, 0)

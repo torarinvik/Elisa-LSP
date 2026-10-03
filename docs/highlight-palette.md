@@ -68,15 +68,15 @@ fn.use, Const → bind.global, Module → meta.module, and enum variant declarat
 qualified selectors, and bare match arms → enum.variant — so even a lowercase
 type or a function passed as a value colors correctly.
 
-**Comments** (index 40) are now emitted: the frontend lexer collects comment
-spans in a side channel (frontend_tokenize_comments_with_len) and the LSP merges
-them into the token stream by position.
+**Comments** (index 40) are now emitted: the frontend lexer returns comment
+spans alongside parser tokens through
+`frontend_tokenize_expanded_unit_with_comments`, and the LSP merges them into
+the token stream by position without a second whole-source lex.
 
-The [S] layer is now **per-occurrence** for bindings: the resolver logs every
-param/local reference and declaration (Semantic::occurrence_kind), so bind.param
-and bind.local are exact and a local that shadows a top-level name wins over the
-global classification. Globals (Func/Struct/Const/…) remain name-based from the
-symbol table. Lookup is keyed by (line, name) — the AST keeps only line per
-identifier — so the only residual imprecision is two *different* resolutions of
-one name on one *single* line (vanishingly rare; fields are handled separately
-via `.`).
+The [S] layer uses the frontend adapter's named `OCC_PARAM` and `OCC_LOCAL`
+roles from its resolver occurrence side table. The LSP indexes those records
+by line and compares names within that line, so a local that shadows a
+top-level name wins over the global classification. Globals (Func/Struct/Const/…)
+remain name-based from the symbol table. This line/name contract can still be
+ambiguous when one spelling resolves differently more than once on the same
+line; exact token-span identities are tracked under A02.

@@ -12,9 +12,163 @@
 # lone/invalid bytes count 1 each so conversion stays total and bounded.
 module Positions:
     public:
-        # Byte offset of the first byte of 0-based `line0`. Lines past the end
-        # clamp to `src_len` (empty trailing span, never OOB).
+        # Build a bounded source view from the pointer/length pair used by the
+        # compiler lexer and parser. Callers pass offsets already validated
+        # against the same source snapshot; keep the explicit bound here so
+        # the view never relies on a NUL scan or escapes the source extent.
+        def source_view_span(src: u8&, src_len: usize, start: usize, count: usize) -> sview:
+            empty: sview = sview("", 0, 0)
+            return empty if count == 0 or start > src_len or count > src_len - start
+            signed_count: i64 = count.i64()
+            return empty if signed_count < 0 or signed_count.usize() != count
+            # The compiler now requires pointer-derived source views to cross an
+            # explicit unsafe boundary. Keep that boundary after the byte-range
+            # checks above, where the lexer/parser source extent is authoritative.
+            trusted Unsafe.PointerCast:
+                return src[start:start + count]
+
+        # Build the per-snapshot line-start index used by providers that map
+        # many spans. The result always contains offset 0, including for empty
+        # input and for a trailing empty line after a final LF.
+        def build_line_starts(src: u8&, src_len: usize) -> darray[usize] can[Memory.Allocate, Abort.Panic]:
+            can Memory.Allocate, Abort.Panic:
+                starts: mutable darray[usize] = []
+                starts.reserve(line_count(src, src_len).usize())
+                starts.push(0)
+                i: mutable usize = 0
+                while i < src_len:
+                    starts.push(i + 1) if src[i] == 10
+                    i <- i + 1
+                return starts
+
+
+        # O(1) indexed form of line_start_offset. Out-of-range lines resolve
+        # to the empty source-end position, matching the scanning helper.
+        def line_start_offset_indexed(line_starts: darray[usize], src_len: usize, line0: i64) -> usize:
+            return src_len if line0 < 0 or line0.usize() >= line_starts.count
+            return line_starts[line0.usize()]
+
+
+        # Convert an absolute half-open byte offset into an LSP position using
+        # the same indexed snapshot boundaries as line/column providers. Values
+        # beyond the source clamp to EOF; offsets in CRLF or a UTF-8 scalar
+        # resolve to the nearest preceding protocol boundary.
+        def byte_offset_to_position_indexed(src: u8&, src_len: usize, line_starts: darray[usize], offset: usize, utf8: bool) -> (line: i64, character: i64):
+            bounded: usize = src_len if offset > src_len else offset
+            lo: mutable usize = 0
+            hi: mutable usize = line_starts.count
+            while lo + 1 < hi:
+                mid: usize = lo + (hi - lo) / 2
+                if line_starts[mid] <= bounded:
+                    lo <- mid
+                else:
+                    hi <- mid
+            byte_col: i64 = (bounded - line_starts[lo]).i64()
+            character: i64 = byte_col_to_units_indexed(src, src_len, line_starts, lo.i64(), byte_col, utf8)
+            return (lo.i64(), character)
+
+
+        # O(1) content length for a line in an indexed snapshot. Strip LF and
+        # its preceding CR, while preserving a final empty line and lone CR.
+        def line_byte_length_indexed(src: u8&, src_len: usize, line_starts: darray[usize], line0: i64) -> i64:
+            return 0 if line0 < 0 or line0.usize() >= line_starts.count
+            start: usize = line_starts[line0.usize()]
+            end: mutable usize = src_len
+            has_next: bool = line0.usize() + 1 < line_starts.count
+            end <- line_starts[line0.usize() + 1] if has_next
+            end <- end - 1 if end > start and src[end - 1] == 10
+            end <- end - 1 if has_next and end > start and src[end - 1] == 13
+            return (end - start).i64()
+
+
+        # Indexed UTF-16 width for one source line.
+        def line_utf16_length_indexed(src: u8&, src_len: usize, line_starts: darray[usize], line0: i64) -> i64:
+            start: usize = line_start_offset_indexed(line_starts, src_len, line0)
+            return utf16_units_for_bytes(src, start, line_byte_length_indexed(src, src_len, line_starts, line0).usize())
+
+
+        # Encoding-aware line width using the same retained line-start table.
+        def line_unit_length_indexed(src: u8&, src_len: usize, line_starts: darray[usize], line0: i64, utf8: bool) -> i64:
+            return line_byte_length_indexed(src, src_len, line_starts, line0) if utf8 else line_utf16_length_indexed(src, src_len, line_starts, line0)
+
+
+        # Convert a UTF-8 byte column to negotiated units using indexed line
+        # boundaries. Mid-code-point columns clamp to that scalar's beginning.
+        def byte_col_to_units_indexed(src: u8&, src_len: usize, line_starts: darray[usize], line0: i64, byte_col: i64, utf8: bool) -> i64:
+            start: usize = line_start_offset_indexed(line_starts, src_len, line0)
+            llen: i64 = line_byte_length_indexed(src, src_len, line_starts, line0)
+            clamped: i64 = 0 if byte_col < 0 else (llen if byte_col > llen else byte_col)
+            return byte_col_to_boundary(src, start, llen.usize(), clamped.usize()).i64() if utf8 else byte_col_to_utf16_column(src, start, llen.usize(), clamped.usize())
+
+
+        # Convert a negotiated LSP character column back to a byte column with
+        # the same code-point and surrogate-pair boundary policy as the scan API.
+        def char_to_byte_col_indexed(src: u8&, src_len: usize, line_starts: darray[usize], line0: i64, char_units: i64, utf8: bool) -> i64:
+            start: usize = line_start_offset_indexed(line_starts, src_len, line0)
+            llen: i64 = line_byte_length_indexed(src, src_len, line_starts, line0)
+            clamped: i64 = 0 if char_units < 0 else (llen if char_units > llen else char_units)
+            return byte_col_to_boundary(src, start, llen.usize(), clamped.usize()).i64() if utf8 else char_to_byte_col_u16(src, start, llen, clamped)
+
+
+        # Span variants read one document's range inside the session-level
+        # flat sidecar without allocating a sliced darray for each request.
+        def line_start_offset_span_indexed(line_starts: darray[usize]&, span_start: usize, span_count: usize, src_len: usize, line0: i64) -> usize:
+            return src_len if line0 < 0 or line0.usize() >= span_count
+            return line_starts[span_start + line0.usize()]
+
+
+        def byte_offset_to_position_span_indexed(src: u8&, src_len: usize, line_starts: darray[usize]&, span_start: usize, span_count: usize, offset: usize, utf8: bool) -> (line: i64, character: i64):
+            return (0, 0) if span_count == 0
+            bounded: usize = src_len if offset > src_len else offset
+            lo: mutable usize = span_start
+            hi: mutable usize = span_start + span_count
+            while lo + 1 < hi:
+                mid: usize = lo + (hi - lo) / 2
+                if line_starts[mid] <= bounded:
+                    lo <- mid
+                else:
+                    hi <- mid
+            line0: usize = lo - span_start
+            byte_col: i64 = (bounded - line_starts[lo]).i64()
+            character: i64 = byte_col_to_units_span_indexed(src, src_len, line_starts, span_start, span_count, line0.i64(), byte_col, utf8)
+            return (line0.i64(), character)
+
+
+        def line_byte_length_span_indexed(src: u8&, src_len: usize, line_starts: darray[usize]&, span_start: usize, span_count: usize, line0: i64) -> i64:
+            return 0 if line0 < 0 or line0.usize() >= span_count
+            start: usize = line_starts[span_start + line0.usize()]
+            end: mutable usize = src_len
+            has_next: bool = line0.usize() + 1 < span_count
+            end <- line_starts[span_start + line0.usize() + 1] if has_next
+            end <- end - 1 if end > start and src[end - 1] == 10
+            end <- end - 1 if has_next and end > start and src[end - 1] == 13
+            return (end - start).i64()
+
+
+        def line_unit_length_span_indexed(src: u8&, src_len: usize, line_starts: darray[usize]&, span_start: usize, span_count: usize, line0: i64, utf8: bool) -> i64:
+            start: usize = line_start_offset_span_indexed(line_starts, span_start, span_count, src_len, line0)
+            length: i64 = line_byte_length_span_indexed(src, src_len, line_starts, span_start, span_count, line0)
+            return length if utf8 else utf16_units_for_bytes(src, start, length.usize())
+
+
+        def byte_col_to_units_span_indexed(src: u8&, src_len: usize, line_starts: darray[usize]&, span_start: usize, span_count: usize, line0: i64, byte_col: i64, utf8: bool) -> i64:
+            start: usize = line_start_offset_span_indexed(line_starts, span_start, span_count, src_len, line0)
+            llen: i64 = line_byte_length_span_indexed(src, src_len, line_starts, span_start, span_count, line0)
+            clamped: i64 = 0 if byte_col < 0 else (llen if byte_col > llen else byte_col)
+            return byte_col_to_boundary(src, start, llen.usize(), clamped.usize()).i64() if utf8 else byte_col_to_utf16_column(src, start, llen.usize(), clamped.usize())
+
+
+        def char_to_byte_col_span_indexed(src: u8&, src_len: usize, line_starts: darray[usize]&, span_start: usize, span_count: usize, line0: i64, char_units: i64, utf8: bool) -> i64:
+            start: usize = line_start_offset_span_indexed(line_starts, span_start, span_count, src_len, line0)
+            llen: i64 = line_byte_length_span_indexed(src, src_len, line_starts, span_start, span_count, line0)
+            clamped: i64 = 0 if char_units < 0 else (llen if char_units > llen else char_units)
+            return byte_col_to_boundary(src, start, llen.usize(), clamped.usize()).i64() if utf8 else char_to_byte_col_u16(src, start, llen, clamped)
+
+
+        # Byte offset of 0-based `line0`. Invalid indexes clamp to src_len
+        # (an empty trailing span, never OOB).
         def line_start_offset(src: u8&, src_len: usize, line0: i64) -> usize:
+            return src_len if line0 < 0
             off: mutable usize = 0
             cur: mutable i64 = 0
             i: mutable usize = 0
@@ -24,7 +178,7 @@ module Positions:
                     cur <- cur + 1
                     off <- i + 1
                 i <- i + 1
-            return off
+            return off if cur == line0 else src_len
 
 
         # Number of lines: newlines + 1 (empty source is one empty line).
@@ -37,24 +191,113 @@ module Positions:
             return n
 
 
-        # Content bytes of 0-based `line0`, excluding LF and a trailing CR.
+        # Content bytes of 0-based `line0`, excluding LF and CR only when that
+        # CR is immediately before LF. A lone CR remains source content.
         def line_byte_length(src: u8&, src_len: usize, line0: i64) -> i64:
+            return 0 if line0 < 0
             start: usize = line_start_offset(src, src_len, line0)
+            if start == src_len:
+                return 0 if src_len == 0 and line0 == 0
+                if src_len > 0 and src[src_len - 1] == 10:
+                    return 0 if line0 == line_count(src, src_len) - 1
+                return 0
             end: mutable usize = start
             while end < src_len and src[end] != 10:
                 end <- end + 1
-            end <- end - 1 if end > start and src[end - 1] == 13
+            end <- end - 1 if end < src_len and end > start and src[end - 1] == 13
             return (end - start).i64()
 
 
-        # UTF-8 sequence length implied by a lead byte; lone continuations and
-        # impossible leads count 1 so scanning never stalls or overruns.
-        def utf8_seq_length(first: u8) -> usize:
-            1 return if first < 128
-            2 return if first >= 194 and first <= 223
-            3 return if first >= 224 and first <= 239
-            4 return if first >= 240 and first <= 247
+        # Return the length of one well-formed Unicode scalar at `offset`;
+        # malformed, overlong, surrogate, truncated, or out-of-range bytes are
+        # consumed one at a time so positions remain total and byte-addressable.
+        def utf8_scalar_length(src: u8&, start: usize, limit: usize, offset: usize) -> usize:
+            return 1 if offset >= limit
+            first: u8 = src[start + offset]
+            if first >= 194 and first <= 223:
+                return 1 if offset + 1 >= limit
+                second: u8 = src[start + offset + 1]
+                return 2 if second >= 128 and second <= 191
+                return 1
+            elif first >= 224 and first <= 239:
+                return 1 if offset + 2 >= limit
+                second: u8 = src[start + offset + 1]
+                third: u8 = src[start + offset + 2]
+                second_ok: mutable bool = second >= 128 and second <= 191
+                second_ok <- second >= 160 and second <= 191 if first == 224
+                second_ok <- second >= 128 and second <= 159 if first == 237
+                return 3 if second_ok and third >= 128 and third <= 191
+                return 1
+            elif first >= 240 and first <= 244:
+                return 1 if offset + 3 >= limit
+                second: u8 = src[start + offset + 1]
+                third: u8 = src[start + offset + 2]
+                fourth: u8 = src[start + offset + 3]
+                second_ok: mutable bool = second >= 128 and second <= 191
+                second_ok <- second >= 144 and second <= 191 if first == 240
+                second_ok <- second >= 128 and second <= 143 if first == 244
+                return 4 if second_ok and third >= 128 and third <= 191 and fourth >= 128 and fourth <= 191
+                return 1
             return 1
+
+
+        def sview_scalar_length(text: sview, offset: usize) -> usize:
+            return 1 if offset >= text.len.usize()
+            first: u8 = sview_at(text, offset)
+            if first >= 194 and first <= 223:
+                return 1 if offset + 1 >= text.len.usize()
+                second: u8 = sview_at(text, offset + 1)
+                return 2 if second >= 128 and second <= 191
+                return 1
+            elif first >= 224 and first <= 239:
+                return 1 if offset + 2 >= text.len.usize()
+                second: u8 = sview_at(text, offset + 1)
+                third: u8 = sview_at(text, offset + 2)
+                second_ok: mutable bool = second >= 128 and second <= 191
+                second_ok <- second >= 160 and second <= 191 if first == 224
+                second_ok <- second >= 128 and second <= 159 if first == 237
+                return 3 if second_ok and third >= 128 and third <= 191
+                return 1
+            elif first >= 240 and first <= 244:
+                return 1 if offset + 3 >= text.len.usize()
+                second: u8 = sview_at(text, offset + 1)
+                third: u8 = sview_at(text, offset + 2)
+                fourth: u8 = sview_at(text, offset + 3)
+                second_ok: mutable bool = second >= 128 and second <= 191
+                second_ok <- second >= 144 and second <= 191 if first == 240
+                second_ok <- second >= 128 and second <= 143 if first == 244
+                return 4 if second_ok and third >= 128 and third <= 191 and fourth >= 128 and fourth <= 191
+                return 1
+            return 1
+
+
+        # Clamp a byte column to a UTF-8 boundary. A position inside a
+        # multibyte sequence resolves to that code point's first byte, keeping
+        # both incoming and outgoing ranges safe to slice as UTF-8.
+        def byte_col_to_boundary(src: u8&, start: usize, limit: usize, byte_col: usize) -> usize:
+            target: usize = limit if byte_col > limit else byte_col
+            i: mutable usize = 0
+            while i < target:
+                seqlen: usize = utf8_scalar_length(src, start, limit, i)
+                return i if i + seqlen > target
+                i <- i + seqlen
+            return target
+
+
+        # Convert a byte column to UTF-16, resolving an offset inside a UTF-8
+        # sequence to the units before that code point. In particular, no
+        # byte offset inside a four-byte sequence becomes a synthetic UTF-16
+        # position inside its surrogate pair.
+        def byte_col_to_utf16_column(src: u8&, start: usize, limit: usize, byte_col: usize) -> i64:
+            target: usize = limit if byte_col > limit else byte_col
+            units: mutable i64 = 0
+            i: mutable usize = 0
+            while i < target:
+                seqlen: usize = utf8_scalar_length(src, start, limit, i)
+                return units if i + seqlen > target
+                units <- units + 2 if seqlen == 4 else units + 1
+                i <- i + seqlen
+            return units
 
 
         # UTF-16 code units in `nbytes` starting at `start` (clamped by caller
@@ -64,9 +307,7 @@ module Positions:
             units: mutable i64 = 0
             i: mutable usize = 0
             while i < nbytes:
-                first: u8 = src[start + i]
-                seqlen: mutable usize = utf8_seq_length(first)
-                seqlen <- nbytes - i if seqlen > nbytes - i
+                seqlen: usize = utf8_scalar_length(src, start, nbytes, i)
                 if seqlen == 4:
                     units <- units + 2
                 else:
@@ -88,7 +329,7 @@ module Positions:
             start: usize = line_start_offset(src, src_len, line0)
             llen: i64 = line_byte_length(src, src_len, line0)
             clamped: i64 = 0 if byte_col < 0 else (llen if byte_col > llen else byte_col)
-            return utf16_units_for_bytes(src, start, clamped.usize())
+            return byte_col_to_utf16_column(src, start, llen.usize(), clamped.usize())
 
 
         # UTF-16 units in an absolute byte span (clamped to the source). Used
@@ -111,17 +352,49 @@ module Positions:
             start: usize = line_start_offset(src, src_len, line0)
             llen: i64 = line_byte_length(src, src_len, line0)
             clamped: i64 = 0 if byte_col < 0 else (llen if byte_col > llen else byte_col)
-            return clamped if utf8 else utf16_units_for_bytes(src, start, clamped.usize())
+            return byte_col_to_boundary(src, start, llen.usize(), clamped.usize()).i64() if utf8 else byte_col_to_utf16_column(src, start, llen.usize(), clamped.usize())
 
 
         # Inverse of byte_col_to_units (F01): a negotiated-unit column back to a
-        # byte column on the line, clamped to the line's byte length. A column
-        # landing mid-sequence resolves to the sequence's start byte.
+        # byte column on the line. UTF-8 columns are clamped to a code-point
+        # boundary; a column landing mid-sequence resolves to its start byte.
+        # UTF-16 columns inside a surrogate pair also resolve to that code
+        # point's start byte.
         def char_to_byte_col(src: u8&, src_len: usize, line0: i64, char_units: i64, utf8: bool) -> i64:
             start: usize = line_start_offset(src, src_len, line0)
             llen: i64 = line_byte_length(src, src_len, line0)
             clamped: i64 = 0 if char_units < 0 else (llen if char_units > llen else char_units)
-            return clamped if utf8 else char_to_byte_col_u16(src, start, llen, clamped)
+            return byte_col_to_boundary(src, start, llen.usize(), clamped.usize()).i64() if utf8 else char_to_byte_col_u16(src, start, llen, clamped)
+
+
+        # Convert an edit endpoint only when it lands on a protocol character
+        # boundary. Queries keep using the permissive converter above, but an
+        # edit must never round a mid-code-point UTF-8 byte or mid-surrogate
+        # UTF-16 column onto a different source span.
+        def edit_char_to_byte_col(src: u8&, src_len: usize, line0: i64, char_units: i64, utf8: bool, byte_col_out: mutable i64&) -> bool:
+            start: usize = line_start_offset(src, src_len, line0)
+            llen: i64 = line_byte_length(src, src_len, line0)
+            unit_limit: i64 = llen if utf8 else line_utf16_length(src, src_len, line0)
+            clamped: i64 = 0 if char_units < 0 else (unit_limit if char_units > unit_limit else char_units)
+            if utf8:
+                boundary: i64 = byte_col_to_boundary(src, start, llen.usize(), clamped.usize()).i64()
+                return false if boundary != clamped
+                byte_col_out <- boundary
+                return true
+            i: mutable usize = 0
+            units: mutable i64 = 0
+            limit: usize = llen.usize()
+            while i < limit:
+                if units == clamped:
+                    byte_col_out <- i.i64()
+                    return true
+                seqlen: usize = utf8_scalar_length(src, start, limit, i)
+                next_units: i64 = units + 2 if seqlen == 4 else units + 1
+                return false if units < clamped and clamped < next_units
+                units <- next_units
+                i <- i + seqlen
+            byte_col_out <- i.i64()
+            return true
 
 
         def char_to_byte_col_u16(src: u8&, start: usize, llen: i64, char_units: i64) -> i64:
@@ -129,12 +402,10 @@ module Positions:
             units: mutable i64 = 0
             limit: usize = llen.usize()
             while i < limit and units < char_units:
-                seqlen: mutable usize = utf8_seq_length(src[start + i])
-                seqlen <- limit - i if seqlen > limit - i
-                if seqlen == 4:
-                    units <- units + 2
-                else:
-                    units <- units + 1
+                seqlen: usize = utf8_scalar_length(src, start, limit, i)
+                next_units: i64 = units + 2 if seqlen == 4 else units + 1
+                return i.i64() if next_units > char_units
+                units <- next_units
                 i <- i + seqlen
             return i.i64()
 
@@ -152,8 +423,7 @@ module Positions:
             units: mutable i64 = 0
             i: mutable usize = 0
             while i < text.len.usize():
-                seqlen: mutable usize = utf8_seq_length(sview_at(text, i))
-                seqlen <- text.len.usize() - i if seqlen > text.len.usize() - i
+                seqlen: usize = sview_scalar_length(text, i)
                 if seqlen == 4:
                     units <- units + 2
                 else:

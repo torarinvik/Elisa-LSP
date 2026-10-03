@@ -9,13 +9,14 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 SRV="$ROOT/build/elisa-lsp"
 [[ -x "$SRV" ]] || { echo "build first: bash build.sh" >&2; exit 2; }
 
-python3 - "$SRV" <<'PY'
-import json, subprocess, sys
-srv = sys.argv[1]
-def frame(o):
-    b = json.dumps(o, separators=(",", ":")).encode()
-    return b"Content-Length: " + str(len(b)).encode() + b"\r\n\r\n" + b
+python3 - "$SRV" "$ROOT" <<'PY'
+import os
+import sys
 
+sys.path.insert(0, os.path.join(sys.argv[2], "test"))
+from lsp_client import LspSession
+
+srv = sys.argv[1]
 BROKEN = [
     "",                                                     # empty
     "def\n",                                                # unfinished decl
@@ -29,66 +30,80 @@ BROKEN = [
     "def f() -> void:\n    s: dstr = f\"hi {\n",            # incomplete interpolation
     "def f[T: -> void:\n    pass\n",                        # half-written generic
     "def f() -> void:\n    match\n",                        # dangling selector
-    "def f() -> void:\n" + "    x: i64 = 1\n"*200 + "    y: i64 = (\n",  # deep body
+    "def f() -> void:\n" + "    x: i64 = 1\n" * 200 + "    y: i64 = (\n",  # deep body
 ]
 GOOD = "def ok() -> void:\n    x: i64 = 1\n"
+URI = "file:///a04.elisa"
 
-msgs = [frame({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})]
-# Open and edit through every broken state, exercising each provider.
-for i, src in enumerate(BROKEN):
-    uri = "file:///a04.elisa"
-    msgs.append(frame({"jsonrpc":"2.0","method":"textDocument/didOpen",
-                       "params":{"textDocument":{"uri":uri,"languageId":"Elisa","version":i*2+1,"text":src}}})
-                if i == 0 else
-                frame({"jsonrpc":"2.0","method":"textDocument/didChange",
-                       "params":{"textDocument":{"uri":uri,"version":i*2+1},
-                                 "contentChanges":[{"text":src}]}}))
-    base = 100 + i*10
-    msgs.append(frame({"jsonrpc":"2.0","id":base,   "method":"textDocument/semanticTokens/full","params":{"textDocument":{"uri":uri}}}))
-    msgs.append(frame({"jsonrpc":"2.0","id":base+1, "method":"textDocument/documentSymbol","params":{"textDocument":{"uri":uri}}}))
-    msgs.append(frame({"jsonrpc":"2.0","id":base+2, "method":"textDocument/foldingRange","params":{"textDocument":{"uri":uri}}}))
-    msgs.append(frame({"jsonrpc":"2.0","id":base+3, "method":"textDocument/selectionRange",
-                       "params":{"textDocument":{"uri":uri},"positions":[{"line":0,"character":0},{"line":1,"character":4}]}}))
-    msgs.append(frame({"jsonrpc":"2.0","id":base+4, "method":"textDocument/hover",
-                       "params":{"textDocument":{"uri":uri},"position":{"line":0,"character":4}}}))
-# Recover with a valid edit.
-last = len(BROKEN)*2+1
-msgs.append(frame({"jsonrpc":"2.0","method":"textDocument/didChange",
-                   "params":{"textDocument":{"uri":"file:///a04.elisa","version":last+1},
-                             "contentChanges":[{"text":GOOD}]}}))
-msgs.append(frame({"jsonrpc":"2.0","id":5000,"method":"textDocument/semanticTokens/full",
-                   "params":{"textDocument":{"uri":"file:///a04.elisa"}}}))
-msgs.append(frame({"jsonrpc":"2.0","id":9,"method":"shutdown"}))
-msgs.append(frame({"jsonrpc":"2.0","method":"exit"}))
+with LspSession(
+    srv,
+    startup_timeout=15,
+    request_timeout=120,
+    teardown_timeout=10,
+) as client:
+    initialized = client.initialize({"capabilities": {}}, timeout=30)
+    assert "result" in initialized, initialized
 
-p = subprocess.run([srv], input=b"".join(msgs), capture_output=True, timeout=120)
-assert p.returncode == 0, f"server died on incomplete source: rc={p.returncode}"
+    # Open and edit through every broken state, exercising each provider.
+    for i, source in enumerate(BROKEN):
+        version = i * 2 + 1
+        if i == 0:
+            client.notify("textDocument/didOpen", {
+                "textDocument": {
+                    "uri": URI,
+                    "languageId": "Elisa",
+                    "version": version,
+                    "text": source,
+                }
+            })
+        else:
+            client.notify("textDocument/didChange", {
+                "textDocument": {"uri": URI, "version": version},
+                "contentChanges": [{"text": source}],
+            })
 
-res, notifs, pos = {}, [], 0
-out = p.stdout
-while pos < len(out):
-    sep = out.find(b"\r\n\r\n", pos)
-    ln = int(out[pos:sep].split(b":",1)[1].strip())
-    start = sep+4
-    msg = json.loads(out[start:start+ln])  # every frame must be valid JSON
-    if "id" in msg: res[msg["id"]] = msg
-    else: notifs.append(msg)
-    pos = start+ln
+        base = 100 + i * 10
+        requests = [
+            {"jsonrpc": "2.0", "id": base, "method": "textDocument/semanticTokens/full",
+             "params": {"textDocument": {"uri": URI}}},
+            {"jsonrpc": "2.0", "id": base + 1, "method": "textDocument/documentSymbol",
+             "params": {"textDocument": {"uri": URI}}},
+            {"jsonrpc": "2.0", "id": base + 2, "method": "textDocument/foldingRange",
+             "params": {"textDocument": {"uri": URI}}},
+            {"jsonrpc": "2.0", "id": base + 3, "method": "textDocument/selectionRange",
+             "params": {"textDocument": {"uri": URI},
+                         "positions": [{"line": 0, "character": 0},
+                                       {"line": 1, "character": 4}]}},
+            {"jsonrpc": "2.0", "id": base + 4, "method": "textDocument/hover",
+             "params": {"textDocument": {"uri": URI},
+                         "position": {"line": 0, "character": 4}}},
+        ]
+        client.send_many(requests, timeout=120)
+        for request_id in range(base, base + 5):
+            response = client.wait_response(request_id, timeout=120)
+            assert "error" not in response, \
+                f"provider errored on broken source: {response}"
 
-# Every provider answered exactly once for every broken state.
-for i in range(len(BROKEN)):
-    base = 100 + i*10
-    for k in range(5):
-        assert base+k in res, f"missing response id {base+k} (broken state {i})"
-        assert "error" not in res[base+k], f"provider errored on broken source: {res[base+k]}"
+    # Recover with a valid edit.
+    last = len(BROKEN) * 2 + 1
+    client.notify("textDocument/didChange", {
+        "textDocument": {"uri": URI, "version": last + 1},
+        "contentChanges": [{"text": GOOD}],
+    })
+    recovered = client.request("textDocument/semanticTokens/full", {
+        "textDocument": {"uri": URI},
+    }, req_id=5000, timeout=120)
+    assert "result" in recovered, recovered
+    client.finish(timeout=120)
 
-# Broken sources still produced diagnostics (not a silent drop).
-diag_notifs = [n for n in notifs if n.get("method") == "textDocument/publishDiagnostics"]
-assert diag_notifs, "no diagnostics published for broken sources"
+    # Broken sources still produced diagnostics (not a silent drop).
+    diag_notifs = [n for n in client.notifications
+                   if n.get("method") == "textDocument/publishDiagnostics"]
+    assert diag_notifs, "no diagnostics published for broken sources"
 
-# Recovery: the valid edit yields non-empty tokens.
-tok = res[5000]["result"]["data"]
-assert tok, "valid edit after broken states produced no tokens"
+    # Recovery: the valid edit yields non-empty tokens.
+    tok = recovered["result"]["data"]
+    assert tok, "valid edit after broken states produced no tokens"
 
 print(f"containment OK: {len(BROKEN)} broken states, all providers alive, recovered")
 PY

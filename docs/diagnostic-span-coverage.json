@@ -1,0 +1,4808 @@
+{
+  "schema_version": 1,
+  "compiler_source_fingerprint": "56868fba124d5f56905635d2529b3e70acbd22033a0a3ce5ff7225330cbb5393",
+  "inventory_method": "static_named_struct_literal_scan",
+  "position_field_semantics": "An explicit pos field is not proof of a precise or valid runtime span. The LSP integration tests separately verify exact ranges and bounded fallback behavior.",
+  "summary": {
+    "diagnostic_kind_count": 621,
+    "source_file_count": 815,
+    "construction_site_count": 1032,
+    "classified_construction_site_count": 1023,
+    "unclassified_construction_site_count": 9,
+    "kinds_with_constructors": 596,
+    "kinds_with_only_explicit_position_arguments": 191,
+    "kinds_with_default_position_sites": 405,
+    "explicit_position_site_count": 428,
+    "default_position_site_count": 604,
+    "unclassified_explicit_position_site_count": 4,
+    "unclassified_default_position_site_count": 5,
+    "unclassified_sites": [
+      {
+        "kind_expression": "cpu_kind",
+        "site": "src/semantic/check_call_precondition_unproven.elisa:294",
+        "explicit_position_argument": false
+      },
+      {
+        "kind_expression": "diagnostic_kind",
+        "site": "src/semantic/resolve_types_initializers.elisa:205",
+        "explicit_position_argument": true
+      },
+      {
+        "kind_expression": "duplicate_kind",
+        "site": "src/semantic/symbols_duplicates.elisa:316",
+        "explicit_position_argument": true
+      },
+      {
+        "kind_expression": "dynamic/unknown",
+        "site": "src/semantic/semantic_api_severity.elisa:222",
+        "explicit_position_argument": false
+      },
+      {
+        "kind_expression": "fallback_kind",
+        "site": "src/semantic/check_precondition_violated.elisa:207",
+        "explicit_position_argument": false
+      },
+      {
+        "kind_expression": "interleave_kind",
+        "site": "src/semantic/check_region_stack_lifetime.elisa:460",
+        "explicit_position_argument": false
+      },
+      {
+        "kind_expression": "kind",
+        "site": "src/semantic/check_borrow_after_move.elisa:631",
+        "explicit_position_argument": true
+      },
+      {
+        "kind_expression": "kind",
+        "site": "src/semantic/check_ghost_function.elisa:86",
+        "explicit_position_argument": false
+      },
+      {
+        "kind_expression": "kind",
+        "site": "src/semantic/check_local_view_return_escape.elisa:389",
+        "explicit_position_argument": true
+      }
+    ],
+    "unknown_kind_names": [
+      "cpu_kind",
+      "diagnostic_kind",
+      "duplicate_kind",
+      "dynamic/unknown",
+      "fallback_kind",
+      "interleave_kind",
+      "kind"
+    ]
+  },
+  "diagnostics": [
+    {
+      "kind": "AbstractEffectHelperUnhandled",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_abstract_effects.elisa:158"
+      ]
+    },
+    {
+      "kind": "AbstractEffectImplementationAccess",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_abstract_effects.elisa:166"
+      ]
+    },
+    {
+      "kind": "AbstractEffectOperationMissing",
+      "construction_sites": 6,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_abstract_effects.elisa:133",
+        "src/semantic/check_abstract_effects.elisa:169",
+        "src/semantic/check_abstract_effects.elisa:174",
+        "src/semantic/check_abstract_effects.elisa:347",
+        "src/semantic/check_effect_declarations.elisa:125",
+        "src/semantic/check_effect_declarations.elisa:129"
+      ]
+    },
+    {
+      "kind": "AbstractEffectOperationRow",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_effect_declarations.elisa:124",
+        "src/semantic/check_effect_declarations.elisa:128"
+      ]
+    },
+    {
+      "kind": "AbstractEffectSpecializationArity",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_abstract_effects.elisa:139",
+        "src/semantic/check_abstract_effects.elisa:353"
+      ]
+    },
+    {
+      "kind": "AbstractEffectSpecializationMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_abstract_effects.elisa:141"
+      ]
+    },
+    {
+      "kind": "AbstractEffectUnhandled",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_abstract_effects.elisa:142"
+      ]
+    },
+    {
+      "kind": "AbstractEffectUnknown",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_effect_declarations.elisa:121"
+      ]
+    },
+    {
+      "kind": "AbstractEffectValue",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_abstract_effects.elisa:170",
+        "src/semantic/check_abstract_effects.elisa:175"
+      ]
+    },
+    {
+      "kind": "AffineAddress",
+      "construction_sites": 4,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_affine_collection.elisa:537",
+        "src/semantic/check_affine_collection.elisa:541",
+        "src/semantic/check_affine_collection.elisa:669",
+        "src/semantic/check_affine_collection.elisa:670"
+      ]
+    },
+    {
+      "kind": "AffineBulkCopy",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "AffineComprehensionIteration",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "AffineGlobal",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_affine_collection.elisa:773"
+      ]
+    },
+    {
+      "kind": "AffineMoveRequired",
+      "construction_sites": 12,
+      "explicit_position_sites": 9,
+      "default_position_sites": [
+        "src/semantic/check_affine_collection.elisa:675",
+        "src/semantic/check_affine_use_linear.elisa:507",
+        "src/semantic/check_firm_arg_type_mismatch.elisa:302"
+      ]
+    },
+    {
+      "kind": "AffineReference",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_affine_collection.elisa:105",
+        "src/semantic/check_affine_collection.elisa:129"
+      ]
+    },
+    {
+      "kind": "AffineScopeExit",
+      "construction_sites": 3,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_affine_use_linear.elisa:564",
+        "src/semantic/check_affine_use_linear.elisa:565",
+        "src/semantic/check_affine_use_linear.elisa:566"
+      ]
+    },
+    {
+      "kind": "AffineUseAfterConsume",
+      "construction_sites": 6,
+      "explicit_position_sites": 3,
+      "default_position_sites": [
+        "src/semantic/check_affine_use.elisa:127",
+        "src/semantic/check_affine_use.elisa:172",
+        "src/semantic/check_affine_use_linear.elisa:209"
+      ]
+    },
+    {
+      "kind": "AggregateStateArgMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "AggregateStateArity",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_aggregate_state_arity.elisa:25"
+      ]
+    },
+    {
+      "kind": "AliasPermissionFamilyConflict",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_permission_reserved.elisa:22"
+      ]
+    },
+    {
+      "kind": "AlignAnnotationArity",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "AlignAnnotationValue",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "AmbiguousBareRange",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "AmbiguousErrorVariant",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_ambiguous_error_variant.elisa:46"
+      ]
+    },
+    {
+      "kind": "AnnotatedFunctionPermissions",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_unknown_function_annotation.elisa:102"
+      ]
+    },
+    {
+      "kind": "ArenaGrowEscape",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_arena_grow_escape.elisa:53"
+      ]
+    },
+    {
+      "kind": "ArityMismatch",
+      "construction_sites": 4,
+      "explicit_position_sites": 2,
+      "default_position_sites": [
+        "src/semantic/check_atomic_payload.elisa:30",
+        "src/semantic/resolve_expr.elisa:132"
+      ]
+    },
+    {
+      "kind": "ArrayIndexNonIntegral",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ArrayLiteralArity",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ArrayLiteralElementTypeMismatch",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ArraySliceEndOutOfBounds",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_index_out_of_bounds.elisa:115"
+      ]
+    },
+    {
+      "kind": "ArraySliceReversed",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_index_out_of_bounds.elisa:116"
+      ]
+    },
+    {
+      "kind": "AssertByUnproven",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_assert_by.elisa:292"
+      ]
+    },
+    {
+      "kind": "AssertConditionNonBool",
+      "construction_sites": 3,
+      "explicit_position_sites": 1,
+      "default_position_sites": [
+        "src/semantic/check_assert_nonbool.elisa:32",
+        "src/semantic/check_static_assert.elisa:37"
+      ]
+    },
+    {
+      "kind": "AssertExplicitHole",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "AssertProofHole",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_assert_proof_hole.elisa:320"
+      ]
+    },
+    {
+      "kind": "AssignImmutable",
+      "construction_sites": 3,
+      "explicit_position_sites": 2,
+      "default_position_sites": [
+        "src/semantic/resolve_flow.elisa:138"
+      ]
+    },
+    {
+      "kind": "AssignOptionalRefMutability",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "AssignRefToAggregate",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_assign_ref_to_aggregate.elisa:75"
+      ]
+    },
+    {
+      "kind": "AssignScalarToContainer",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "AssignThroughReadonlyRef",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "AssignToLoopVar",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_assign_to_loop_var.elisa:40"
+      ]
+    },
+    {
+      "kind": "AssignUndefinedTarget",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "AssignValueMismatch",
+      "construction_sites": 6,
+      "explicit_position_sites": 6,
+      "default_position_sites": []
+    },
+    {
+      "kind": "AsyncEntryAnnotation",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_async_entry_annotations.elisa:19",
+        "src/semantic/check_async_entry_annotations.elisa:20"
+      ]
+    },
+    {
+      "kind": "AtomicRmwNonNumeric",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_types_match.elisa:418"
+      ]
+    },
+    {
+      "kind": "AtomicUnsafePayload",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_atomic_payload.elisa:39"
+      ]
+    },
+    {
+      "kind": "AutoRegionReturnEscape",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "AutoRegionStoreEscape",
+      "construction_sites": 4,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_auto_region_escape.elisa:169",
+        "src/semantic/check_auto_region_escape.elisa:288",
+        "src/semantic/check_owned_extraction.elisa:116",
+        "src/semantic/check_view_provenance.elisa:255"
+      ]
+    },
+    {
+      "kind": "BenchFunctionNonVoidReturn",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_unknown_function_annotation.elisa:110"
+      ]
+    },
+    {
+      "kind": "BlockLambdaMissingContext",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_block_lambda_context.elisa:21"
+      ]
+    },
+    {
+      "kind": "BlockValueStringArrayMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_darray_element_mismatch.elisa:116"
+      ]
+    },
+    {
+      "kind": "BorrowUseAfterOwnerMove",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "BoundaryPointerArgsType",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_boundary_pointer_args.elisa:64"
+      ]
+    },
+    {
+      "kind": "BraceMembershipMisuse",
+      "construction_sites": 5,
+      "explicit_position_sites": 2,
+      "default_position_sites": [
+        "src/semantic/check_brace_membership_context.elisa:33",
+        "src/semantic/check_brace_membership_context.elisa:39",
+        "src/semantic/check_brace_membership_context.elisa:45"
+      ]
+    },
+    {
+      "kind": "BraceShorthandNoContext",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "BreakOutsideLoop",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_flow.elisa:389"
+      ]
+    },
+    {
+      "kind": "ByValueGrownContainer",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_byvalue_grown_container.elisa:136"
+      ]
+    },
+    {
+      "kind": "BytePointerStore",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "CBindRequiresCLayout",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_cbind_requires_c_layout.elisa:17"
+      ]
+    },
+    {
+      "kind": "CStrPointerCompare",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "CallArgumentAlias",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "CallArgumentError",
+      "construction_sites": 7,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_arg_forwarding.elisa:50",
+        "src/semantic/check_callback_named_args.elisa:54",
+        "src/semantic/resolve_expr.elisa:209",
+        "src/semantic/resolve_expr.elisa:216",
+        "src/semantic/resolve_expr.elisa:257",
+        "src/semantic/resolve_expr.elisa:261",
+        "src/semantic/resolve_expr.elisa:287"
+      ]
+    },
+    {
+      "kind": "CallNamedNonFunction",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "CallNonFunction",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "CallOfInvalidValue",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "CanCastUnsound",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_can_cast_unsound.elisa:122"
+      ]
+    },
+    {
+      "kind": "CaptureImmutable",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_value_blocks.elisa:394"
+      ]
+    },
+    {
+      "kind": "CaptureUndefined",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_value_blocks.elisa:399"
+      ]
+    },
+    {
+      "kind": "CastConstantTruncated",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_cast_constant_truncated.elisa:38"
+      ]
+    },
+    {
+      "kind": "CatchArmOutOfSet",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_catch_out_of_set.elisa:113"
+      ]
+    },
+    {
+      "kind": "CatchArmTail",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_catch_exhaustive.elisa:99"
+      ]
+    },
+    {
+      "kind": "CatchParamPlainBinder",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_catch_param_binder.elisa:61"
+      ]
+    },
+    {
+      "kind": "CatchSubsetNonExhaustive",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_catch_out_of_set.elisa:124"
+      ]
+    },
+    {
+      "kind": "ChangesTargetNotParam",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_frame_write.elisa:255"
+      ]
+    },
+    {
+      "kind": "CharClassifierGuard",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_char_classifier_guard.elisa:58"
+      ]
+    },
+    {
+      "kind": "CloneElemMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_clone_builtin.elisa:60"
+      ]
+    },
+    {
+      "kind": "CloneOwnerRequired",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_clone_builtin.elisa:69"
+      ]
+    },
+    {
+      "kind": "CloneRefRejected",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_clone_builtin.elisa:49"
+      ]
+    },
+    {
+      "kind": "ClosureCaptureEscape",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_closure_capture.elisa:86"
+      ]
+    },
+    {
+      "kind": "CompositeLawBadMember",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_effect_law_fulfillment.elisa:101",
+        "src/semantic/check_effect_law_fulfillment.elisa:102"
+      ]
+    },
+    {
+      "kind": "CompositeLawCyclic",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_effect_law_fulfillment.elisa:111"
+      ]
+    },
+    {
+      "kind": "CompoundAssignNonNumeric",
+      "construction_sites": 3,
+      "explicit_position_sites": 3,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ConcreteEffectPermissionUnknown",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ConflictingImport",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_import_conflict.elisa:33"
+      ]
+    },
+    {
+      "kind": "ConstDictNoKey",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_const_dict_index.elisa:66"
+      ]
+    },
+    {
+      "kind": "ConstEnumStorageNotInt",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ConstEnumValueOutOfRange",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_const_enum_member_value.elisa:36"
+      ]
+    },
+    {
+      "kind": "ConstEnumValueOverflow",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_const_enum_value_fits.elisa:59"
+      ]
+    },
+    {
+      "kind": "ConstFloatCastRange",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_const_float_cast.elisa:69"
+      ]
+    },
+    {
+      "kind": "ConstantComparison",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_constant_comparison.elisa:112"
+      ]
+    },
+    {
+      "kind": "ConstantCondition",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_constant_condition.elisa:13",
+        "src/semantic/check_constant_condition.elisa:21"
+      ]
+    },
+    {
+      "kind": "ConstructFieldTypeMismatch",
+      "construction_sites": 9,
+      "explicit_position_sites": 9,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ContainerLiteralNoRegion",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ContainerShapeReturn",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_container_shape_return.elisa:25",
+        "src/semantic/check_container_shape_return.elisa:40"
+      ]
+    },
+    {
+      "kind": "ContinueOutsideLoop",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_flow.elisa:392"
+      ]
+    },
+    {
+      "kind": "ContractArgTypeMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_uses_contract.elisa:201"
+      ]
+    },
+    {
+      "kind": "ContractEnsureResultVoid",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_contract_result_void.elisa:102"
+      ]
+    },
+    {
+      "kind": "ContractImpureGlobalRead",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_contract_purity.elisa:55"
+      ]
+    },
+    {
+      "kind": "ContractNoSubject",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_contract_wellformed.elisa:22"
+      ]
+    },
+    {
+      "kind": "ContractNotFirst",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ContradictoryRequires",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_requires_contradictory.elisa:114"
+      ]
+    },
+    {
+      "kind": "CopyRuntimeLength",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_copy_builtin.elisa:61"
+      ]
+    },
+    {
+      "kind": "CopyScalarTarget",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_copy_builtin.elisa:49"
+      ]
+    },
+    {
+      "kind": "CopySizeMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_copy_builtin.elisa:64"
+      ]
+    },
+    {
+      "kind": "CountingFillUnreserved",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_counting_fill_reserve.elisa:188"
+      ]
+    },
+    {
+      "kind": "DArrayElementTypeMismatch",
+      "construction_sites": 7,
+      "explicit_position_sites": 7,
+      "default_position_sites": []
+    },
+    {
+      "kind": "DarrayLinearDrop",
+      "construction_sites": 4,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_darray_linear_consume.elisa:333",
+        "src/semantic/check_darray_linear_consume.elisa:335",
+        "src/semantic/check_darray_linear_consume.elisa:338",
+        "src/semantic/check_darray_linear_consume.elisa:341"
+      ]
+    },
+    {
+      "kind": "DarrayLinearMustConsume",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_darray_linear_consume.elisa:228"
+      ]
+    },
+    {
+      "kind": "DarrayPushArenaRequired",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "DarrayPushImmutableReceiver",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "DarrayPushTypeMismatch",
+      "construction_sites": 3,
+      "explicit_position_sites": 3,
+      "default_position_sites": []
+    },
+    {
+      "kind": "DecreasesLoopNotDecreasing",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_decreases_unmodelable.elisa:509",
+        "src/semantic/check_decreases_unmodelable.elisa:525"
+      ]
+    },
+    {
+      "kind": "DecreasesRuntimeUnmodelable",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_decreases_unmodelable.elisa:484"
+      ]
+    },
+    {
+      "kind": "DecreasesStarReason",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_decreases_star_reason.elisa:15"
+      ]
+    },
+    {
+      "kind": "DeferBodyReturns",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_defer_rules.elisa:51"
+      ]
+    },
+    {
+      "kind": "DeferFunctionNotOutermost",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "DenseNodeKeyRootMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_dense_node_key_root.elisa:77"
+      ]
+    },
+    {
+      "kind": "DeprecatedFunctionUse",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_deprecated_call.elisa:63"
+      ]
+    },
+    {
+      "kind": "DerivedStateArgumentMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_derived_state_flow.elisa:119"
+      ]
+    },
+    {
+      "kind": "DerivedStateConstructorMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_derived_state_constructor.elisa:111"
+      ]
+    },
+    {
+      "kind": "DerivedStateRuleNotFieldBased",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "DestroyedRegionUse",
+      "construction_sites": 3,
+      "explicit_position_sites": 2,
+      "default_position_sites": [
+        "src/semantic/check_destroyed_region.elisa:1563"
+      ]
+    },
+    {
+      "kind": "DictIndexAssignToOptionalRef",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_types_initializers.elisa:472"
+      ]
+    },
+    {
+      "kind": "DictIndexKeyTypeMismatch",
+      "construction_sites": 4,
+      "explicit_position_sites": 4,
+      "default_position_sites": []
+    },
+    {
+      "kind": "DictKeyAffine",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "DictKeyTypeMismatch",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "DictValueTypeMismatch",
+      "construction_sites": 3,
+      "explicit_position_sites": 3,
+      "default_position_sites": []
+    },
+    {
+      "kind": "DiscardedCallResult",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_discarded_call_result.elisa:20"
+      ]
+    },
+    {
+      "kind": "DiscardedLoopValue",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "DivisionByZero",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_division_by_zero.elisa:19"
+      ]
+    },
+    {
+      "kind": "DoubleNegation",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_double_negation.elisa:119"
+      ]
+    },
+    {
+      "kind": "DrainBodyLeak",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_drain_discipline.elisa:192"
+      ]
+    },
+    {
+      "kind": "DrainElementNotConsumed",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_drain_discipline.elisa:199"
+      ]
+    },
+    {
+      "kind": "DrainSourceNotDarray",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_drain_discipline.elisa:194"
+      ]
+    },
+    {
+      "kind": "DuplicateAbstractEffectOperation",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_abstract_effects.elisa:331"
+      ]
+    },
+    {
+      "kind": "DuplicateBitGroupMember",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "DuplicateCondition",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_duplicate_condition.elisa:159"
+      ]
+    },
+    {
+      "kind": "DuplicateDecl",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "DuplicateDecorator",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_duplicate_decorator.elisa:36"
+      ]
+    },
+    {
+      "kind": "DuplicateDictKey",
+      "construction_sites": 3,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_duplicate_dict_key.elisa:20",
+        "src/semantic/check_duplicate_dict_key.elisa:24",
+        "src/semantic/check_duplicate_dict_key.elisa:28"
+      ]
+    },
+    {
+      "kind": "DuplicateEffectHandlerOperation",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_abstract_effects.elisa:333"
+      ]
+    },
+    {
+      "kind": "DuplicateExportName",
+      "construction_sites": 3,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_export_names.elisa:64",
+        "src/semantic/check_export_names.elisa:72",
+        "src/semantic/check_export_names.elisa:76"
+      ]
+    },
+    {
+      "kind": "DuplicateField",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/symbols.elisa:336"
+      ]
+    },
+    {
+      "kind": "DuplicateFieldInit",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_expr.elisa:240"
+      ]
+    },
+    {
+      "kind": "DuplicateImport",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_duplicate_import.elisa:22"
+      ]
+    },
+    {
+      "kind": "DuplicateInterface",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "DuplicateLocal",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "DuplicateMatchArm",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "DuplicateParam",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve.elisa:159"
+      ]
+    },
+    {
+      "kind": "DuplicatePatternBinding",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_duplicate_pattern_binding.elisa:35"
+      ]
+    },
+    {
+      "kind": "DuplicateSetElement",
+      "construction_sites": 3,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_duplicate_set_element.elisa:143",
+        "src/semantic/check_duplicate_set_element.elisa:148",
+        "src/semantic/check_duplicate_set_element.elisa:153"
+      ]
+    },
+    {
+      "kind": "DuplicateType",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "DuplicateVariant",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/symbols.elisa:382"
+      ]
+    },
+    {
+      "kind": "DuplicateVariantField",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_duplicate_variant_field.elisa:28"
+      ]
+    },
+    {
+      "kind": "DviewRemoved",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_dview_removed.elisa:31"
+      ]
+    },
+    {
+      "kind": "EffectHandlerCaptureArity",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_abstract_effects.elisa:371",
+        "src/semantic/check_abstract_effects.elisa:372"
+      ]
+    },
+    {
+      "kind": "EffectHandlerMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_abstract_effects.elisa:381"
+      ]
+    },
+    {
+      "kind": "EffectHandlerResumeInvalid",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_abstract_effects.elisa:356",
+        "src/semantic/check_abstract_effects.elisa:358"
+      ]
+    },
+    {
+      "kind": "EffectHandlerSignatureMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_abstract_effects.elisa:354"
+      ]
+    },
+    {
+      "kind": "EffectLawSubject",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_effect_law_fulfillment.elisa:120"
+      ]
+    },
+    {
+      "kind": "EffectLawValueIs",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_effect_law_fulfillment.elisa:175"
+      ]
+    },
+    {
+      "kind": "EffectLawViolation",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_effect_law_fulfillment.elisa:328"
+      ]
+    },
+    {
+      "kind": "EmptyArrayWithoutContext",
+      "construction_sites": 2,
+      "explicit_position_sites": 1,
+      "default_position_sites": [
+        "src/semantic/check_array_literal_arity.elisa:145"
+      ]
+    },
+    {
+      "kind": "EmptyIterable",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "EmptyListNeedsType",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_positional_construction.elisa:90"
+      ]
+    },
+    {
+      "kind": "EmptyRange",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_empty_range.elisa:39"
+      ]
+    },
+    {
+      "kind": "EnsureNotProven",
+      "construction_sites": 13,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_branchy_nonnull_ensure.elisa:189",
+        "src/semantic/check_contract_result_void.elisa:395",
+        "src/semantic/check_contract_result_void.elisa:435",
+        "src/semantic/check_ensure_branch_const.elisa:389",
+        "src/semantic/check_ensure_branch_const.elisa:415",
+        "src/semantic/check_ensure_field_clobbered.elisa:82",
+        "src/semantic/check_ensure_strict_walk.elisa:288",
+        "src/semantic/check_ensure_strict_walk.elisa:54",
+        "src/semantic/check_ensure_strict_walk.elisa:72",
+        "src/semantic/check_ensure_strict_walk.elisa:79",
+        "src/semantic/check_loop_invariant_preserved.elisa:529",
+        "src/semantic/check_old_delta_ensure.elisa:252",
+        "src/semantic/check_uses_contract.elisa:211"
+      ]
+    },
+    {
+      "kind": "EnsuresArgCount",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_ensures_structural.elisa:254"
+      ]
+    },
+    {
+      "kind": "EnsuresArgLambdaUnproven",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_ensures_hof_args.elisa:213"
+      ]
+    },
+    {
+      "kind": "EnsuresArgNotEntailed",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_ensures_hof_args.elisa:210"
+      ]
+    },
+    {
+      "kind": "EnsuresRefTarget",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "EnsuresReturnNeedsBool",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_ensures_structural.elisa:117"
+      ]
+    },
+    {
+      "kind": "EnsuresStateTarget",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "EnsuresTargetNotFn",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_ensures_hof_args.elisa:307"
+      ]
+    },
+    {
+      "kind": "EnsuresUnknownParam",
+      "construction_sites": 2,
+      "explicit_position_sites": 1,
+      "default_position_sites": [
+        "src/semantic/check_ensures_structural.elisa:249"
+      ]
+    },
+    {
+      "kind": "EnumConstructorArgumentError",
+      "construction_sites": 5,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_expr.elisa:373",
+        "src/semantic/resolve_expr.elisa:375",
+        "src/semantic/resolve_expr.elisa:388",
+        "src/semantic/resolve_expr.elisa:391",
+        "src/semantic/resolve_expr.elisa:400"
+      ]
+    },
+    {
+      "kind": "EnumRefinesNonEnum",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_enum_refine_parent.elisa:12"
+      ]
+    },
+    {
+      "kind": "EnumerateIndexVariant",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_enumerate_index_variant.elisa:51"
+      ]
+    },
+    {
+      "kind": "ErrorConstructorArgumentType",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ErrorSetParamUninferable",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_errorset_param_inference.elisa:91"
+      ]
+    },
+    {
+      "kind": "ErrorUnionUnhandled",
+      "construction_sites": 3,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_error_union_unhandled.elisa:34",
+        "src/semantic/check_error_union_unhandled.elisa:37",
+        "src/semantic/check_error_union_unhandled.elisa:40"
+      ]
+    },
+    {
+      "kind": "ErrorsetParamShadow",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_errorset_shadow.elisa:38"
+      ]
+    },
+    {
+      "kind": "ExportTargetUndefined",
+      "construction_sites": 3,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_export_names.elisa:81",
+        "src/semantic/check_export_names.elisa:82",
+        "src/semantic/check_export_names.elisa:83"
+      ]
+    },
+    {
+      "kind": "ExpressionAnalysisDepthExceeded",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ExtendUnknownModule",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ExternBorrowFieldNonStructReturn",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_unknown_function_annotation.elisa:165"
+      ]
+    },
+    {
+      "kind": "ExternBorrowNonProvenanceParam",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_unknown_function_annotation.elisa:155"
+      ]
+    },
+    {
+      "kind": "ExternBorrowUnknownParam",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_unknown_function_annotation.elisa:154"
+      ]
+    },
+    {
+      "kind": "ExternBorrowUnknownReturnField",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_unknown_function_annotation.elisa:166"
+      ]
+    },
+    {
+      "kind": "ExternBoundsBadLen",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ExternBoundsBadPtr",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ExternBoundsLengthInContract",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ExternBoundsNeedsCallConv",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ExternBoundsOdd",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ExternBoundsReused",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ExternBoundsUnknown",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ExternEnumStorageRequired",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ExternImplMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_extern_signature_mismatch.elisa:138"
+      ]
+    },
+    {
+      "kind": "ExternLinkNameConflict",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_extern_link_name_conflict.elisa:74"
+      ]
+    },
+    {
+      "kind": "ExternNoContract",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_extern_contract.elisa:105"
+      ]
+    },
+    {
+      "kind": "ExternPointerNoBounds",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ExternPointerParamUncovered",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ExternResourceBorrowedReturn",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ExternResourceNoDrop",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ExternSegmentTransition",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_extern_segment.elisa:22"
+      ]
+    },
+    {
+      "kind": "ExternUntypedPointerParam",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ExternUntypedPointerReturn",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "FieldAccessOnPrimitive",
+      "construction_sites": 4,
+      "explicit_position_sites": 2,
+      "default_position_sites": [
+        "src/semantic/check_field_access_type_param.elisa:198",
+        "src/semantic/check_offset_of_field.elisa:30"
+      ]
+    },
+    {
+      "kind": "FieldDefaultTypeMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_field_default_type.elisa:26"
+      ]
+    },
+    {
+      "kind": "FieldImmutableAssign",
+      "construction_sites": 3,
+      "explicit_position_sites": 3,
+      "default_position_sites": []
+    },
+    {
+      "kind": "FirmArgTypeMismatch",
+      "construction_sites": 10,
+      "explicit_position_sites": 10,
+      "default_position_sites": []
+    },
+    {
+      "kind": "FixedArrayShapeMismatch",
+      "construction_sites": 3,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_fixed_array_shape.elisa:109",
+        "src/semantic/check_fixed_array_shape.elisa:115",
+        "src/semantic/check_fresh_shape_wrapper.elisa:54"
+      ]
+    },
+    {
+      "kind": "FixedLayoutAnnotationArguments",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "FlagsConstEnumArg",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "FlagsIndexType",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "FloatDictRuntimeKey",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_dict_key_mismatch.elisa:61"
+      ]
+    },
+    {
+      "kind": "FloatEquality",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_float_equality.elisa:151"
+      ]
+    },
+    {
+      "kind": "FlowCursorDoubleAdvance",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_flow_shapes_depth.elisa:230"
+      ]
+    },
+    {
+      "kind": "FlowElifLadder",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_flow_shapes_depth.elisa:253"
+      ]
+    },
+    {
+      "kind": "FlowExitBudget",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_flow_shapes_progress.elisa:237"
+      ]
+    },
+    {
+      "kind": "FlowFlagStateMachine",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_flow_flag.elisa:189"
+      ]
+    },
+    {
+      "kind": "FlowNestingDepth",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_flow_shapes_depth.elisa:262",
+        "src/semantic/check_flow_shapes_depth.elisa:267"
+      ]
+    },
+    {
+      "kind": "FlowProgress",
+      "construction_sites": 3,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_flow_shapes_progress.elisa:152",
+        "src/semantic/check_flow_shapes_progress.elisa:153",
+        "src/semantic/check_flow_shapes_progress.elisa:156"
+      ]
+    },
+    {
+      "kind": "FlowRetestLadder",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_flow_shapes_depth.elisa:258"
+      ]
+    },
+    {
+      "kind": "FlowSingleMutation",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_flow_shapes_depth.elisa:87"
+      ]
+    },
+    {
+      "kind": "FlowStateFlag",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_flow_shapes.elisa:212"
+      ]
+    },
+    {
+      "kind": "FlowStrictBlockIf",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/semantic_api.elisa:540"
+      ]
+    },
+    {
+      "kind": "ForeignEnumOpenFromC",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ForeignEnumReinterpret",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ForwardingVariadic",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_arg_forwarding.elisa:47"
+      ]
+    },
+    {
+      "kind": "FrameConditionConformance",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_frame_conformance.elisa:35"
+      ]
+    },
+    {
+      "kind": "FrameLawPreserveWrite",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_effect_law_fulfillment.elisa:286"
+      ]
+    },
+    {
+      "kind": "FrameLawSelfNonRef",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_effect_law_fulfillment.elisa:139"
+      ]
+    },
+    {
+      "kind": "FrameLawValueIs",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_effect_law_fulfillment.elisa:213"
+      ]
+    },
+    {
+      "kind": "FreshShapeArgMismatch",
+      "construction_sites": 3,
+      "explicit_position_sites": 3,
+      "default_position_sites": []
+    },
+    {
+      "kind": "FreshShapeNote",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "FulfillsRequiresFrame",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_effect_law_fulfillment.elisa:311"
+      ]
+    },
+    {
+      "kind": "FulfillsWholeFunction",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_fulfills_whole_function.elisa:10"
+      ]
+    },
+    {
+      "kind": "FuncShadowsBuiltinType",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_def_shadows_builtin.elisa:25"
+      ]
+    },
+    {
+      "kind": "FunctionInvariantUnproven",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_function_invariant.elisa:176"
+      ]
+    },
+    {
+      "kind": "FunctionParameterVariance",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_function_variance.elisa:39"
+      ]
+    },
+    {
+      "kind": "GenericFixtureFunction",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_unknown_function_annotation.elisa:98"
+      ]
+    },
+    {
+      "kind": "GenericInterfaceBoundUnsatisfied",
+      "construction_sites": 2,
+      "explicit_position_sites": 1,
+      "default_position_sites": [
+        "src/semantic/check_generic_interface_bounds.elisa:69"
+      ]
+    },
+    {
+      "kind": "GenericOperatorNoBound",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "GetFallbackVoidNonVoid",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_else_void_context.elisa:41",
+        "src/semantic/check_else_void_context.elisa:45"
+      ]
+    },
+    {
+      "kind": "GhostFieldDefault",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_ghost_field_default.elisa:16"
+      ]
+    },
+    {
+      "kind": "GhostFieldRead",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_ghost_field_read.elisa:57"
+      ]
+    },
+    {
+      "kind": "GhostFnImpure",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_ghost_function.elisa:139"
+      ]
+    },
+    {
+      "kind": "GhostFnRuntimeCall",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "GhostInitImpure",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_ghost_local_read.elisa:148"
+      ]
+    },
+    {
+      "kind": "GhostLocalRead",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_ghost_local_read.elisa:59"
+      ]
+    },
+    {
+      "kind": "GuardNonnullNonOptionalParam",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_unknown_function_annotation.elisa:132"
+      ]
+    },
+    {
+      "kind": "HotArgument",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_hot_contract.elisa:223"
+      ]
+    },
+    {
+      "kind": "HotContract",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_hot_contract.elisa:221",
+        "src/semantic/check_hot_contract.elisa:222"
+      ]
+    },
+    {
+      "kind": "HotKernelNotDisjoint",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_hot_disjoint_kernel.elisa:119"
+      ]
+    },
+    {
+      "kind": "HotVectorize",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_hot_contract.elisa:225"
+      ]
+    },
+    {
+      "kind": "IdNewtypeReturnMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_id_newtype_return.elisa:73"
+      ]
+    },
+    {
+      "kind": "IdUnwrapNonId",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_id_unwrap_operand.elisa:50"
+      ]
+    },
+    {
+      "kind": "IdenticalBranches",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_identical_branches.elisa:223",
+        "src/semantic/check_identical_branches.elisa:280"
+      ]
+    },
+    {
+      "kind": "IdenticalLogicalOperands",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_identical_logical_operands.elisa:160"
+      ]
+    },
+    {
+      "kind": "IfValueMissingElse",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_if_value_missing_else.elisa:81"
+      ]
+    },
+    {
+      "kind": "ImmediateOverwrite",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_immediate_overwrite.elisa:76"
+      ]
+    },
+    {
+      "kind": "ImplEffectExtra",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_impl_conformance.elisa:54"
+      ]
+    },
+    {
+      "kind": "ImplErrorExtra",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ImplMissingMember",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_impl_conformance.elisa:136"
+      ]
+    },
+    {
+      "kind": "ImplSignatureMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_impl_conformance.elisa:117"
+      ]
+    },
+    {
+      "kind": "ImplStrengthensPrecondition",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_protocol_variance.elisa:126"
+      ]
+    },
+    {
+      "kind": "ImplWeakensPostcondition",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_protocol_variance.elisa:128"
+      ]
+    },
+    {
+      "kind": "InAutoDeprecated",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_in_auto_deprecated.elisa:12"
+      ]
+    },
+    {
+      "kind": "InboundsUnproven",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_inbounds_index.elisa:114"
+      ]
+    },
+    {
+      "kind": "IncompatibleComparison",
+      "construction_sites": 5,
+      "explicit_position_sites": 5,
+      "default_position_sites": []
+    },
+    {
+      "kind": "IndexElseFallbackRemoved",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "IndexFallbackTypeMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_index_fallback_type.elisa:57"
+      ]
+    },
+    {
+      "kind": "IndexNonIndexable",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "IndexOutOfBounds",
+      "construction_sites": 3,
+      "explicit_position_sites": 1,
+      "default_position_sites": [
+        "src/semantic/check_enum_tag_index.elisa:82",
+        "src/semantic/check_enum_tag_index.elisa:88"
+      ]
+    },
+    {
+      "kind": "InfiniteLoopNoExit",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_infinite_loop.elisa:48"
+      ]
+    },
+    {
+      "kind": "InlineAnnotationArity",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "InlineAnnotationMode",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "IntegerLiteralOverflow",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "InterfaceMemberAnnotationUnsupported",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "InteriorPointerWiden",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_pointer_erasure_cast.elisa:280"
+      ]
+    },
+    {
+      "kind": "InteriorRefConsumed",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_interior_ref_uaf.elisa:343"
+      ]
+    },
+    {
+      "kind": "InternalRuntimeCarrier",
+      "construction_sites": 3,
+      "explicit_position_sites": 2,
+      "default_position_sites": [
+        "src/semantic/check_internal_runtime_carrier.elisa:173"
+      ]
+    },
+    {
+      "kind": "IntrinsicNamePrefix",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_extern_decorators.elisa:25"
+      ]
+    },
+    {
+      "kind": "InvalidAssignTarget",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_flow.elisa:221"
+      ]
+    },
+    {
+      "kind": "InvalidBoolCast",
+      "construction_sites": 2,
+      "explicit_position_sites": 1,
+      "default_position_sites": [
+        "src/semantic/check_packed_enum_cast.elisa:47"
+      ]
+    },
+    {
+      "kind": "InvalidCast",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "InvalidCtorCast",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "InvalidExportBoundary",
+      "construction_sites": 5,
+      "explicit_position_sites": 4,
+      "default_position_sites": [
+        "src/semantic/check_export_boundary.elisa:37"
+      ]
+    },
+    {
+      "kind": "InvalidNonNullReferenceInitialization",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "InvalidStructCast",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "InvalidTopLevelScalarMatchArm",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_types_match.elisa:217"
+      ]
+    },
+    {
+      "kind": "InvalidTopLevelSequenceMatchArm",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_types_match.elisa:228"
+      ]
+    },
+    {
+      "kind": "InvalidVariantTestOperand",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "InvalidZeroedAggregateReference",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "InvalidZeroedValue",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "IsUnrelatedEnum",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "IterAffineNonborrowable",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_drain_discipline.elisa:204"
+      ]
+    },
+    {
+      "kind": "IterCalleeMutableRef",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_mutate_while_iterating.elisa:198",
+        "src/semantic/check_mutate_while_iterating.elisa:258"
+      ]
+    },
+    {
+      "kind": "LambdaRaiseMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_lambda_raise_conformance.elisa:77"
+      ]
+    },
+    {
+      "kind": "LambdaReturnTypeMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "LawImpure",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_law_purity.elisa:66"
+      ]
+    },
+    {
+      "kind": "LawNeedsSubject",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_law_subject.elisa:11"
+      ]
+    },
+    {
+      "kind": "LawSubjectTypeMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_law_subject_type.elisa:26"
+      ]
+    },
+    {
+      "kind": "LegacyCastCallSyntax",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_redundant_cast.elisa:130"
+      ]
+    },
+    {
+      "kind": "LegacyErrorSyntax",
+      "construction_sites": 3,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_legacy_error_syntax.elisa:6",
+        "src/semantic/check_legacy_error_syntax.elisa:7",
+        "src/semantic/check_legacy_error_syntax.elisa:8"
+      ]
+    },
+    {
+      "kind": "LemmaEnsureUnproven",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_assert_by.elisa:501"
+      ]
+    },
+    {
+      "kind": "LemmaPreconditionUnproven",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "LetDestructureUnknownField",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_offset_of_field.elisa:32",
+        "src/semantic/check_unknown_field_access.elisa:280"
+      ]
+    },
+    {
+      "kind": "LinearReferenceUnsupported",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_linear_reference.elisa:45"
+      ]
+    },
+    {
+      "kind": "LinearScopeExit",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_affine_use_linear.elisa:557"
+      ]
+    },
+    {
+      "kind": "LiteralArgTypeMismatch",
+      "construction_sites": 3,
+      "explicit_position_sites": 3,
+      "default_position_sites": []
+    },
+    {
+      "kind": "LiteralAssignOutOfRange",
+      "construction_sites": 3,
+      "explicit_position_sites": 3,
+      "default_position_sites": []
+    },
+    {
+      "kind": "LiteralComparisonImpossible",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "LmutAliasing",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_expr.elisa:83"
+      ]
+    },
+    {
+      "kind": "LmutFalseClaim",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_lmut_rebind_claim.elisa:53"
+      ]
+    },
+    {
+      "kind": "LmutMutationNotReassignment",
+      "construction_sites": 2,
+      "explicit_position_sites": 1,
+      "default_position_sites": [
+        "src/semantic/check_lmut_mutation_reassignment.elisa:69"
+      ]
+    },
+    {
+      "kind": "LmutValueArg",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "LocalArenaEscape",
+      "construction_sites": 2,
+      "explicit_position_sites": 1,
+      "default_position_sites": [
+        "src/semantic/check_local_arena_escape.elisa:121"
+      ]
+    },
+    {
+      "kind": "LocalRefinementUnproven",
+      "construction_sites": 8,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_bounded_return_product.elisa:214",
+        "src/semantic/check_ensures_range_assign.elisa:152",
+        "src/semantic/check_field_source_refinement.elisa:146",
+        "src/semantic/check_local_refinement_statements.elisa:129",
+        "src/semantic/check_local_refinement_statements.elisa:144",
+        "src/semantic/check_local_refinement_statements.elisa:150",
+        "src/semantic/check_local_refinement_statements.elisa:197",
+        "src/semantic/check_opaque_refine_assign.elisa:66"
+      ]
+    },
+    {
+      "kind": "LocalRegionReferenceEscape",
+      "construction_sites": 4,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_local_region_annotation.elisa:439",
+        "src/semantic/check_local_region_annotation.elisa:499",
+        "src/semantic/check_local_region_annotation.elisa:515",
+        "src/semantic/check_local_region_annotation.elisa:518"
+      ]
+    },
+    {
+      "kind": "LocalViewEscapesReturn",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "LocalWhereRefinementViolated",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_local_where_violated.elisa:60",
+        "src/semantic/check_local_where_violated.elisa:83"
+      ]
+    },
+    {
+      "kind": "LogicalConstantOperand",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_logical_constant_operand.elisa:19"
+      ]
+    },
+    {
+      "kind": "LoopInvariantNotEstablished",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_loop_invariant_establish.elisa:40"
+      ]
+    },
+    {
+      "kind": "LoopInvariantNotPreserved",
+      "construction_sites": 5,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_loop_invariant_preserved.elisa:137",
+        "src/semantic/check_loop_invariant_preserved.elisa:410",
+        "src/semantic/check_loop_invariant_preserved.elisa:415",
+        "src/semantic/check_loop_invariant_preserved.elisa:421",
+        "src/semantic/check_loop_invariant_preserved.elisa:427"
+      ]
+    },
+    {
+      "kind": "MachineDecreasesType",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_machine_decreases_type.elisa:62"
+      ]
+    },
+    {
+      "kind": "MachineTagCoverage",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_machine_tag_coverage.elisa:53",
+        "src/semantic/check_machine_tag_coverage.elisa:55"
+      ]
+    },
+    {
+      "kind": "MatchArmEnumMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "MatchArmEnumType",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_types_match.elisa:33"
+      ]
+    },
+    {
+      "kind": "MatchArmsIncompatible",
+      "construction_sites": 4,
+      "explicit_position_sites": 3,
+      "default_position_sites": [
+        "src/semantic/check_ternary_branch_mismatch.elisa:160"
+      ]
+    },
+    {
+      "kind": "MatchScrutineeNotMatchable",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "MeasureShapeLawInValueIs",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_measure_shape_law_value_is.elisa:23"
+      ]
+    },
+    {
+      "kind": "MembershipRhsContainer",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "MissingField",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_expr.elisa:247"
+      ]
+    },
+    {
+      "kind": "MissingReturnValue",
+      "construction_sites": 3,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_enums.elisa:107",
+        "src/semantic/resolve_flow_termination.elisa:152",
+        "src/semantic/resolve_flow_termination.elisa:158"
+      ]
+    },
+    {
+      "kind": "ModulePathDotSeparator",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ModuleRedeclared",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ModuloByZero",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_modulo_by_zero.elisa:18"
+      ]
+    },
+    {
+      "kind": "ModuloOperandNonIntegral",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "MoveStructPatternArityMismatch",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_packed_move_store.elisa:369",
+        "src/semantic/check_packed_move_store.elisa:373"
+      ]
+    },
+    {
+      "kind": "MutableAliasUngranted",
+      "construction_sites": 5,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_mutable_alias_local.elisa:167",
+        "src/semantic/check_strict_unsafe_ops_walk.elisa:223",
+        "src/semantic/check_strict_unsafe_ops_walk.elisa:447",
+        "src/semantic/check_strict_unsafe_ops_walk.elisa:72",
+        "src/semantic/check_strict_unsafe_ops_walk.elisa:96"
+      ]
+    },
+    {
+      "kind": "MutableGlobalUngranted",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_strict_unsafe_ops_walk.elisa:288",
+        "src/semantic/check_strict_unsafe_ops_walk.elisa:420"
+      ]
+    },
+    {
+      "kind": "MutableIterationReadonlyView",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_field_immutable_assign.elisa:191"
+      ]
+    },
+    {
+      "kind": "MutableViewFromReadonlySource",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_field_immutable_assign.elisa:179"
+      ]
+    },
+    {
+      "kind": "MutateWhileIterating",
+      "construction_sites": 4,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_mutate_while_iterating.elisa:257",
+        "src/semantic/check_mutate_while_iterating.elisa:262",
+        "src/semantic/check_mutate_while_iterating.elisa:265",
+        "src/semantic/check_mutate_while_iterating.elisa:268"
+      ]
+    },
+    {
+      "kind": "MutualDecreasesCycle",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_mutual_decreases_cycle.elisa:565"
+      ]
+    },
+    {
+      "kind": "NamedArgError",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_named_call_args.elisa:53",
+        "src/semantic/check_named_call_args.elisa:63"
+      ]
+    },
+    {
+      "kind": "NamedPatternOnUnnamedPayload",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_match_arm_enum_mismatch.elisa:74"
+      ]
+    },
+    {
+      "kind": "NamedStatesWithoutDerive",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "NamedTypeMismatch",
+      "construction_sites": 4,
+      "explicit_position_sites": 4,
+      "default_position_sites": []
+    },
+    {
+      "kind": "NamespaceUsedAsValue",
+      "construction_sites": 6,
+      "explicit_position_sites": 4,
+      "default_position_sites": [
+        "src/semantic/check_abstract_effects.elisa:338",
+        "src/semantic/check_effect_declarations.elisa:137"
+      ]
+    },
+    {
+      "kind": "NarrowedArgEnumMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "NegatedComparison",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_negated_comparison.elisa:100",
+        "src/semantic/check_negated_comparison.elisa:109"
+      ]
+    },
+    {
+      "kind": "NegativeIndex",
+      "construction_sites": 2,
+      "explicit_position_sites": 1,
+      "default_position_sites": [
+        "src/semantic/check_negative_index.elisa:75"
+      ]
+    },
+    {
+      "kind": "NegativeShift",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_negative_shift.elisa:21",
+        "src/semantic/check_negative_shift.elisa:30"
+      ]
+    },
+    {
+      "kind": "NewAutoDeprecated",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/semantic_api.elisa:495"
+      ]
+    },
+    {
+      "kind": "NoBoundsCheckUnproven",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_nobounds_index.elisa:70"
+      ]
+    },
+    {
+      "kind": "NoallocAllocates",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_noalloc_allocates.elisa:116"
+      ]
+    },
+    {
+      "kind": "NoallocArguments",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "NolockBlocking",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_nolock_blocking.elisa:27"
+      ]
+    },
+    {
+      "kind": "NonBoolCondition",
+      "construction_sites": 3,
+      "explicit_position_sites": 3,
+      "default_position_sites": []
+    },
+    {
+      "kind": "NonBoolMatchGuard",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "NonBoolOperand",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "NonDecreasingMeasure",
+      "construction_sites": 8,
+      "explicit_position_sites": 7,
+      "default_position_sites": [
+        "src/semantic/check_recursive_callee_progress.elisa:198"
+      ]
+    },
+    {
+      "kind": "NonExhaustiveCatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_catch_exhaustive.elisa:125"
+      ]
+    },
+    {
+      "kind": "NonExhaustiveMatch",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "NonExhaustiveOpenExternEnum",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "NonExhaustiveOptionalMatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "NonExhaustiveScalarMatch",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "NonGenericSpecialization",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_expr_walk.elisa:75"
+      ]
+    },
+    {
+      "kind": "NonIterableLoop",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_loops.elisa:34"
+      ]
+    },
+    {
+      "kind": "NonNumericOperand",
+      "construction_sites": 5,
+      "explicit_position_sites": 5,
+      "default_position_sites": []
+    },
+    {
+      "kind": "NonNumericShiftOperand",
+      "construction_sites": 3,
+      "explicit_position_sites": 1,
+      "default_position_sites": [
+        "src/semantic/check_nonnumeric_shift.elisa:18",
+        "src/semantic/check_nonnumeric_shift.elisa:20"
+      ]
+    },
+    {
+      "kind": "NonTrailingDefaultParam",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve.elisa:7"
+      ]
+    },
+    {
+      "kind": "NullableWithoutProof",
+      "construction_sites": 7,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_nullable_flow.elisa:235",
+        "src/semantic/check_nullable_flow.elisa:240",
+        "src/semantic/check_nullable_flow.elisa:242",
+        "src/semantic/check_nullable_flow.elisa:250",
+        "src/semantic/check_nullable_flow.elisa:275",
+        "src/semantic/check_nullable_flow.elisa:311",
+        "src/semantic/check_nullable_flow.elisa:317"
+      ]
+    },
+    {
+      "kind": "NumericLiteralSuffix",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/semantic_api.elisa:573"
+      ]
+    },
+    {
+      "kind": "OptionalComparison",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_optional_comparison.elisa:49"
+      ]
+    },
+    {
+      "kind": "OptionalLiteralCompare",
+      "construction_sites": 3,
+      "explicit_position_sites": 1,
+      "default_position_sites": [
+        "src/semantic/check_optional_compare.elisa:49",
+        "src/semantic/check_optional_compare.elisa:51"
+      ]
+    },
+    {
+      "kind": "OrPatternBindingMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_or_pattern_bindings.elisa:103"
+      ]
+    },
+    {
+      "kind": "OrderingNonNumeric",
+      "construction_sites": 4,
+      "explicit_position_sites": 3,
+      "default_position_sites": [
+        "src/semantic/check_refine_cycle.elisa:202"
+      ]
+    },
+    {
+      "kind": "OrdinaryEnumBareVariantType",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "OrdinaryEnumTailPayload",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_enum_tail_payload.elisa:27"
+      ]
+    },
+    {
+      "kind": "OrdinaryMatchWithStore",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_packed_match_store.elisa:65"
+      ]
+    },
+    {
+      "kind": "OverlayFieldExceedsStride",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_guest_overlay.elisa:81"
+      ]
+    },
+    {
+      "kind": "OverlayFieldNeedsSizeGuard",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_guest_overlay.elisa:151"
+      ]
+    },
+    {
+      "kind": "OverlayFieldWidthMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_guest_overlay.elisa:149"
+      ]
+    },
+    {
+      "kind": "OverlayTableIndexInvalid",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_guest_overlay.elisa:72"
+      ]
+    },
+    {
+      "kind": "OverlayUnknownField",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_overlay_field.elisa:59"
+      ]
+    },
+    {
+      "kind": "OversizedShift",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_oversized_shift.elisa:21"
+      ]
+    },
+    {
+      "kind": "OwnedRegionAlreadyDestroyed",
+      "construction_sites": 5,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_owned_region.elisa:212",
+        "src/semantic/check_owned_region.elisa:226",
+        "src/semantic/check_owned_region.elisa:239",
+        "src/semantic/check_owned_region.elisa:249",
+        "src/semantic/check_owned_region.elisa:256"
+      ]
+    },
+    {
+      "kind": "OwnedRegionMoveOnly",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_owned_region.elisa:208"
+      ]
+    },
+    {
+      "kind": "OwnedRegionNotConsumed",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_owned_region.elisa:359"
+      ]
+    },
+    {
+      "kind": "PackedConstructorWithoutStore",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_packed_move_store.elisa:265"
+      ]
+    },
+    {
+      "kind": "PackedFrozenStoreAllocation",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_packed_move_store.elisa:292"
+      ]
+    },
+    {
+      "kind": "PackedIfPatternMissingBinder",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_packed_match_store.elisa:78"
+      ]
+    },
+    {
+      "kind": "PackedMatchMissingStore",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_packed_match_store.elisa:64"
+      ]
+    },
+    {
+      "kind": "PackedMoveStoreMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_packed_move_store.elisa:408"
+      ]
+    },
+    {
+      "kind": "PackedProfileAnnotationArity",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "PackedProfileAnnotationMode",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "PackedProfileAnnotationNotPacked",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "PackedStoreIndexAssign",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_field_immutable_assign.elisa:150"
+      ]
+    },
+    {
+      "kind": "ParallelOuterMutation",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_parallel_for_grant.elisa:16"
+      ]
+    },
+    {
+      "kind": "ParallelRebindThreadedTuple",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ParamPostconditionUnproven",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_ensures_assign_violated.elisa:233"
+      ]
+    },
+    {
+      "kind": "ParameterWhereRefScope",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_where_scope.elisa:113"
+      ]
+    },
+    {
+      "kind": "ParametricIndexViolated",
+      "construction_sites": 2,
+      "explicit_position_sites": 1,
+      "default_position_sites": [
+        "src/semantic/check_refinement_arg_violated.elisa:234"
+      ]
+    },
+    {
+      "kind": "PermissionCycle",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_permission_includes.elisa:50"
+      ]
+    },
+    {
+      "kind": "PermissionParamMemberAccess",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_ungranted_panic_grants.elisa:121"
+      ]
+    },
+    {
+      "kind": "PermissionReservedName",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_permission_reserved.elisa:33"
+      ]
+    },
+    {
+      "kind": "PermissionUnknownFamily",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_permission_includes.elisa:47"
+      ]
+    },
+    {
+      "kind": "PlainRefArgValueParam",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "PointerArithmeticUngranted",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_pointer_arith_grant.elisa:280"
+      ]
+    },
+    {
+      "kind": "PositionalConstruction",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "PreconditionProvablyViolated",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "PreconditionUnproven",
+      "construction_sites": 19,
+      "explicit_position_sites": 6,
+      "default_position_sites": [
+        "src/semantic/check_field_fact_precondition.elisa:110",
+        "src/semantic/check_field_fact_precondition.elisa:349",
+        "src/semantic/check_local_refinement_return.elisa:159",
+        "src/semantic/check_local_refinement_return.elisa:39",
+        "src/semantic/check_local_refinement_return.elisa:75",
+        "src/semantic/check_local_refinement_return.elisa:91",
+        "src/semantic/check_local_refinement_statements.elisa:117",
+        "src/semantic/check_local_refinement_statements.elisa:51",
+        "src/semantic/check_local_refinement_statements.elisa:74",
+        "src/semantic/check_local_refinement_statements.elisa:86",
+        "src/semantic/check_local_refinement_statements.elisa:94",
+        "src/semantic/check_recursive_precondition_range.elisa:169",
+        "src/semantic/check_recursive_precondition_range.elisa:174"
+      ]
+    },
+    {
+      "kind": "PreconditionViolated",
+      "construction_sites": 3,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_precondition_invariant_violated.elisa:148",
+        "src/semantic/check_precondition_multiparam.elisa:99",
+        "src/semantic/check_precondition_violated.elisa:122"
+      ]
+    },
+    {
+      "kind": "PreservesChangesConflict",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_preserves_conflict.elisa:32"
+      ]
+    },
+    {
+      "kind": "PreservesViolation",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "PrivateMemberAccess",
+      "construction_sites": 3,
+      "explicit_position_sites": 3,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ProgressNoEvidence",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_progress_safety.elisa:181"
+      ]
+    },
+    {
+      "kind": "ProgressRecursiveCycle",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_progress_safety.elisa:310"
+      ]
+    },
+    {
+      "kind": "ProofBlockImpure",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_assert_by.elisa:180"
+      ]
+    },
+    {
+      "kind": "ProtocolRequiresConcreteType",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "PushLoopExtendable",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_push_loop_lint.elisa:110"
+      ]
+    },
+    {
+      "kind": "QuantifiedRefinementUnproven",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_quantified_refinement.elisa:204"
+      ]
+    },
+    {
+      "kind": "RaiseDestinationMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_raise_without_error_set.elisa:119"
+      ]
+    },
+    {
+      "kind": "RaiseVariantNotAllowed",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_raise_without_error_set.elisa:103"
+      ]
+    },
+    {
+      "kind": "RaiseWithoutErrorSet",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "RangeBoundNonIntegral",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "RangeStepZero",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_range_bound_non_integral.elisa:70"
+      ]
+    },
+    {
+      "kind": "RawConcurrencySurfaceRemoved",
+      "construction_sites": 3,
+      "explicit_position_sites": 3,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ReadOnlyViewAssign",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_readonly_view_assign.elisa:41"
+      ]
+    },
+    {
+      "kind": "ReadonlyRefArgument",
+      "construction_sites": 3,
+      "explicit_position_sites": 3,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ReadonlyRefArgumentNote",
+      "construction_sites": 3,
+      "explicit_position_sites": 3,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ReadonlyRefAssignNote",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ReadonlyRefMutation",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ReadonlyRefMutationNote",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ReadonlyRefPathMutation",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ReadonlyViewIndexAssign",
+      "construction_sites": 2,
+      "explicit_position_sites": 1,
+      "default_position_sites": [
+        "src/semantic/check_field_immutable_assign.elisa:147"
+      ]
+    },
+    {
+      "kind": "RebindableRefNote",
+      "construction_sites": 3,
+      "explicit_position_sites": 3,
+      "default_position_sites": []
+    },
+    {
+      "kind": "RecordUpdateUnknownField",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_unknown_field_access.elisa:233"
+      ]
+    },
+    {
+      "kind": "RecursiveProofDeclined",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_recursive_affine_ensure.elisa:143"
+      ]
+    },
+    {
+      "kind": "RecursiveStruct",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_struct_layout.elisa:240"
+      ]
+    },
+    {
+      "kind": "ReduceSumNonNumericCallback",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_expr_walk.elisa:101"
+      ]
+    },
+    {
+      "kind": "RedundantArithmetic",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_redundant_arithmetic.elisa:28"
+      ]
+    },
+    {
+      "kind": "RedundantBoolCompare",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_redundant_bool_compare.elisa:78"
+      ]
+    },
+    {
+      "kind": "RedundantCast",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_redundant_cast.elisa:164"
+      ]
+    },
+    {
+      "kind": "RedundantContinue",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_redundant_continue.elisa:27",
+        "src/semantic/check_redundant_continue.elisa:31"
+      ]
+    },
+    {
+      "kind": "RedundantEffectGrant",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_redundant_grant.elisa:28"
+      ]
+    },
+    {
+      "kind": "RedundantInlineGrant",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_ungranted_panic_coverage.elisa:141"
+      ]
+    },
+    {
+      "kind": "ReentrantSafeCall",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "RefArgValueParam",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "RefAssignMismatch",
+      "construction_sites": 4,
+      "explicit_position_sites": 4,
+      "default_position_sites": []
+    },
+    {
+      "kind": "RefValueCopy",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ReferenceReborrow",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "RefineAliasCycle",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_refine_cycle.elisa:197"
+      ]
+    },
+    {
+      "kind": "RefineAliasImpureArg",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_refine_alias_binder.elisa:135",
+        "src/semantic/check_refine_alias_binder.elisa:165"
+      ]
+    },
+    {
+      "kind": "RefineAliasNonBinder",
+      "construction_sites": 6,
+      "explicit_position_sites": 1,
+      "default_position_sites": [
+        "src/semantic/check_refine_alias_binder.elisa:134",
+        "src/semantic/check_refine_alias_binder.elisa:164",
+        "src/semantic/check_refine_alias_binder.elisa:168",
+        "src/semantic/check_refine_alias_binder.elisa:174",
+        "src/semantic/check_refine_cycle.elisa:200"
+      ]
+    },
+    {
+      "kind": "RefinementArgNotProven",
+      "construction_sites": 6,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_refinement_arg_bounds.elisa:212",
+        "src/semantic/check_refinement_arg_symbolic.elisa:192",
+        "src/semantic/check_refinement_arg_symbolic.elisa:37",
+        "src/semantic/check_refinement_arg_unproven.elisa:340",
+        "src/semantic/check_refinement_fact_invalidated.elisa:184",
+        "src/semantic/check_refinement_return_args.elisa:196"
+      ]
+    },
+    {
+      "kind": "RefinementBoundViolated",
+      "construction_sites": 6,
+      "explicit_position_sites": 1,
+      "default_position_sites": [
+        "src/semantic/check_ensures_assign_violated.elisa:215",
+        "src/semantic/check_law_refinement_violated.elisa:194",
+        "src/semantic/check_law_refinement_violated.elisa:202",
+        "src/semantic/check_law_refinement_violated.elisa:289",
+        "src/semantic/check_refinement_arg_violated.elisa:232"
+      ]
+    },
+    {
+      "kind": "RefinementNotALaw",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_refinement_is_law.elisa:142",
+        "src/semantic/check_refinement_is_law.elisa:70"
+      ]
+    },
+    {
+      "kind": "RefinementReturnNotProven",
+      "construction_sites": 5,
+      "explicit_position_sites": 1,
+      "default_position_sites": [
+        "src/semantic/check_bounded_return_product.elisa:202",
+        "src/semantic/check_field_return_refinement.elisa:126",
+        "src/semantic/check_refinement_arg_bitops.elisa:197",
+        "src/semantic/check_refinement_return_function.elisa:170"
+      ]
+    },
+    {
+      "kind": "RefinementSubjectMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_law_subject_type.elisa:96"
+      ]
+    },
+    {
+      "kind": "RegionAggregateReturnEscape",
+      "construction_sites": 2,
+      "explicit_position_sites": 1,
+      "default_position_sites": [
+        "src/semantic/check_region_escape.elisa:367"
+      ]
+    },
+    {
+      "kind": "RegionAnnotationOnFixedArray",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "RegionAnnotationOnScalarField",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "RegionGrowthRealloc",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_region_stack_lifetime.elisa:434"
+      ]
+    },
+    {
+      "kind": "RegionInterleaveDisjoint",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "RegionInterleaveOverlap",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "RegionLinearAllocation",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "RegionNestedGrowthEscape",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/region_escape_stores.elisa:189"
+      ]
+    },
+    {
+      "kind": "RegionNewOwnerUnresolved",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "RegionOwnerLeak",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_region_owner_leak.elisa:161"
+      ]
+    },
+    {
+      "kind": "RegionParamArgumentMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "RegionParamInferenceFailure",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "RegionParamUninferable",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "RegionQualifierMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_local_region_annotation.elisa:488"
+      ]
+    },
+    {
+      "kind": "RegionReturnDependency",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "RegionReturnEscape",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_region_escape.elisa:368"
+      ]
+    },
+    {
+      "kind": "RegionStoreEscape",
+      "construction_sites": 8,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/region_escape_assignments.elisa:110",
+        "src/semantic/region_escape_assignments.elisa:116",
+        "src/semantic/region_escape_assignments.elisa:63",
+        "src/semantic/region_escape_assignments.elisa:72",
+        "src/semantic/region_escape_assignments.elisa:81",
+        "src/semantic/region_escape_assignments.elisa:95",
+        "src/semantic/region_escape_stores.elisa:213",
+        "src/semantic/region_escape_stores.elisa:218"
+      ]
+    },
+    {
+      "kind": "RegionTiedReturn",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_region_tied_return.elisa:353",
+        "src/semantic/check_region_tied_return.elisa:366"
+      ]
+    },
+    {
+      "kind": "RegionValueEscapesReturn",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "RemovedCbindPrefixAnnotation",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_removed_packed_annotation.elisa:8"
+      ]
+    },
+    {
+      "kind": "RemovedPackedAbiAnnotation",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_removed_packed_annotation.elisa:6"
+      ]
+    },
+    {
+      "kind": "RemovedPackedPrefixAnnotation",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_removed_packed_annotation.elisa:7"
+      ]
+    },
+    {
+      "kind": "RemovedRefShorthand",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_redundant_cast.elisa:149"
+      ]
+    },
+    {
+      "kind": "ReturnRefAggregateLocal",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ReturnRefToLocal",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ReturnValueInVoid",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_enums.elisa:104"
+      ]
+    },
+    {
+      "kind": "RowIdNonSoa",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_rowid_soa.elisa:32"
+      ]
+    },
+    {
+      "kind": "RuntimeArraySize",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_fixed_array_shape.elisa:81"
+      ]
+    },
+    {
+      "kind": "RuntimeDictKeyUnsupported",
+      "construction_sites": 3,
+      "explicit_position_sites": 3,
+      "default_position_sites": []
+    },
+    {
+      "kind": "SegmentAgnosticGrant",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_segment_agnostic_grant.elisa:23",
+        "src/semantic/check_segment_agnostic_grant.elisa:43"
+      ]
+    },
+    {
+      "kind": "SegmentOwnerMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_segment_flow.elisa:50"
+      ]
+    },
+    {
+      "kind": "SegmentOwnerUnknown",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_segment_flow.elisa:53"
+      ]
+    },
+    {
+      "kind": "SegmentTransitionBadTarget",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_extern_segment.elisa:27"
+      ]
+    },
+    {
+      "kind": "SelfArithmetic",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_self_arithmetic.elisa:102"
+      ]
+    },
+    {
+      "kind": "SelfAssignment",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "SelfComparison",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_self_comparison.elisa:119"
+      ]
+    },
+    {
+      "kind": "SentinelIndex",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_sentinel_index.elisa:174"
+      ]
+    },
+    {
+      "kind": "SetElementAffine",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "SetElementTypeMismatch",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "SetElementUnsupported",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ShiftByZero",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_shift_by_zero.elisa:17"
+      ]
+    },
+    {
+      "kind": "ShiftOperandNonIntegral",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "SliceBoundNonIntegral",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "SliceBoundNonNumeric",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "SparseRequiresSoa",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_sparse_requires_soa.elisa:16"
+      ]
+    },
+    {
+      "kind": "StaticAssertFailed",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_static_assert.elisa:32"
+      ]
+    },
+    {
+      "kind": "StaticCallContext",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_static_call_context.elisa:19"
+      ]
+    },
+    {
+      "kind": "StaticError",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_static_error.elisa:80"
+      ]
+    },
+    {
+      "kind": "StaticEvalDepthExceeded",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_static_eval.elisa:161"
+      ]
+    },
+    {
+      "kind": "StaticGenerateInterpRuntime",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_static_generate_interp.elisa:22"
+      ]
+    },
+    {
+      "kind": "StaticIfConditionNotConst",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_static_if_condition.elisa:85"
+      ]
+    },
+    {
+      "kind": "StaticIndirectRecursion",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_static_def_recursion.elisa:195"
+      ]
+    },
+    {
+      "kind": "StaticPartialRecursion",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_static_def_recursion.elisa:180"
+      ]
+    },
+    {
+      "kind": "StaticRuntimeStatement",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_static_runtime_stmt.elisa:42"
+      ]
+    },
+    {
+      "kind": "StaticSignedBaseCase",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_static_def_recursion.elisa:188"
+      ]
+    },
+    {
+      "kind": "StorageDependencyInvalidated",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "StoreRefToLocal",
+      "construction_sites": 3,
+      "explicit_position_sites": 3,
+      "default_position_sites": []
+    },
+    {
+      "kind": "StringIndexAssign",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_field_immutable_assign.elisa:149"
+      ]
+    },
+    {
+      "kind": "StringIndexNonIntegral",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "StringIndexNonNumeric",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "StringViewIndexAssign",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_field_immutable_assign.elisa:148"
+      ]
+    },
+    {
+      "kind": "StructFieldAnnotationUnsupported",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "StructFieldRefinementUnproven",
+      "construction_sites": 4,
+      "explicit_position_sites": 3,
+      "default_position_sites": [
+        "src/semantic/check_struct_field_construct_unproven.elisa:581"
+      ]
+    },
+    {
+      "kind": "StructFieldRefinementViolated",
+      "construction_sites": 2,
+      "explicit_position_sites": 1,
+      "default_position_sites": [
+        "src/semantic/check_struct_field_violated.elisa:138"
+      ]
+    },
+    {
+      "kind": "StructFieldWhereRefScope",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_struct_field_where_scope.elisa:61"
+      ]
+    },
+    {
+      "kind": "StructPadding",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_struct_layout.elisa:203"
+      ]
+    },
+    {
+      "kind": "StructPatternTypeMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "StructuralDecreasesUnproven",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_structural_decreases.elisa:167"
+      ]
+    },
+    {
+      "kind": "SubmitOutsidePool",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "SyntaxExpectedDeclaration",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "SyntaxExpectedExpression",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "SyntaxExpectedToken",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "SyntaxMismatchedWithBindings",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "SyntaxRemoved",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "SyntaxUnexpectedInExpression",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "SyntaxUnexpectedToken",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "TernaryBranchMismatch",
+      "construction_sites": 4,
+      "explicit_position_sites": 4,
+      "default_position_sites": []
+    },
+    {
+      "kind": "TestFunctionParameters",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_unknown_function_annotation.elisa:105"
+      ]
+    },
+    {
+      "kind": "ThreadArgumentNotShareable",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_closure_capture.elisa:91",
+        "src/semantic/check_thread_shareability.elisa:56"
+      ]
+    },
+    {
+      "kind": "ThreadResultNotShareable",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_thread_shareability.elisa:50"
+      ]
+    },
+    {
+      "kind": "ThreadTransferRegionDependency",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_thread_transfer_provenance.elisa:122"
+      ]
+    },
+    {
+      "kind": "ThreadTransferStoreDependency",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_thread_transfer_provenance.elisa:121"
+      ]
+    },
+    {
+      "kind": "TopLevelOrPatternBindsNames",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "TrustedExternReason",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_extern_decorators.elisa:27"
+      ]
+    },
+    {
+      "kind": "TruthyOrBindingMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_truthy_or_binding.elisa:128"
+      ]
+    },
+    {
+      "kind": "TryFallbackTypeMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "TryFallbackVoid",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "TryPropagationMismatch",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "TryRequiresFallible",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_try_fallible.elisa:240"
+      ]
+    },
+    {
+      "kind": "TryWithoutElseNonErrorFunction",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_try_fallible.elisa:202"
+      ]
+    },
+    {
+      "kind": "TupleDestructureArityMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "TupleIterableNotTuple",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "TuplePatternArityMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "TupleValueMismatch",
+      "construction_sites": 4,
+      "explicit_position_sites": 4,
+      "default_position_sites": []
+    },
+    {
+      "kind": "TypeMismatch",
+      "construction_sites": 24,
+      "explicit_position_sites": 20,
+      "default_position_sites": [
+        "src/semantic/check_void_value_use.elisa:49",
+        "src/semantic/resolve_types_initializers.elisa:393",
+        "src/semantic/resolve_types_initializers.elisa:428",
+        "src/semantic/resolve_types_initializers.elisa:430"
+      ]
+    },
+    {
+      "kind": "TypestateArgMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_typestate_flow.elisa:82"
+      ]
+    },
+    {
+      "kind": "TypestateEnsuresUnproven",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_derived_state_flow.elisa:361"
+      ]
+    },
+    {
+      "kind": "TypestateNonTerminal",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_typestate_scope.elisa:89"
+      ]
+    },
+    {
+      "kind": "TypestateNotRestored",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_derived_state_flow.elisa:416"
+      ]
+    },
+    {
+      "kind": "TypestateWidenedByCall",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "UfcsAmbiguousCall",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "UnaryOperandNonNumeric",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "UnboundedStringErasure",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_pointer_erasure_cast.elisa:271"
+      ]
+    },
+    {
+      "kind": "UncheckedIndexUngranted",
+      "construction_sites": 3,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_assoc_index_bounds.elisa:149",
+        "src/semantic/check_fixed_index_range.elisa:137",
+        "src/semantic/check_strict_unsafe_ops_walk.elisa:436"
+      ]
+    },
+    {
+      "kind": "UndefinedGenericFunction",
+      "construction_sites": 5,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_clone_builtin.elisa:52",
+        "src/semantic/check_clone_builtin.elisa:72",
+        "src/semantic/check_copy_builtin.elisa:50",
+        "src/semantic/check_copy_builtin.elisa:62",
+        "src/semantic/check_copy_builtin.elisa:65"
+      ]
+    },
+    {
+      "kind": "UndefinedModuleMember",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "UndefinedName",
+      "construction_sites": 7,
+      "explicit_position_sites": 3,
+      "default_position_sites": [
+        "src/semantic/check_abstract_effects.elisa:366",
+        "src/semantic/check_default_param_ref.elisa:13",
+        "src/semantic/check_where_scope.elisa:114",
+        "src/semantic/resolve_expr_walk.elisa:417"
+      ]
+    },
+    {
+      "kind": "UngrantedBufferReinterpret",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_pointer_erasure_cast.elisa:291"
+      ]
+    },
+    {
+      "kind": "UngrantedEffectCall",
+      "construction_sites": 11,
+      "explicit_position_sites": 2,
+      "default_position_sites": [
+        "src/semantic/check_callback_named_args.elisa:55",
+        "src/semantic/check_strict_unsafe_ops_extern_walk.elisa:13",
+        "src/semantic/check_strict_unsafe_ops_views.elisa:157",
+        "src/semantic/check_strict_unsafe_ops_views.elisa:435",
+        "src/semantic/check_strict_unsafe_ops_views.elisa:441",
+        "src/semantic/check_strict_unsafe_ops_views.elisa:443",
+        "src/semantic/check_strict_unsafe_ops_views.elisa:453",
+        "src/semantic/check_ungranted_panic_coverage.elisa:121",
+        "src/semantic/check_ungranted_panic_grants.elisa:260"
+      ]
+    },
+    {
+      "kind": "UngrantedPanic",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "UngrantedParallelFor",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_parallel_for_grant.elisa:71"
+      ]
+    },
+    {
+      "kind": "UngrantedPointerCast",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_pointer_erasure_cast.elisa:314",
+        "src/semantic/check_pointer_erasure_cast.elisa:335"
+      ]
+    },
+    {
+      "kind": "UninitializedZeroedRead",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_uninitialized_zeroed.elisa:911"
+      ]
+    },
+    {
+      "kind": "UnknownEnumAnnotation",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "UnknownExternFunctionAnnotation",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_unknown_function_annotation.elisa:181"
+      ]
+    },
+    {
+      "kind": "UnknownField",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_expr.elisa:238"
+      ]
+    },
+    {
+      "kind": "UnknownFieldAccess",
+      "construction_sites": 5,
+      "explicit_position_sites": 4,
+      "default_position_sites": [
+        "src/semantic/check_is_pattern_field.elisa:20"
+      ]
+    },
+    {
+      "kind": "UnknownFieldType",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "UnknownFunctionAnnotation",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "UnknownInterface",
+      "construction_sites": 2,
+      "explicit_position_sites": 1,
+      "default_position_sites": [
+        "src/semantic/check_abstract_effects.elisa:339"
+      ]
+    },
+    {
+      "kind": "UnknownPermissionMember",
+      "construction_sites": 3,
+      "explicit_position_sites": 2,
+      "default_position_sites": [
+        "src/semantic/check_signal_effect.elisa:58"
+      ]
+    },
+    {
+      "kind": "UnknownRegionBacking",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_region_backing.elisa:42"
+      ]
+    },
+    {
+      "kind": "UnknownRegionQualifier",
+      "construction_sites": 2,
+      "explicit_position_sites": 1,
+      "default_position_sites": [
+        "src/semantic/check_region_annotation_scalar.elisa:140"
+      ]
+    },
+    {
+      "kind": "UnknownStruct",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "UnknownStructAnnotation",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "UnknownTypeName",
+      "construction_sites": 5,
+      "explicit_position_sites": 5,
+      "default_position_sites": []
+    },
+    {
+      "kind": "UnknownVariant",
+      "construction_sites": 2,
+      "explicit_position_sites": 1,
+      "default_position_sites": [
+        "src/semantic/resolve_expr_walk.elisa:342"
+      ]
+    },
+    {
+      "kind": "UnreachableCode",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_flow.elisa:153"
+      ]
+    },
+    {
+      "kind": "UnreachableMatchArm",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "UnsupportedCallConv",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "UntypedEmptyBuilder",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_untyped_darray_builder.elisa:234"
+      ]
+    },
+    {
+      "kind": "UnusedDecreases",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_unused_decreases.elisa:105"
+      ]
+    },
+    {
+      "kind": "UnusedExpression",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_unused_expression.elisa:46"
+      ]
+    },
+    {
+      "kind": "UnusedImport",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_unused_import.elisa:179"
+      ]
+    },
+    {
+      "kind": "UnusedLocal",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_mutability.elisa:581"
+      ]
+    },
+    {
+      "kind": "UnusedParam",
+      "construction_sites": 0,
+      "explicit_position_sites": 0,
+      "default_position_sites": []
+    },
+    {
+      "kind": "UsesPreconditionViolated",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_uses_contract.elisa:285"
+      ]
+    },
+    {
+      "kind": "ValueBlockJumpOut",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ValueBlockMutation",
+      "construction_sites": 3,
+      "explicit_position_sites": 3,
+      "default_position_sites": []
+    },
+    {
+      "kind": "VariantArity",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/resolve_enums.elisa:470",
+        "src/semantic/resolve_expr_walk.elisa:320"
+      ]
+    },
+    {
+      "kind": "VoidArgument",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "VoidCollectionElement",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "VoidCondition",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "VoidFieldAccess",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "VoidIndex",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "VoidMatchScrutinee",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "VoidNotBindable",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "VoidOperand",
+      "construction_sites": 3,
+      "explicit_position_sites": 3,
+      "default_position_sites": []
+    },
+    {
+      "kind": "VoidUnaryOperand",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "VoidValueUse",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "WhereRefinementNonBool",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_where_predicate_bool.elisa:15"
+      ]
+    },
+    {
+      "kind": "WhereRefinementReassignViolated",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_where_reassign.elisa:147"
+      ]
+    },
+    {
+      "kind": "WildcardArmNotFinal",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "WritesOutsideChanges",
+      "construction_sites": 5,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_effect_law_fulfillment.elisa:285",
+        "src/semantic/check_frame_interproc.elisa:61",
+        "src/semantic/check_frame_interproc.elisa:63",
+        "src/semantic/check_frame_write.elisa:43",
+        "src/semantic/check_frame_write.elisa:55"
+      ]
+    },
+    {
+      "kind": "WritesPreservedPlace",
+      "construction_sites": 2,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_preserves_conflict.elisa:57",
+        "src/semantic/check_preserves_conflict.elisa:65"
+      ]
+    },
+    {
+      "kind": "ZipMapSourceNotReadonly",
+      "construction_sites": 1,
+      "explicit_position_sites": 0,
+      "default_position_sites": [
+        "src/semantic/check_zip_map_readonly.elisa:89"
+      ]
+    }
+  ]
+}

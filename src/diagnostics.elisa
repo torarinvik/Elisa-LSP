@@ -17,7 +17,11 @@
 # grower (resolveRegionArenaArgs ignored darrayStackTag), so a later realloc straddled two
 # arenas. The >=1-diagnostic path is now covered by test/diagnostics_test.sh.
 include "../../Elisa-compiler/src/semantic/semantic.elisa"
+include "diagnostic_codes.elisa"
 include "positions.elisa"
+
+extern elisa_lsp_monotonic_millis() -> i64 can[Console]
+extern elisa_lsp_timing_enabled() -> int can[Console]
 
 # push_str/push_int/push_sview come from the frontend's `module Bytes` (inlined in
 # semantic.elisa), pulled in via the include above; `using` makes them callable here.
@@ -27,108 +31,114 @@ using Bytes
 # the unit call them as `Positions::...`.
 using Positions
 
+# Private lifetime counters used by `$/elisa/stats`. These are deliberately
+# incremented next to the frontend calls below so the reported values count
+# real frontend work, not LSP notifications or cache misses.
+global mutable lsp_frontend_tokenize_calls: i64 = 0
+global mutable lsp_frontend_parse_calls: i64 = 0
+global mutable lsp_frontend_check_calls: i64 = 0
 
-# Run the frontend over a NUL-terminated source buffer, returning the located semantic
-# findings. `Diagnostic.name` spans point into `src`, so the caller must keep `src` alive
-# for as long as the returned table is read (see `check_source` below).
-def check_source_buf(src: u8&, len: usize) -> Semantic::SymbolTable:
-    can Memory.Allocate, Abort.Panic:
-        tokens: darray[Token] = Lexer::frontend_tokenize_with_length(src, src, len)
-        file: Ast::File = frontend_parser_parse_file(src, tokens)
-        return Semantic::check(file)
+# The compiler's combined lexer result keeps the main parser stream and its
+# comment side channel under one source-pass lifetime. The LSP wrapper keeps
+# the compiler-owned type behind this small boundary so providers do not reach
+# into compiler implementation details.
+struct LspFrontendTokenBatch:
+    tokens: darray[Lexer::Token]
+    comments: darray[Lexer::Token]
 
-
-# Copy `text` (a raw, non-NUL-terminated span into a larger JSON message buffer) into a
-# fresh NUL-terminated buffer, then run the frontend over it. The buffer is appended to
-# `owner` so it outlives this call — `Diagnostic.name` spans in the returned table point
-# into it, and must stay valid for as long as the caller reads the table.
-def check_source(owner: mutable darray[u8]&, text: sview) -> Semantic::SymbolTable:
-    can Memory.Allocate, Abort.Panic:
-        owner.extend(text)
-        owner.push(0)
-        return check_source_buf(&owner[0], sview_len(text))
-
-
-# Append one byte to a JSON string buffer, escaping the characters JSON forbids raw
-# (`"`, `\`, and the C0 control set). Frontend-owned message text is arbitrary, so it
-# must be escaped rather than concatenated raw.
-def json_escape_byte(buffer: mutable darray[u8]&, b: u8) -> void:
-    can Memory.Allocate, Abort.Panic:
-        if b == 34:            # "
-            buffer.push_str("\\\"")
-        elif b == 92:          # \
-            buffer.push_str("\\\\")
-        elif b == 10:          # \n
-            buffer.push_str("\\n")
-        elif b == 13:          # \r
-            buffer.push_str("\\r")
-        elif b == 9:           # \t
-            buffer.push_str("\\t")
-        elif b < 32:           # other C0 controls -> \u00XX
-            buffer.push_str("\\u00")
-            buffer.push(hex_digit((b.i64() >> 4) & 15))
-            buffer.push(hex_digit(b.i64() & 15))
-        else:
-            buffer.push(b)
-
-
-# ASCII hex digit for a nibble 0..15.
-def hex_digit(n: i64) -> u8:
-    return (48 + n).u8() if n < 10 else (87 + n).u8()
+# Q04 opt-in stage observations. These are the current message/job values;
+# they are reset at each frame boundary. Child-worker values are returned in
+# the trusted internal packet and installed in the parent before the message
+# finishes. Zero means either a sub-millisecond stage or disabled timing, so
+# the status probe also reports whether collection is enabled.
+global mutable lsp_timing_enabled: bool = false
+global mutable lsp_timing_decode_ms: i64 = 0
+global mutable lsp_timing_edit_ms: i64 = 0
+global mutable lsp_timing_line_index_ms: i64 = 0
+global mutable lsp_timing_lex_ms: i64 = 0
+global mutable lsp_timing_parse_ms: i64 = 0
+global mutable lsp_timing_check_ms: i64 = 0
+global mutable lsp_timing_index_ms: i64 = 0
+global mutable lsp_timing_provider_ms: i64 = 0
+global mutable lsp_timing_serialization_ms: i64 = 0
+global mutable lsp_timing_queue_wait_ms: i64 = 0
+global mutable lsp_timing_transport_ms: i64 = 0
+global mutable lsp_timing_last_decode_ms: i64 = 0
+global mutable lsp_timing_last_edit_ms: i64 = 0
+global mutable lsp_timing_last_line_index_ms: i64 = 0
+global mutable lsp_timing_last_lex_ms: i64 = 0
+global mutable lsp_timing_last_parse_ms: i64 = 0
+global mutable lsp_timing_last_check_ms: i64 = 0
+global mutable lsp_timing_last_index_ms: i64 = 0
+global mutable lsp_timing_last_provider_ms: i64 = 0
+global mutable lsp_timing_last_serialization_ms: i64 = 0
+global mutable lsp_timing_last_queue_wait_ms: i64 = 0
+global mutable lsp_timing_last_transport_ms: i64 = 0
 
 
-# Escape a whole source-derived span as a JSON string body. Every byte < 0x80
-# goes through `json_escape_byte`; multi-byte UTF-8 is copied only when it is a
-# WELL-FORMED sequence (correct continuation bytes, no overlong form, no
-# surrogate, <= U+10FFFF). Anything invalid becomes U+FFFD. This is the
-# protocol-integrity guarantee that malformed source (e.g. an identifier span
-# cutting an emoji) can never make an outgoing frame invalid UTF-8/JSON.
-def json_escape_utf8(buffer: mutable darray[u8]&, text: sview) -> void can[Memory.Allocate, Abort.Panic]:
-    i: mutable usize = 0
-    while i < text.len.usize():
-        b: u8 = sview_at(text, i)
-        if b < 128:
-            json_escape_byte(buffer, b)
-            i <- i + 1
-            continue
-        seqlen: usize = Positions::utf8_seq_length(b)
-        valid: mutable bool = seqlen >= 2 and i + seqlen <= text.len.usize()
-        cp: mutable u32 = 0
-        if valid:
-            if seqlen == 2:
-                c1: u8 = sview_at(text, i + 1)
-                valid <- c1 >= 128 and c1 <= 191
-                cp <- ((b.u32() & 31) << 6) | (c1.u32() & 63)
-            elif seqlen == 3:
-                c1: u8 = sview_at(text, i + 1)
-                c2: u8 = sview_at(text, i + 2)
-                valid <- c1 >= 128 and c1 <= 191 and c2 >= 128 and c2 <= 191
-                cp <- ((b.u32() & 15) << 12) | ((c1.u32() & 63) << 6) | (c2.u32() & 63)
-            elif seqlen == 4:
-                c1: u8 = sview_at(text, i + 1)
-                c2: u8 = sview_at(text, i + 2)
-                c3: u8 = sview_at(text, i + 3)
-                valid <- c1 >= 128 and c1 <= 191 and c2 >= 128 and c2 <= 191 and c3 >= 128 and c3 <= 191
-                cp <- ((b.u32() & 7) << 18) | ((c1.u32() & 63) << 12) | ((c2.u32() & 63) << 6) | (c3.u32() & 63)
-            else:
-                valid <- false
-        # Reject overlong encodings, UTF-16 surrogates, and out-of-range points.
-        if valid:
-            if cp < 128:
-                valid <- false
-            elif cp >= 0xD800 and cp <= 0xDFFF:
-                valid <- false
-            elif cp > 0x10FFFF:
-                valid <- false
-        if valid:
-            k: mutable usize = 0
-            while k < seqlen:
-                buffer.push(sview_at(text, i + k))
-                k <- k + 1
-            i <- i + seqlen
-        else:
-            push_str(buffer, "\\ufffd")
-            i <- i + 1
+def lsp_timing_start() -> i64 can[Console]:
+    return -1 if not lsp_timing_enabled
+    return elisa_lsp_monotonic_millis() can Console
+
+
+def lsp_timing_elapsed(started_ms: i64) -> i64 can[Console]:
+    return 0 if not lsp_timing_enabled or started_ms < 0
+    finished_ms: i64 = elisa_lsp_monotonic_millis() can Console
+    return finished_ms - started_ms if finished_ms >= started_ms else 0
+
+
+def lsp_timing_record(target: mutable i64&, started_ms: i64) -> void can[Console]:
+    target <- lsp_timing_elapsed(started_ms) if lsp_timing_enabled
+
+
+def lsp_timing_add(target: mutable i64&, started_ms: i64) -> void can[Console]:
+    target <- target + lsp_timing_elapsed(started_ms) if lsp_timing_enabled
+
+
+def lsp_timing_reset() -> void:
+    lsp_timing_decode_ms <- 0
+    lsp_timing_edit_ms <- 0
+    lsp_timing_line_index_ms <- 0
+    lsp_timing_lex_ms <- 0
+    lsp_timing_parse_ms <- 0
+    lsp_timing_check_ms <- 0
+    lsp_timing_index_ms <- 0
+    lsp_timing_provider_ms <- 0
+    lsp_timing_serialization_ms <- 0
+    lsp_timing_queue_wait_ms <- 0
+    lsp_timing_transport_ms <- 0
+
+
+def lsp_timing_commit() -> void:
+    lsp_timing_last_decode_ms <- lsp_timing_decode_ms
+    lsp_timing_last_edit_ms <- lsp_timing_edit_ms
+    lsp_timing_last_line_index_ms <- lsp_timing_line_index_ms
+    lsp_timing_last_lex_ms <- lsp_timing_lex_ms
+    lsp_timing_last_parse_ms <- lsp_timing_parse_ms
+    lsp_timing_last_check_ms <- lsp_timing_check_ms
+    lsp_timing_last_index_ms <- lsp_timing_index_ms
+    lsp_timing_last_provider_ms <- lsp_timing_provider_ms
+    lsp_timing_last_serialization_ms <- lsp_timing_serialization_ms
+    lsp_timing_last_queue_wait_ms <- lsp_timing_queue_wait_ms
+    lsp_timing_last_transport_ms <- lsp_timing_transport_ms
+
+
+# Count full-source tokenization at its only LSP entry point so semantic-token
+# construction can reuse the same stream and the counter reflects real calls.
+def tokenize_frontend_source(src: u8&, len: usize) -> LspFrontendTokenBatch:
+    can Memory.Allocate, Abort.Panic, Console:
+        timing_started_ms: i64 = lsp_timing_start() can Console
+        lsp_frontend_tokenize_calls <- lsp_frontend_tokenize_calls + 1
+        # The LSP owns a physical, in-memory snapshot.  Feed the compiler a
+        # stable display name while using its expanded-unit lexer entry point:
+        # this keeps `#line N path` directives from replacing physical buffer
+        # lines or making a compiler display path look like the source URI.
+        # The display name is intentionally not persisted or used for LSP
+        # identity; every provider maps the returned source offsets back to the
+        # document snapshot and echoes the client's URI spelling separately.
+        frontend: Lexer::FrontendTokenBatch = Lexer::frontend_tokenize_expanded_unit_with_comments("<elisa-lsp>", src, len)
+        lsp_timing_record(lsp_timing_lex_ms, timing_started_ms) can Console
+        return LspFrontendTokenBatch{tokens: frontend.tokens, comments: frontend.comments}
 
 
 # Render one diagnostic as an LSP `Diagnostic` JSON object. The message text and severity
@@ -148,9 +158,9 @@ def json_escape_utf8(buffer: mutable darray[u8]&, text: sview) -> void can[Memor
 # through a by-reference helper had its backing split across the base and its parallel
 # stack. Fixed in Elisa-core: resolveRegionArenaArgs now peels the `&` a `mutable darray&`
 # argument is wrapped in, so the helper grows into the darray's own stack.)
-def diagnostic_json(d: Semantic::Diagnostic, src: u8&, src_len: usize, utf8: bool, related: bool, uri: sview) -> darray[u8]:
+def diagnostic_json(d: Semantic::Diagnostic, src: u8&, src_len: usize, line_starts: darray[usize]&, span_start: usize, span_count: usize, utf8: bool, related: bool, uri: sview) -> darray[u8]:
     can Memory.Allocate, Abort.Panic:
-        nlines: i64 = line_count(src, src_len)
+        nlines: i64 = span_count.i64()
         last: i64 = nlines - 1
         # Prefer the frontend span; otherwise the report line.
         raw_line: i64 = d.pos.line.i64() if d.pos.line > 0 else d.line.i64()
@@ -159,7 +169,7 @@ def diagnostic_json(d: Semantic::Diagnostic, src: u8&, src_len: usize, utf8: boo
         sline0 <- last if sline0 > last
         eline0: mutable i64 = sline0
         schar: mutable i64 = 0
-        echar: mutable i64 = line_unit_length(src, src_len, sline0, utf8)
+        echar: mutable i64 = line_unit_length_span_indexed(src, src_len, line_starts, span_start, span_count, sline0, utf8)
         if d.pos.end_column > 0 and d.pos.line > 0:
             el1: i64 = d.pos.end_line.i64() if d.pos.end_line >= d.pos.line else d.pos.line.i64()
             eline0 <- el1 - 1
@@ -167,13 +177,27 @@ def diagnostic_json(d: Semantic::Diagnostic, src: u8&, src_len: usize, utf8: boo
             eline0 <- 0 if eline0 < 0
             scol_byte: i64 = d.pos.column.i64() - 1 if d.pos.column > 0 else 0
             ecol_byte: i64 = d.pos.end_column.i64() - 1
-            schar <- byte_col_to_units(src, src_len, sline0, scol_byte, utf8)
-            echar <- byte_col_to_units(src, src_len, eline0, ecol_byte, utf8)
+            schar <- byte_col_to_units_span_indexed(src, src_len, line_starts, span_start, span_count, sline0, scol_byte, utf8)
+            echar <- byte_col_to_units_span_indexed(src, src_len, line_starts, span_start, span_count, eline0, ecol_byte, utf8)
             if eline0 == sline0 and echar < schar:
                 echar <- schar
             if eline0 < sline0:
                 eline0 <- sline0
                 echar <- schar
+            # Prefer the frontend's absolute half-open byte offsets when both
+            # endpoints are in this physical snapshot and they agree with its
+            # line/column fields. The agreement check protects against stale,
+            # defaulted, or remapped offsets; those findings keep the bounded
+            # line/column conversion above.
+            offsets_in_snapshot: bool = frontend_offsets_valid(d.pos, src_len)
+            if offsets_in_snapshot:
+                physical_start: (line: i64, character: i64) = byte_offset_to_position_span_indexed(src, src_len, line_starts, span_start, span_count, d.pos.offset.usize(), utf8)
+                physical_end: (line: i64, character: i64) = byte_offset_to_position_span_indexed(src, src_len, line_starts, span_start, span_count, d.pos.end_offset.usize(), utf8)
+                if physical_start.line == sline0 and physical_start.character == schar and physical_end.line == eline0 and physical_end.character == echar:
+                    sline0 <- physical_start.line
+                    schar <- physical_start.character
+                    eline0 <- physical_end.line
+                    echar <- physical_end.character
         buffer: mutable darray[u8] = []
         buffer.push_str("{\"range\":{\"start\":{\"line\":")
         buffer.push_int(sline0)
@@ -185,10 +209,17 @@ def diagnostic_json(d: Semantic::Diagnostic, src: u8&, src_len: usize, utf8: boo
         buffer.push_int(echar)
         buffer.push_str("}},\"severity\":")
         buffer.push_int(Semantic::diagnostic_severity(d).i64())
-        buffer.push_str(",\"message\":\"")
+        # G01/G03: stable machine-readable identity is independent of the
+        # compiler's user-facing wording.  The generated adapter maps every
+        # supported DiagnosticKind to an explicit ELISA-* code and fails the
+        # build when the compiler adds or renames a kind without a review.
+        buffer.push_str(",\"code\":\"")
+        json_escape_utf8(buffer, diagnostic_code(d.kind))
+        buffer.push_str("\"")
+        buffer.push_str(",\"source\":\"elisa\",\"message\":\"")
         msg_bytes: darray[u8] = Semantic::diagnostic_message(d)
         if msg_bytes.count > 0:
-            json_escape_utf8(buffer, sview(&msg_bytes[0], 0, msg_bytes.count.i64()))
+            json_escape_utf8(buffer, bytes_view_range_ref(msg_bytes, 0, msg_bytes.count))
         buffer.push_str("\"")
         # G03: expose the compiler's structured secondary location as LSP
         # `relatedInformation` (a duplicate declaration points at the original).
@@ -199,12 +230,12 @@ def diagnostic_json(d: Semantic::Diagnostic, src: u8&, src_len: usize, utf8: boo
             srel0 <- last if srel0 > last
             srel0 <- 0 if srel0 < 0
             rel_s: mutable i64 = 0
-            rel_e: mutable i64 = line_unit_length(src, src_len, srel0, utf8)
+            rel_e: mutable i64 = line_unit_length_span_indexed(src, src_len, line_starts, span_start, span_count, srel0, utf8)
             if d.secondary_end_column > 0:
                 rscol: i64 = d.secondary_column.i64() - 1 if d.secondary_column > 0 else 0
                 recol: i64 = d.secondary_end_column.i64() - 1
-                rel_s <- byte_col_to_units(src, src_len, srel0, rscol, utf8)
-                rel_e <- byte_col_to_units(src, src_len, srel0, recol, utf8)
+                rel_s <- byte_col_to_units_span_indexed(src, src_len, line_starts, span_start, span_count, srel0, rscol, utf8)
+                rel_e <- byte_col_to_units_span_indexed(src, src_len, line_starts, span_start, span_count, srel0, recol, utf8)
                 rel_e <- rel_s if rel_e < rel_s
             buffer.push_str(",\"relatedInformation\":[{\"location\":{\"uri\":\"")
             json_escape_utf8(buffer, uri)
@@ -231,17 +262,14 @@ def diagnostic_json(d: Semantic::Diagnostic, src: u8&, src_len: usize, utf8: boo
 # identical-repeat suppression before sending.
 const MAX_DIAGNOSTICS: i64 = 200
 
-def build_publish_body(uri: sview, table: Semantic::SymbolTable, src: u8&, src_len: usize, version: i64, utf8: bool, related: bool) -> darray[u8]:
+def build_publish_body(uri: sview, table: Semantic::SymbolTable, src: u8&, src_len: usize, line_starts: darray[usize]&, span_start: usize, span_count: usize, version: i64, utf8: bool, related: bool) -> darray[u8]:
     can Memory.Allocate, Abort.Panic:
         body: mutable darray[u8] = []
         body.push_str("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"")
         json_escape_utf8(body, uri)
-        if version >= 0:
-            body.push_str("\",\"version\":")
-            body.push_int(version)
-            body.push_str(",\"diagnostics\":[")
-        else:
-            body.push_str("\",\"diagnostics\":[")
+        body.push_str("\",\"version\":")
+        json_push_i64(body, version)
+        body.push_str(",\"diagnostics\":[")
         # Render entries into a flat span buffer with per-entry bounds so exact
         # duplicates (same range, severity, wording) collapse. Scalar index
         # arrays only — no nested containers, per the region discipline.
@@ -249,11 +277,10 @@ def build_publish_body(uri: sview, table: Semantic::SymbolTable, src: u8&, src_l
         starts: mutable darray[usize] = []
         lens: mutable darray[usize] = []
         rendered: mutable i64 = 0
-        total: i64 = diagnostic_count(table).i64()
+        truncated: mutable bool = false
         i: mutable usize = 0
         while i < diagnostic_count(table):
-            break if rendered >= MAX_DIAGNOSTICS
-            entry: darray[u8] = diagnostic_json(diagnostic_at(table, i), src, src_len, utf8, related, uri)
+            entry: darray[u8] = diagnostic_json(diagnostic_at(table, i), src, src_len, line_starts, span_start, span_count, utf8, related, uri)
             dup: mutable bool = false
             k: mutable usize = 0
             while k < starts.count:
@@ -271,10 +298,15 @@ def build_publish_body(uri: sview, table: Semantic::SymbolTable, src: u8&, src_l
                     break if dup
                 k <- k + 1
             if not dup:
+                if rendered >= MAX_DIAGNOSTICS:
+                    # We only claim truncation after finding a distinct item
+                    # beyond the emitted set. Frontend duplicates are removed
+                    # before the cap and do not inflate an omitted count.
+                    truncated <- true
+                    break
                 starts.push(spans.count)
                 lens.push(entry.count)
-                for b in entry:
-                    spans.push(b)
+                spans.extend([b for b in entry])
                 rendered <- rendered + 1
             i <- i + 1
         q: mutable usize = 0
@@ -287,12 +319,9 @@ def build_publish_body(uri: sview, table: Semantic::SymbolTable, src: u8&, src_l
                 body.push(spans[st + j])
                 j <- j + 1
             q <- q + 1
-        if total > rendered:
+        if truncated:
             body.push_str(",") if starts.count > 0
-            omitted: i64 = total - rendered
-            body.push_str("{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":0}},\"severity\":4,\"message\":\"and ")
-            body.push_int(omitted)
-            body.push_str(" more diagnostics omitted (showing first ")
+            body.push_str("{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":0}},\"severity\":4,\"code\":\"ELISA-LSP-DiagnosticsTruncated\",\"source\":\"elisa-lsp\",\"message\":\"additional distinct diagnostics omitted (showing first ")
             body.push_int(rendered)
             body.push_str(")\"}")
         body.push_str("]}}")
