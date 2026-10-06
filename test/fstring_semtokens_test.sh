@@ -17,6 +17,9 @@ sys.path.insert(0, os.path.join(sys.argv[2], "test"))
 from lsp_client import LspSession
 
 srv = sys.argv[1]
+deep_expr = 'f"leaf {name}"'
+for _ in range(17):
+    deep_expr = 'f"outer {' + deep_expr + '}"'
 # line1: single interpolation; line2: escaped braces + two interpolations w/ field access
 doc = ('def f(name: i64, b: i64) -> i64:\n'
        '    msg: dstr = f"hi {name}!"\n'
@@ -37,7 +40,11 @@ doc = ('def f(name: i64, b: i64) -> i64:\n'
        'def incomplete_interp(name: i64) -> dstr:\n'
        '    return f"open {name\n'
        'def unicode_interp(name: i64) -> dstr:\n'
-       '    return f"før={"inne } ø"} {name}"\n')
+       '    return f"før={"inne } ø"} {name}"\n'
+       'def nested_fstring(name: i64) -> dstr:\n'
+       '    return f"outer {f"inner {name}"}"\n'
+       'def deep_nested_fstring(name: i64) -> dstr:\n'
+       f'    return {deep_expr}\n')
 lines = doc.split("\n")
 
 with LspSession(srv, request_timeout=30, teardown_timeout=5) as client:
@@ -64,6 +71,17 @@ with LspSession(srv, request_timeout=30, teardown_timeout=5) as client:
         "context": {"includeDeclaration": True},
     }, timeout=30)
     assert "result" in references, references
+    nested_references = client.request("textDocument/references", {
+        "textDocument": {"uri": "file:///t.elisa"},
+        "position": {"line": 21, "character": lines[21].rindex("name") + 1},
+        "context": {"includeDeclaration": True},
+    }, timeout=30)
+    assert "result" in nested_references, nested_references
+    nested_definition = client.request("textDocument/definition", {
+        "textDocument": {"uri": "file:///t.elisa"},
+        "position": {"line": 21, "character": lines[21].rindex("name") + 1},
+    }, timeout=30)
+    assert "result" in nested_definition, nested_definition
     client.finish(timeout=30)
 assert len(data) % 5 == 0
 
@@ -179,6 +197,26 @@ expected_references = [
 ]
 assert references["result"] == expected_references, references
 
+# Query the nested use against its own function's parameter, rather than a
+# same-spelled parameter from another function. This distinguishes missed
+# interpolation occurrences from correct BindingId/scope isolation.
+expected_nested_references = [
+    {"uri": "file:///t.elisa", "range": {
+        "start": {"line": 20, "character": lines[20].index("name")},
+        "end": {"line": 20, "character": lines[20].index("name") + 4},
+    }},
+    {"uri": "file:///t.elisa", "range": {
+        "start": {"line": 21, "character": lines[21].rindex("name")},
+        "end": {"line": 21, "character": lines[21].rindex("name") + 4},
+    }},
+]
+assert nested_references["result"] == expected_nested_references, nested_references
+expected_nested_definition = {"uri": "file:///t.elisa", "range": {
+    "start": {"line": 20, "character": lines[20].index("name")},
+    "end": {"line": 20, "character": lines[20].index("name") + 4},
+}}
+assert nested_definition["result"] == expected_nested_definition, nested_definition
+
 # Backslash-escaped content inside a character literal must not end the quote
 # scan early; the following interpolation must still be a separate expression.
 escaped_line = 13
@@ -220,6 +258,25 @@ assert seq19 == [('f"før=', ST_LIT_STRING), ('{', ST_PUNCTUATION),
                  (' ', ST_LIT_STRING), ('{', ST_PUNCTUATION),
                  ('name', ST_BIND_PARAM), ('}', ST_PUNCTUATION),
                  ('"', ST_LIT_STRING)], f"unicode interpolation spans wrong: {seq19}"
+
+# Nested f-strings are valid compiler syntax. Their inner literal, braces, and
+# resolved interpolation must be expanded recursively at absolute source spans.
+nested_line = 21
+l21 = [t for t in toks if t[0] == nested_line]
+f_column21 = protocol_column(lines[nested_line], lines[nested_line].index('f"'))
+seq21 = [(text(t), t[3]) for t in l21 if t[1] >= f_column21]
+assert seq21 == [('f"outer ', ST_LIT_STRING), ('{', ST_PUNCTUATION),
+                 ('f"inner ', ST_LIT_STRING), ('{', ST_PUNCTUATION),
+                 ('name', ST_BIND_PARAM), ('}', ST_PUNCTUATION),
+                 ('"', ST_LIT_STRING), ('}', ST_PUNCTUATION),
+                 ('"', ST_LIT_STRING)], f"nested f-string spans wrong: {seq21}"
+
+# Expansion has a hard recursion bound. At extreme nesting, the deepest f-string
+# is kept as one string span, while all surrounding spans remain ordered/bounded.
+deep_line = 23
+deep_spans = [t for t in toks if t[0] == deep_line]
+assert any(t[3] == ST_LIT_STRING and 'name' in text(t) for t in deep_spans), \
+       f"deep f-string recursion fallback missing: {[(text(t), t[3]) for t in deep_spans]}"
 
 # Repeat the same Unicode interpolation with UTF-8 position encoding negotiated.
 with LspSession(srv, request_timeout=30, teardown_timeout=5) as client:

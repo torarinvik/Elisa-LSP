@@ -21,7 +21,7 @@ in `docs/feature-manifest.json` and checked by `test/manifest_test.sh`.
 | `textDocument/hover` | Working, limited | Declarations and parameter/local bindings, plus loop-header capture details; semantic facts are still a limited summary |
 | `textDocument/definition` | Limited | Exact same-file links to unique top-level functions and parameter/local bindings; nested shadowing follows `BindingId` |
 | `textDocument/references` | Limited | Exact same-file unique-function edges and parameter/local binding occurrences; declaration inclusion follows `includeDeclaration` |
-| `textDocument/documentHighlight` | Limited | Function declaration/read kinds and exact same-file parameter/local ranges; local read/write kinds are not yet classified |
+| `textDocument/documentHighlight` | Limited | Exact same-file function and parameter/local highlights; declarations, reads, and direct `<-` assignment targets have kinds; other assignment forms remain conservative |
 | `textDocument/completion` | Limited | Incomplete same-file function/type/constant, exact-owner parameter, and root-body local candidates with prefix filtering and exact full-token edits; nested-scope locals/imports/members remain limited |
 | `textDocument/prepareRename` / `textDocument/rename` | Limited | Exact same-file parameters and locals only; rename edits are versioned and reject any new spelling already present in the source |
 | `textDocument/didOpen` / `didChange` / `didClose` | Working | Full and incremental changes; ordered batches validate transactionally in UTF-16 or UTF-8 units |
@@ -35,14 +35,14 @@ Capabilities are advertised only when implemented and tested; see
 ## Build
 
 Requirements: a compatible stage0 Elisa compiler, an Elisa compiler checkout
-for frontend includes, clang, and python3. Darwin/arm64 and Linux/aarch64 each
-have a fresh release build and a passing full protocol suite for the exact
-inputs recorded in the development log. The newest document-record change has a
-fresh Darwin build and a passing 78/78 canonical suite; its Linux host gate
-remains to be rerun. Other operating systems and architectures remain
-unvalidated; the stage1 optimizer candidate is not yet compatible with the
-complete LSP source unit. See
-`docs/development.md` for exact compiler, artifact, and platform evidence.
+for frontend includes, clang, and python3. The current Darwin/arm64 release
+uses the compiler optimization-integration snapshot recorded in
+docs/development.md and passes the canonical suite 81/81. The Linux/aarch64
+release and suite results are historical for an earlier compiler input and
+must be rerun against the current pin; other platforms remain unvalidated. The
+stage1 optimizer candidate is not yet compatible with the complete LSP source
+unit. See docs/development.md for exact compiler, artifact, and platform
+evidence.
 
 ```bash
 export ELISAC="$HOME/.elisac/elisac-stage0"
@@ -107,9 +107,10 @@ features misbehave.
   same-document locations only for unique top-level unqualified functions;
   cross-file search, overloads, shadowed names, and module members are not
   resolved. Completion currently returns `isIncomplete: true` and suggests
-  same-file declarations, parameters, and declaration-backed locals at the
-  function body's root indentation; nested-scope visibility, imports, members,
-  workspace results, and context-sensitive recovery remain open. Rename is
+  same-file declarations, parameters, and declaration-backed locals within
+  function and nested indentation blocks; local visibility ends at an outdent.
+  Imports, members, workspace results, parser-provided scope ranges, and
+  context-sensitive recovery remain open. Rename is
   limited to exact same-file parameters and locals; wider symbol and type
   renames await complete symbol identity.
 - The line-start index is rebuilt by provider operations rather than retained

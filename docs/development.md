@@ -24,53 +24,133 @@ the build rejects unknown profiles or invalid opt levels.
 
 ## Current compiler and stage1 optimizer candidate
 
-As of 2026-10-01, the current compiler source is the local checkout at HEAD
-`d8b5d305ec99a9d2238e035b871d9fd4e9835603`, three commits ahead of its checked
-`origin/main` ref `ce52ba2c5261ebced8f5dae9ca1e21f25db8f460`. The checkout has
-local source edits. Its full source fingerprint is
-`56868fba124d5f56905635d2529b3e70acbd22033a0a3ce5ff7225330cbb5393`; `build.sh`
-copied that exact source tree into a content-addressed, immutable build
-snapshot. This includes the newer view-provenance optimization and subsequent
-local compatibility changes. The supported stage0 backend is used for the
-release artifact while the latest stage1 candidate remains under qualification.
+As of 2026-10-06, the LSP release is built against the clean compiler optimization-integration snapshot at commit
+d4b40e36770d89973de1b8df93f8e0bcd091ae6a (merge of claude/s1-gaps-20261005
+into claude/integration-20261004). This committed snapshot includes the
+compiler's recent owner-indexed lookup chains, memoized O(1) collection-stack
+lookup, and narrower enum/module visits. It replaces the previous LSP pin
+6b475d894331f0a81c3112167ef7fcf5c642a424 and was built from a clean detached
+worktree; uncommitted edits in the active compiler worktree are not included.
+The current remote origin/main is 72a752820ab581d46bb17b3fb7158ba3879a16e3,
+so this optimization integration is an active development commit, not a claim
+that those changes have landed on upstream main. Its compiler source fingerprint
+is 32e2a49805f25ad79de69118c741aa75ee6e0ad9856ea27af9b0a0818e927638.
 
-The current Darwin/arm64 release artifact was built at `2026-10-01T05:10:33Z`
-with `-O2 -fno-builtin -Wl,-v`. It uses Go stage0 compiler source revision
-`0b21b7b2c2936312381a1ec1625ed5b6e66b8016`, built at
-`2026-10-01T02:54:40Z`, executable SHA-256
-`2fc31c130863b41ac07d250c4bfa25ee5c73f45f8faefb8e696b5bbf7176c408`. The LSP
-input hash is `08a27651337b4651e242825b98416b96b63ca5c1086752a0529da17b5b60f672`;
-the 581-file include closure is
-`ac94cdd4193f883cdab83b0975df9583885aff81c9229ae6126b90c42459063f`, object
-SHA-256 is `d040c8ffea7f56c234be0e53b04b34e078f650966d04dd93819d234b41b8d26e`,
+The initial d4 refresh artifact was built at 2026-10-06T01:19:00Z with
+-O2 -fno-builtin -Wl,-v. The supported Go stage0 compiler source revision is
+f84b9c1034f708f69d048bd6cafb813e88c8210f and its executable SHA-256 is
+5f2c14780bb91b25feeef3e4dce685ba9199d264ab75f335b064741a138ea84e. The LSP
+input hash is
+290af215e13e0afaac86096fd00937bd7e9b68511d3b9165f80c14a1a58164e6; the
+624-file compiler-emitted include closure has SHA-256
+7c2004430d029ca074e5fa0f759b0ec005249defbcb7607c61917c9ddbf6f269, the
+object SHA-256 is
+0dacf17b346e92d9188e814d8b4d83c9d950aa715a930e30289e88d8ce19423c, and the
+executable SHA-256 is
+526f86af0ef327308b81fc4245e057f41a4f58ebe24ff86d9e01c482d1155ac0. Strict
+freshness passes, compiler_dirty=false, and the canonical test/run_all.sh suite
+passed 81/81 on this exact compiler and LSP input. The compiler upgrade added
+diagnostic kinds, so src/diagnostic_codes.elisa now covers 641 kinds and
+docs/diagnostic-span-coverage.json records 1,093 constructors; the
+unsupported-language audit still passes all 19 compiler probes. The stage0
+build emits new struct-padding and effect-analysis warnings for included
+compiler/LSP source; these are visible in the build output and remain to be
+triaged. A controlled source-compiler comparison used the same current LSP implementation and stage0 binary against clean compiler snapshots 6b475d8 and d4b40e3; the only LSP source difference is the generated diagnostic adapter matching 640 versus 641 compiler kinds. On the 5,000-function, 302,780-byte fixture with three independent samples, d4b40e3 medians were 0.925 s clean open, 0.787 s edit, and 0.829 s hover, versus 1.108 s, 1.212 s, and 0.960 s on 6b475d8. Cached-token median was 0.035 s versus 0.029 s, and process peak RSS was 113.5 MiB versus 111.4 MiB. Both 20-cycle storage soaks ended with 0 tracked live bytes. The measurements suggest faster open/edit/hover in this workload, with a 6 ms cached-token increase and 2.1 MiB higher peak RSS; three samples on one Darwin host are directional evidence, not a stable release threshold. Raw reports: bench/current-compiler-d4b40e3-2026-10-06.json and bench/compiler-6b475d-control-2026-10-06.json. Stage1 parity and current-pin Linux validation
+remain open.
+
+The latest release artifact was rebuilt at `2026-10-06T05:33:36Z` against the
+clean d4 compiler/frontend snapshot and the supported Go stage0 binary
+(`5f2c14780bb91b25feeef3e4dce685ba9199d264ab75f335b064741a138ea84e`) with
+`-O2 -fno-builtin -Wl,-v`. Its manifest records compiler source fingerprint
+`32e2a49805f25ad79de69118c741aa75ee6e0ad9856ea27af9b0a0818e927638`, LSP
+inputs `38c1ccfb6e6da468cb066e479ef7658ca52b095b8d42ab203989a6738ea9d93f`, a
+624-file include closure
+`43340afc74e1305d1face12a4cc0053abf0913dee74adb6c506d0aa5223ff177`, object
+SHA-256 `e235047b2cf23525dffe5815dc43d5e1051bdb649ad24fef4a452a2165183f50`,
+and executable SHA-256
+`f0fff9b4e94516dbe7e6b91f2cc893468c125a8cb460ed6b2928d97f9a808690`. The
+compiler source is clean and strict freshness passes. This build moves analysis
+to an isolated one-shot child while the parent continues to accept framed
+input, cancellation, edits, status requests, and shutdown; it publishes only
+results matching the current document snapshot. Hover requests wait for a
+pending semantic snapshot while retaining lexical fallback behavior when
+analysis is unavailable. The canonical suite passes `81/81` against this exact
+artifact and manifest-pinned compiler/frontend inputs.
+
+After the references-sort and document-highlight follow-up, the current LSP
+artifact was rebuilt at `2026-10-06T01:57:18Z` against the same clean d4
+compiler/frontend snapshot and supported Go stage0 SHA-256
+`5f2c14780bb91b25feeef3e4dce685ba9199d264ab75f335b064741a138ea84e` with
+`-O2 -fno-builtin -Wl,-v`. Its LSP input hash is
+`2804d1ea45a7eab26795f36da51578e0aed73276d9be9d17163d4d25e6101b3f`, the
+624-file include-closure hash is
+`78eeb60f329f6124a65c288e56411c4f21fc8d9aad9865ad1609229d7f7fa152`, object
+SHA-256 is `ecc076437cf4c9127e4847ba752aed552f0c9ada896d3405fdb2ea2782211924`,
 and executable SHA-256 is
-`ea6ea965c14abde8daf9342edfb0debe54f634efafc5a98d8fcfa8baa65fa850`. The
-manifest pins compiler source fingerprint
-`56868fba124d5f56905635d2529b3e70acbd22033a0a3ce5ff7225330cbb5393`; strict
-freshness passes. The unsupported-construct audit passes all 19 probes on
-this exact compiler/source and stage0 tuple, and the diagnostic-span inventory
-is generated from the same immutable compiler snapshot.
+`95257d0cd3ef71a606ee7155a98de331fcc3872ddfa6e2776cf51e0517279790`. Strict
+freshness and the full canonical suite pass on this exact artifact (`81/81`).
+The compiler source is clean; the LSP input is marked dirty in the manifest
+because the implementation is still in the working tree.
 
-Completion resolve is now advertised. Function items with a retained unique
-signature carry canonical URI, document version, and open-document generation
-in `data`; `completionItem/resolve` adds the parameter-list detail only while
-that exact ready snapshot remains current. It preserves other submitted item
-fields and leaves stale or malformed items unchanged. Resolve metadata is
-omitted for non-functions, missing signatures, and URIs longer than 2,048
-bytes. Documentation and return types are not resolved. Focused regressions
-cover these rules; the canonical suite result for this input is recorded after
-its current rerun.
+The current artifact adds explicit search-coverage metadata to the private
+`$/elisa/status` response. It was rebuilt at `2026-10-06T02:12:55Z` from that
+same clean d4 compiler snapshot using the supported stage0 SHA-256
+`5f2c14780bb91b25feeef3e4dce685ba9199d264ab75f335b064741a138ea84e` and
+`-O2 -fno-builtin -Wl,-v`. Its LSP input hash is
+`7a155e8d642d7ccdf923e7e67b67f42e6227bbea5ecc1b7078b87d6d989e96b2`; the
+624-file include-closure hash is
+`9578cd683e3a14ef85ee02e9f7ea267709ddced506c5368bf3a2c003a2f98d4d`, object
+SHA-256 is `aa20c8da27cc3c0109e2736dff7d3cb88c8766b66b562f848c02d51bb5ff81ed`,
+and executable SHA-256 is
+`26d9ad374c6df1b640365cab3189665b85736294d9df62a800e6eb61ce115b71`. Strict
+freshness and the complete canonical suite pass for this exact artifact
+(`81/81`).
 
-The current local stage1 product has SHA-256
-`c9120725bde202e70ea9ff94c9b87ab2026770eb5b29e95bfc1bc285f76eb9cf` and passes
-the compiler's freshness check at
-`../Elisa-compiler/scripts/assert_stage1_fresh.sh`. A disposable build-only
-probe using this stage1 and the same latest compiler source declines 1,918
-backend operations before object emission. Tests and benchmarks were skipped,
-so this candidate is unqualified and has no parity or performance result. The
-raw report is
-`bench/compiler-upgrade-local-d8b5-stage1-2026-10-01-build-only.json`. No stage1
-latency or optimization claim follows from the successful stage0 build.
+After adding the H04 immutable-constant name index, the latest d4 release was
+rebuilt at `2026-10-06T02:39:06Z` using the same clean compiler snapshot and
+supported stage0 SHA-256
+`5f2c14780bb91b25feeef3e4dce685ba9199d264ab75f335b064741a138ea84e`, with
+`-O2 -fno-builtin -Wl,-v`. Its LSP input hash is
+`f9d1a3143d58a0cf7a8c9b0de5e735685aa08cbd0262f08630d0316a69ba2a92`; the
+624-file include-closure hash is
+`09b6568c62e7ed97a517469a4296eb87043ea512a846862f4da795cfcfc9aa1f`, object
+SHA-256 is `c1ce202fdf85bdbbbcce1e3f5e86eb96b49e9651742e24c0fee07e04aba65a81`,
+and executable SHA-256 is
+`be2ed3ade90e60d9e5b078097014312cfcb851fe8c5521b7690329c0b60cc182`. Strict
+freshness and the canonical suite pass on this exact artifact (`81/81`). The
+new index replaces per-identifier scans of immutable-constant names with one
+per-analysis hash-chain build and exact-byte collision checks. Its matched
+three-sample benchmark records open-to-diagnostics medians of 430.763 ms to
+235.458 ms at 2,048 constants and 1,663.331 ms to 898.263 ms at 4,096; these
+measurements include frontend analysis and cache construction and are
+directional results from one Darwin/arm64 host. See
+`bench/semantic-token-const-index-2026-10-06.json`.
+
+The current H02 slice indexes compiler DefinitionReference edges once and uses
+exact source positions to classify resolved function references before
+contextual-keyword fallbacks. Tests cover a function named get in an f-string,
+a function named fn called as a value, and fn(...) -> T => ... lambda syntax.
+Nested f-strings expand recursively to depth 16; remaining inner text is emitted
+as one string span to keep semantic-token processing bounded. The compiler
+occurrence index includes the tested nested parameter use: focused regressions
+verify definition and references from that use, plus exact declaration/use
+rename edits under UTF-8 and UTF-16. Broader pattern-binding and cross-file
+provider parity remain open. Completion offers exact declaration-backed
+locals in nested indentation blocks while suppressing them after an outdent or
+in a sibling branch; the compiler does not yet expose scope-end positions.
+
+The previous stage1 compatibility probe is recorded in
+`bench/compiler-upgrade-latest-541-stage1-2026-10-05-build-only.json`; it ran on
+an earlier compiler source fingerprint and declined 2,108 backend operations
+before object emission. It does not qualify stage1 for source fingerprint
+`8188a8bc`.
+
+**Previous stage1 probe (2026-10-01, superseded):** Stage1 product SHA-256
+`c9120725bde202e70ea9ff94c9b87ab2026770eb5b29e95bfc1bc285f76eb9cf` passed
+freshness for that older compiler tree, but a disposable build-only probe
+declined 1,918 backend operations before object emission. Tests and benchmarks
+were skipped. The report is
+`bench/compiler-upgrade-local-d8b5-stage1-2026-10-01-build-only.json`.
 
 A previous full stage1 gate on the earlier `ce52ba2c` compiler snapshot passed
 its stage0 build, canonical suite (`81/81`), and benchmark, then declined 1,905
@@ -726,11 +806,17 @@ cases are pinned in `test/signature_help_test.sh` and
 analysis summary; a request does not lex or parse again. It offers same-file
 functions, structs, enums, aliases, constants, uniquely named enum variants,
 exact-owner parameters, and declaration-backed locals at the current function
-body's root indentation. It filters by the typed prefix, ranks exact-prefix
+body indentation or a nested indentation block. Exact local binder spans and
+function owners come from the retained analysis; source lines are scanned from
+each binder to the cursor, and the candidate is hidden after an outdent. This
+keeps nested locals out of sibling blocks while leaving enclosing locals
+visible inside children. The compiler does not yet retain scope-end positions,
+so this boundary is inferred from indentation. It filters by the typed prefix, ranks exact-prefix
 matches before other prefix matches and then by label, and returns a whole-token
-`textEdit` in the negotiated UTF-8 or UTF-16 encoding. Nested-block local
-visibility is not inferred. A same-named local occurrence can conservatively
-suppress a global candidate because precise local visibility is not indexed.
+`textEdit` in the negotiated UTF-8 or UTF-16 encoding. Only a visible binding
+in the active function replaces a same-named file-level candidate; same-named
+locals in other functions do not suppress it. Duplicate global declarations
+remain ambiguous.
 
 Optional completion forms are negotiated independently. A unique retained
 function signature supplies an escaped argument snippet only when the client
@@ -905,8 +991,9 @@ configuration exits with status 2 and a bounded stderr message before reading
 input. The body override is intended for large files and remains capped at
 256 MiB. `ELISA_LSP_MAX_OPEN_DOCUMENTS` (default 1,024; range 1–16,384) caps
 simultaneously open document records. `ELISA_LSP_MAX_OPEN_URI_BYTES` (default
-8,388,608; range 1–67,108,864) caps the aggregate canonical URI bytes for
-those documents. Empty-source overlays count against both metadata limits, and
+8,388,608; range 1–67,108,864) caps aggregate URI metadata bytes for those
+documents: each entry counts both its canonical lookup key and retained
+original URI spelling. Empty-source overlays count against both metadata limits, and
 duplicate opens replace an existing lifetime without consuming another slot.
 Document-count and URI-byte checks run before a slot is created or the URI
 index is changed. Private stats expose the current URI-byte count and both
@@ -916,10 +1003,11 @@ document vector and URI hash table retain capacity up to their high-water mark.
 1,024–1,073,741,824) caps retained reservation capacity for semantic, symbol,
 hover, and signature payloads across open documents. A validated result gets a
 monotonic access stamp; whole-document least-recently-used eviction clears all
-derived payloads and leaves the accepted source/version authoritative. The
-synchronous server has no in-flight cache pins; a future scheduler must add
-them before eviction can run concurrently. Allocator-retained pages and
-container high-water capacity remain outside these logical budgets.
+derived payloads and leaves the accepted source/version authoritative. Analysis
+runs in a forked one-shot child, so parent-side edits and cache eviction do not
+race with frontend reads in the child; the parent aborts obsolete work and checks
+snapshot identity before committing. Allocator-retained pages and container
+high-water capacity remain outside these logical budgets.
 
 `ELISA_LSP_WRITE_TIMEOUT_MS` sets the maximum time spent writing one complete
 LSP frame to stdout (default 15,000 ms; range 100–120,000 ms). The deadline is
@@ -950,19 +1038,20 @@ The private `$/elisa/stats` result includes a `budgets` object for operational
 inspection. `budgets.transport` reports the active header, header-line, body,
 and complete-frame write limits; `budgets.documents` pairs current open,
 canonical-URI, and source-byte usage with their configured caps;
-`budgets.analysis` reports the one-shot worker timeout and 64 MiB packet cap.
-Because dispatch is synchronous, its `mode` is `synchronous` and `queued`,
-`queue_capacity`, and `in_flight` are all zero at the stats boundary. The
-`budgets.cache` object reports the current live and retained derived-cache
+`budgets.analysis` reports `mode: one_shot_worker`, the number of queued
+snapshots, the configured open-document queue ceiling, the current zero-or-one
+in-flight child, timeout, and 64 MiB packet cap. `analysis_worker` separately
+reports the child packet's retained bytes/capacity and the bounded deferred
+request count, body bytes, byte-storage capacity, and 13 MiB logical storage
+limit. The `budgets.cache` object reports live and retained derived-cache
 bytes, the configured aggregate limit, and whole-snapshot least-recently-used
 eviction count. The retained cost includes each cache reservation's capacity,
 so replacing a result with a smaller payload still accounts for owned memory.
 Eviction clears all derived payloads for the least recently used complete
 snapshot and marks that accepted source pending; the next edit or reopen
-rebuilds it. Dispatch is synchronous, so request-local views are released
-before eviction runs. A future scheduler must add explicit snapshot pinning
-before reusing this policy for in-flight requests. These fields are
-observability data, not a new client capability.
+rebuilds it. Deferred requests own copies of their framed bodies in the bounded
+queue and replay only after a matching validated snapshot is committed. These
+fields are observability data, not a new client capability.
 
 Floors: `test/transport_test.sh`, `test/output_write_test.sh`,
 `test/output_backpressure_test.sh`, `test/transport_limits_test.sh`, and `test/termination_signal_test.sh` (split at every byte, pipelining, content-type and
@@ -1151,7 +1240,10 @@ reports open canonical-URI bytes, source bytes excluding one stored NUL per
 open document, aggregate logical derived-cache bytes, aggregate retained
 reservation bytes, and the largest per-open-document cache. The cache budget
 also reports its configured limit, `lru_snapshot` policy, and eviction count.
-`snapshots` reports the current open, pending, ready, and failed snapshots.
+`snapshots` reports the current open, pending, ready, and failed snapshots;
+`test/failed_analysis_request_test.sh` verifies that an injected failed snapshot
+increments `failed` and that a later successful version returns the counts to
+one ready and zero failed.
 `dead_storage_bytes` is the
 unreachable portion of the current flat buffer (`storage_bytes - live_bytes`),
 not the memory retained by the allocator. `derived_cache_bytes` uses live
@@ -1236,28 +1328,65 @@ currently accepted and the accessor returns the first matching decoded key.
 Floors: `test/json_strict_test.sh`, `test/json_differential_test.sh`, and
 `test/json_smoke.sh`.
 
-## Cancellation (Q02 v1)
+## Cancellation (Q02)
 
-`$/cancelRequest` records the target id as its raw JSON token (so numeric `1`
-and string `"1"` stay distinct) in a bounded (128-entry) newline-separated
-buffer. A request whose id was cancelled before dispatch completes exactly
-once with `RequestCancelled` (`-32800`) and never runs; unmatched/unknown
-cancellations are harmless. Analysis is synchronous, so cancellation is
-honored for pipelined requests today and becomes load-bearing when analysis
-moves off the loop. Floor: `test/cancel_test.sh`.
+While a document snapshot is pending, analysis-backed request bodies and typed
+IDs live in a bounded queue-owned byte buffer. `$/cancelRequest` removes only
+the matching pending request and returns `RequestCancelled` (`-32800`); integer
+`1` and string `"1"` remain distinct, and unknown IDs are harmless. Canceling a
+waiter leaves the shared analysis job running so diagnostics and other queued
+requests still receive their result. The parent handles cancellation while an
+isolated child is active. Requests already replayed into a provider are not yet
+interruptible, and cancellation races after dispatch, during result assembly,
+or for future background workspace work remain open Q02 work. Floors:
+`test/cancel_test.sh` and `test/analysis_worker_test.sh`.
 
 ## General hover (A03/F01)
 
 At analysis time `build_hover_index` (in `src/features/hover.elisa`)
-serializes the compiler's file symbols and param/local occurrences into a
-compact record stream stored in the document's flat storage — a retained,
-compaction-safe analysis summary, so hover never re-runs the frontend. Hover
-resolves the identifier under the cursor with H02 precedence (a param/local
-occurrence on that line wins, then a file-level declaration by name),
-converts columns through `Positions`, and returns the exact identifier range.
-Unknown identifiers fall back to the loop-header hover. Name matching is
-display-only and never used as proof for an edit. Floor:
-`test/general_hover_test.sh`.
+serializes compiler file symbols, param/local occurrences, and enum owner/name
+records into the document's flat storage — a retained, compaction-safe summary,
+so hover never re-runs the frontend. Hover resolves exact param/local
+occurrences first, then performs one pass over cached declaration/variant
+records. A unique declaration gets a summary; a uniquely owned enum variant
+gets an owner-qualified label. Repeated variant names, cross-category
+collisions, and overloaded declarations return no result because the frontend
+does not yet expose occurrence-level variant targets or overload selection.
+Identifier ranges use the shared `Positions` API.
+
+Parameter and local hover uses the compiler's `BindingDeclaredType` side table
+and exact `BindingId` to show declared type syntax at both declarations and
+references, including shadowed names. When the compiler supplies only a
+source-line declaration position, the provider recovers a binder only if that
+line has exactly one `Ident:` token; the type record remains keyed by
+`BindingId`. The annotation source span is bounded to 2,048 bytes per binding
+and 65,536 bytes per document, encoded as hex in the worker record, checked
+against the accepted source in the parent, and copied into owned storage.
+Unannotated bindings still show their role and name; inferred types are not
+guessed from the local type pass.
+
+For uniquely retained top-level functions, the hover also carries the exact
+source header from the parser-identified declaration through its top-level
+colon. The header therefore preserves generic binders, typed/defaulted
+parameters, return annotations, and declared effects without trying to infer
+missing type information. It is stored as bounded hex data in the per-snapshot
+signature index (2,048 bytes per header, 262,144 bytes per document) so control
+bytes in source cannot corrupt the record stream; the analysis worker validates
+it before publishing the snapshot. Markdown clients receive a dynamically sized
+code fence that stays intact even when a default string contains backticks,
+while plaintext clients receive the source header as written. If a declaration
+is overloaded, lacks an exact retained identity, or falls outside the size
+budget, hover falls back to the concise declaration summary. Floors:
+`test/general_hover_test.sh`, `test/signature_help_test.sh`, and
+`test/failed_analysis_request_test.sh`.
+
+The source-only loop-capture fallback runs only while the cursor is inside its
+pipe-delimited capture list. It returns that exact range in the negotiated
+UTF-8/UTF-16 encoding and formats its heading for Markdown or plaintext
+clients. Its current pipe/comma scan is still not a parser: nested/default
+expressions and strings containing delimiters need compiler-provided loop
+header/capture data. Floors: `test/general_hover_test.sh` and
+`test/hover_test.sh`.
 
 The private `$/elisa/stats` result also exposes cumulative analysis counters:
 `tokenize_calls` counts full-source calls through the shared tokenizer,
@@ -1309,9 +1438,11 @@ completed message, with the same fields and an explicit `enabled` flag. The
 analysis worker carries lex/parse/check/index durations across its validated
 internal packet, so child work is not silently omitted from the parent report.
 `serialization_ms` covers LSP frame-header construction and `transport_ms`
-covers the bounded stdio read/write transactions; the current synchronous
-server reports `queue_wait_ms` as zero because it has no retained queue. All
-values are integer milliseconds and may be zero for sub-millisecond work.
+covers the bounded stdio read/write transactions. For a request deferred until
+its analysis snapshot is ready, `queue_wait_ms` measures from queue insertion
+through replay after the matching worker result is committed; synchronous
+provider calls and document jobs without a waiting request report zero there.
+All values are integer milliseconds and may be zero for sub-millisecond work.
 Timing collection adds no clock reads when disabled. The timing probe is
 headless and is covered by `test/timing_test.sh`; it starts only the LSP
 subprocess and never launches VS Code, Electron, or an extension host.
@@ -1325,9 +1456,13 @@ the server reads input. The private `$/elisa/status` request returns the
 effective logging level/budget, bytes written, source/wire-trace policy,
 JSON-RPC/LSP/worker/diagnostic compatibility versions, embedded compiler
 status, frontend contract version, and all active transport/document/analysis
-limits. It performs no workspace lookup or project-code execution. Floors:
-`test/observability_test.sh` and the private status entry in
-`docs/feature-manifest.json`.
+limits. Its `searchCoverage` object reports that references and document
+highlights are partial and same-document only, lists the exact reference
+identity subset, and states that an empty references result does not prove
+project-wide absence; the workspace index is unavailable. This is provider
+coverage metadata, not a live progress indicator. The request performs no
+workspace lookup or project-code execution. Floors: `test/observability_test.sh`
+and the private status entry in `docs/feature-manifest.json`.
 
 ## Same-document references (F04 subset)
 
@@ -1373,11 +1508,15 @@ verify that only the selected binding changes. Floor: `test/rename_test.sh`.
 `textDocument/documentHighlight` consumes the same retained resolver edges
 and exact target identity. A function declaration is a `Text` highlight and
 resolved calls are `Read` highlights. Parameters and locals are selected by
-their exact `BindingId`; those entries omit `kind` because the retained
-occurrence facts do not yet distinguish reads from writes. Fields, overloads,
-unresolved names, and other unsupported symbol kinds return `[]` instead of
-being matched by spelling. The provider returns same-document ranges in the
-session's negotiated position encoding. Floor: `test/document_highlight_test.sh`.
+their exact `BindingId`; their first source-ordered range is the declaration,
+an exact identifier followed by the direct `<-` operator is a `Write`, and
+other non-declaration uses are `Read`. The compiler does not yet expose
+read/write occurrence roles, so this provider recognizes only direct
+assignment targets; indirect member/index writes and other assignment forms
+remain unclassified by syntax. Fields, overloads, unresolved names, and other
+unsupported symbol kinds return `[]` instead of being matched by spelling.
+The provider returns same-document ranges in the session's negotiated position
+encoding. Floor: `test/document_highlight_test.sh`.
 
 ## Definition (F03 subset)
 
@@ -1426,11 +1565,49 @@ spans into document storage, avoiding temporary arrays for every result; the
 diagnostic span is written directly to stdout.
 `test/analysis_worker_test.sh` injects a child crash, infinite wait, and
 malformed packet into a temporary server copy; each case must preserve
-source-only requests and recover on the next edit. The POSIX adapter's own
+source-only requests and recover on the next edit. It also delays a worker
+while the parent dispatches cancellation, status/stats requests, a replacement
+edit, and shutdown. Pending analysis-backed requests keep their framed body and
+typed JSON-RPC ID in a bounded queue-owned byte buffer; only requests matching
+the validated current job are replayed. Cancellation removes one request while
+keeping a shared analysis job alive for other waiters. The POSIX adapter's own
 test covers pipe-capacity streaming, timeout and termination kill/reap,
-descriptor/signal isolation, and repeated cycles. The current server dispatch
-still waits synchronously for this bounded job, so it cannot process a new
-cancel, edit, or shutdown message until analysis finishes or times out.
+descriptor/signal isolation, and repeated cycles.
+
+The parent now advances a persistent bounded frame decoder over bytes already
+available in its input buffer. An incomplete header or body returns to the
+event loop; stdin is polled before another bounded read, and progress is kept
+without rescanning the accumulated frame. `test/transport_test.sh` checks
+byte-at-a-time fragmentation and pipelining; `test/transport_limits_test.sh`
+checks malformed, truncated, and oversized frames. The POSIX readiness wait
+also polls stdin and the active worker result pipe together, reports either or
+both ready sources, and checks termination and the worker deadline. Its native
+test covers input-only, worker-only, and simultaneous readiness, bounded caller
+waits, deadline expiry, incremental reads that return immediately when no
+bytes are ready, packet collection across chunks, EOF, nonblocking reap, and
+nonzero-exit rejection; 25 ms deadline-check slices do not shorten a caller's
+requested wait. The parent now waits on stdin and the active worker pipe
+together. It continues decoding client frames while a child computes, handles
+an edit by aborting the obsolete child and queuing only the latest snapshot,
+then validates and commits the result in the parent. A single foreground child
+and bounded per-document/request queues are in place; diagnostic debounce,
+explicit cursor priority, scheduler fairness under sustained input, and
+workspace background scheduling remain open Q01 work.
+
+The process boundary has a directional same-workload measurement in
+`bench/analysis-worker-overhead-2026-10-06.json`. A temporary in-process
+baseline preserves analysis, provider projection, packet encoding, parent
+validation, and cache publication, and replaces the fork/pipe/wait channel
+with an in-memory byte channel. Five alternating fresh-process samples per
+case produced identical semantic-token payloads. Median didOpen-to-diagnostics
+times for 1, 32, 256, and 2,048 constants were 28.148/0.649 ms,
+28.053/1.404 ms, 35.977/8.649 ms, and 251.690/213.967 ms for isolated versus
+in-process execution. Retain the one-shot child for crash and hang containment
+while Q01 defines responsive dispatch and restart behavior for any reusable
+worker; the in-process benchmark baseline has no such containment and is not a
+production mode. Results are directional evidence from one Darwin/arm64 host,
+not a portable timing threshold. The comparison can be reproduced with
+`python3 bench/analysis_worker_overhead.py`.
 
 ## Semantic token ranges (H05)
 

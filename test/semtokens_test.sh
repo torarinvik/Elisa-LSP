@@ -20,6 +20,7 @@ doc += "\ndef invoke() -> Event:\n    return make_event()\n\ndef increment(value
 doc += "\ndef shadow_family(Event: i32) -> i32:\n    return Event.Resize(2)\n"
 doc += "\ntype EventAlias = Event\n\ndef make_alias_event() -> EventAlias:\n    return EventAlias.Resize(1)\n\ndef consume_alias_event(event: EventAlias) -> i64:\n    match event:\n        EventAlias.Resize(size):\n            return size\n"
 doc += "\ndef shadow(p: i64) -> i64:\n    p: i64 = p\n    return p\n"
+doc += "\nenum LeftState:\n    Shared\nenum RightState:\n    Shared\n\ndef inspect_shorthand(value: LeftState) -> i64:\n    match value:\n        .Shared:\n            return 1\n\ndef inspect_qualified(value: LeftState) -> i64:\n    match value:\n        LeftState.Shared:\n            return 2\n"
 
 with LspSession(srv, request_timeout=30, teardown_timeout=5) as client:
     initialized = client.initialize({"capabilities": {}})
@@ -74,6 +75,14 @@ def type_at(line_no, column, expected_text):
     actual_text = lines[line_no][column:column + len(expected_text)]
     assert actual_text == expected_text, (line_no, column, expected_text, actual_text)
     return matches[0]
+
+
+def types_at(line_no, column, expected_text):
+    return [
+        token_type
+        for token_line, token_col, length, token_type in toks
+        if token_line == line_no and token_col == column and length == len(expected_text)
+    ]
 
 
 # Address every expectation by source occurrence. Repeated spellings such as
@@ -134,6 +143,18 @@ assert type_at(shadow_decl_line, 4, "p") == 17
 assert type_at(shadow_decl_line, 13, "p") == 16
 shadow_return_line = next(i for i, source_line in enumerate(lines) if source_line == "    return p")
 assert type_at(shadow_return_line, 11, "p") == 17
+# The compiler registry has only spelling/owner/module rows, not an exact
+# target for a leading-dot case. A repeated spelling across two enum owners
+# therefore stays unclassified in shorthand, while an explicit owner remains
+# safely recognizable.
+shorthand_line = next(i for i, source_line in enumerate(lines) if source_line.strip() == ".Shared:")
+shorthand_column = lines[shorthand_line].index("Shared")
+assert 47 not in types_at(shorthand_line, shorthand_column, "Shared"), \
+    "an ambiguous leading-dot variant must not be globally guessed"
+qualified_line = next(i for i, source_line in enumerate(lines) if "LeftState.Shared:" in source_line)
+qualified_column = lines[qualified_line].index("Shared")
+assert type_at(qualified_line, qualified_column, "Shared") == 47, \
+    "an explicit owner should preserve enum-variant coloring"
 # The separate contextual-token fixture addresses `can` at each occurrence
 # where a binding and the effect-grant keyword have distinct classifications.
 # unknown URI -> empty

@@ -1,12 +1,12 @@
 # F05 safe completion slice.
 #
 # The retained hover stream owns same-file declaration names plus exact
-# function declaration IDs and parameter occurrences. Completion queries that
-# accepted snapshot without lexing or parsing again. It suggests visible
+# function declaration IDs and parameter/local occurrences. Completion queries
+# that accepted snapshot without lexing or parsing again. It suggests visible
 # parameters only when the function header and enclosing indentation are
-# unambiguous; local variables and all workspace/member/type inference remain
-# outside this slice. `isIncomplete` stays true until candidate sources are
-# indexed and validated.
+# unambiguous; locals require exact binder rows and an indentation-block
+# visibility check. Workspace/member/type inference remains outside this slice,
+# so `isIncomplete` stays true.
 
 const MAX_COMPLETION_ITEMS: usize = 64
 const MAX_COMPLETION_SNIPPET_PARAMETERS: i64 = 32
@@ -352,32 +352,7 @@ def completion_candidates_sort(candidates: mutable darray[CompletionCandidate]&)
         i <- i + 1
 
 
-# Local/parameter visibility is not fully represented in this first candidate
-# set. If a resolver occurrence has the same spelling anywhere in the file,
-# suppress that global row instead of attaching an incorrect global kind to a
-# potentially shadowing local. This is deliberately conservative across scopes.
-def completion_suppress_local_conflicts(candidates: mutable darray[CompletionCandidate]&, blob: sview) -> void:
-    cursor: mutable usize = 0
-    while cursor < blob.len.usize():
-        record_end: mutable usize = 0
-        return if not completion_record_bounds(blob, cursor, record_end)
-        if sview_at(blob, cursor + 1) == 111:
-            record_start: usize = cursor + 1
-            name: mutable sview = sview("", 0, 0)
-            role_text: mutable sview = sview("", 0, 0)
-            if hover_field(blob, record_start, record_end, 3, name) and hover_field(blob, record_start, record_end, 4, role_text):
-                role: i64 = hover_parse_i64(role_text)
-                if role == OCC_PARAM or role == OCC_LOCAL:
-                    i: mutable usize = 0
-                    while i < candidates.count:
-                        candidate: CompletionCandidate = candidates[i]
-                        if completion_text_equal(candidate.label, name):
-                            candidates[i] <- CompletionCandidate{label: candidate.label, category: candidate.category, detail: candidate.detail, kind: candidate.kind, quality: candidate.quality, ambiguous: true}
-                        i <- i + 1
-        cursor <- record_end
-
-
-def completion_add_active_parameters(candidates: mutable darray[CompletionCandidate]&, blob: sview, active_owner: i64, prefix: sview, cursor_offset: usize, truncated_out: mutable bool&) -> void:
+def completion_add_active_parameters(candidates: mutable darray[CompletionCandidate]&, blob: sview, src: u8&, src_len: usize, active_owner: i64, body_indent: usize, prefix: sview, cursor_offset: usize, truncated_out: mutable bool&) -> void:
     return if active_owner < 0
     cursor: mutable usize = 0
     while cursor < blob.len.usize():
@@ -401,11 +376,15 @@ def completion_add_active_parameters(candidates: mutable darray[CompletionCandid
                         return if not completion_record_bounds(blob, local_cursor, local_end)
                         if sview_at(blob, local_cursor + 1) == 111:
                             local_start: usize = local_cursor + 1
+                            local_position_text: mutable sview = sview("", 0, 0)
+                            local_finish_text: mutable sview = sview("", 0, 0)
                             local_name: mutable sview = sview("", 0, 0)
                             local_role_text: mutable sview = sview("", 0, 0)
                             local_owner_text: mutable sview = sview("", 0, 0)
-                            if hover_field(blob, local_start, local_end, 3, local_name) and hover_field(blob, local_start, local_end, 4, local_role_text) and hover_field(blob, local_start, local_end, 5, local_owner_text):
-                                if hover_parse_i64(local_role_text) == OCC_LOCAL and hover_parse_i64(local_owner_text) == active_owner and completion_text_equal(local_name, name):
+                            if hover_field(blob, local_start, local_end, 1, local_position_text) and hover_field(blob, local_start, local_end, 2, local_finish_text) and hover_field(blob, local_start, local_end, 3, local_name) and hover_field(blob, local_start, local_end, 4, local_role_text) and hover_field(blob, local_start, local_end, 5, local_owner_text):
+                                local_position: i64 = hover_parse_i64(local_position_text)
+                                local_finish: i64 = hover_parse_i64(local_finish_text)
+                                if hover_parse_i64(local_role_text) == OCC_LOCAL and hover_parse_i64(local_owner_text) == active_owner and completion_text_equal(local_name, name) and local_position >= 0 and local_finish > local_position and completion_local_visible_at(src, src_len, local_position.usize(), local_finish.usize(), body_indent, cursor_offset):
                                     shadowed_by_local <- true
                         local_cursor <- local_end
                     if not shadowed_by_local:
@@ -413,22 +392,46 @@ def completion_add_active_parameters(candidates: mutable darray[CompletionCandid
         cursor <- record_end
 
 
-def completion_local_binder_span(src: u8&, src_len: usize, start: usize, finish: usize, body_indent: usize) -> bool:
+def completion_local_visible_at(src: u8&, src_len: usize, start: usize, finish: usize, body_indent: usize, cursor_offset: usize) -> bool:
     return false if start >= finish or finish > src_len
+    return false if start >= cursor_offset or cursor_offset > src_len
     line_start: mutable usize = start
     while line_start > 0 and src[line_start - 1] != 10:
         line_start <- line_start - 1
     cursor: mutable usize = line_start
     while cursor < start and (src[cursor] == 32 or src[cursor] == 9):
         cursor <- cursor + 1
-    return false if cursor != start or cursor - line_start != body_indent
+    return false if cursor != start or cursor - line_start < body_indent
+    binding_indent: usize = cursor - line_start
     cursor <- finish
     while cursor < src_len and (src[cursor] == 32 or src[cursor] == 9):
         cursor <- cursor + 1
-    return cursor < src_len and (src[cursor] == 58 or src[cursor] == 61)
+    return false if cursor >= src_len or (src[cursor] != 58 and src[cursor] != 61)
+
+    # The exact resolver row proves this is a local declaration owned by the
+    # active function. Its lexical block is the nearest indentation level at
+    # which the binder was declared: any intervening code line that outdents
+    # past that level ends its visibility (including an else/sibling block).
+    line_end: mutable usize = cursor
+    while line_end < src_len and src[line_end] != 10:
+        line_end <- line_end + 1
+    scan: mutable usize = line_end + 1 if line_end < src_len else src_len
+    while scan < cursor_offset:
+        current_line_start: usize = scan
+        line_cursor: mutable usize = scan
+        while line_cursor < cursor_offset and (src[line_cursor] == 32 or src[line_cursor] == 9):
+            line_cursor <- line_cursor + 1
+        line_indent: usize = line_cursor - current_line_start
+        has_code: bool = line_cursor < cursor_offset and src[line_cursor] != 10 and src[line_cursor] != 13 and src[line_cursor] != 35
+        return false if has_code and line_indent < binding_indent
+        return false if line_cursor == cursor_offset and line_indent < binding_indent
+        while scan < src_len and src[scan] != 10:
+            scan <- scan + 1
+        scan <- scan + 1 if scan < src_len
+    return true
 
 
-def completion_add_active_root_locals(candidates: mutable darray[CompletionCandidate]&, blob: sview, src: u8&, src_len: usize, active_owner: i64, body_indent: usize, prefix: sview, cursor_offset: usize, truncated_out: mutable bool&) -> void:
+def completion_add_active_locals(candidates: mutable darray[CompletionCandidate]&, blob: sview, src: u8&, src_len: usize, active_owner: i64, body_indent: usize, prefix: sview, cursor_offset: usize, truncated_out: mutable bool&) -> void:
     return if active_owner < 0
     cursor: mutable usize = 0
     while cursor < blob.len.usize():
@@ -444,7 +447,7 @@ def completion_add_active_root_locals(candidates: mutable darray[CompletionCandi
             if hover_field(blob, record_start, record_end, 1, start_text) and hover_field(blob, record_start, record_end, 2, finish_text) and hover_field(blob, record_start, record_end, 3, name) and hover_field(blob, record_start, record_end, 4, role_text) and hover_field(blob, record_start, record_end, 5, owner_text):
                 start: i64 = hover_parse_i64(start_text)
                 finish: i64 = hover_parse_i64(finish_text)
-                if hover_parse_i64(role_text) == OCC_LOCAL and hover_parse_i64(owner_text) == active_owner and start >= 0 and finish > start and start.usize() < cursor_offset and completion_starts_with(name, prefix) and completion_local_binder_span(src, src_len, start.usize(), finish.usize(), body_indent):
+                if hover_parse_i64(role_text) == OCC_LOCAL and hover_parse_i64(owner_text) == active_owner and start >= 0 and finish > start and completion_starts_with(name, prefix) and completion_local_visible_at(src, src_len, start.usize(), finish.usize(), body_indent, cursor_offset):
                     completion_binding_candidate_add(candidates, name, "local", "local variable", prefix, truncated_out)
         cursor <- record_end
 
@@ -665,9 +668,8 @@ def handle_completion(root: Json::Value, snapshot: DocumentSnapshotView, documen
                 quality: i64 = 0 if completion_text_equal(label, prefix) else 1
                 completion_candidate_add(candidates, label, category, detail, kind, quality, truncated)
         cursor <- record_end
-    completion_suppress_local_conflicts(candidates, blob)
-    completion_add_active_parameters(candidates, blob, -1 if type_context else active_scope.owner, prefix, cursor_offset, truncated)
-    completion_add_active_root_locals(candidates, blob, src, src_len, -1 if type_context else active_scope.owner, active_scope.body_indent, prefix, cursor_offset, truncated)
+    completion_add_active_parameters(candidates, blob, src, src_len, -1 if type_context else active_scope.owner, active_scope.body_indent, prefix, cursor_offset, truncated)
+    completion_add_active_locals(candidates, blob, src, src_len, -1 if type_context else active_scope.owner, active_scope.body_indent, prefix, cursor_offset, truncated)
     completion_candidates_sort(candidates)
     result_body.push_str("{\"isIncomplete\":true,\"items\":[")
     first: mutable bool = true

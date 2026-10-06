@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Q03/D04: private stats expose configured resource budgets and the current
-# synchronous scheduler/cache policy, including retained-cost cache eviction.
+# one-shot worker/cache policy, including retained-cost cache eviction.
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 SRV="$ROOT/build/elisa-lsp"
@@ -53,9 +53,9 @@ def assert_budget_shape(stats, *, open_count, source_bytes, uri_bytes, cache_byt
 
     analysis = budgets["analysis"]
     assert analysis == {
-        "mode": "synchronous",
+        "mode": "one_shot_worker",
         "queued": 0,
-        "queue_capacity": 0,
+        "queue_capacity": 4,
         "in_flight": 0,
         "timeout_ms": 1000,
         "worker_packet_limit_bytes": 67108864,
@@ -94,13 +94,21 @@ with LspSession(srv, startup_timeout=30, request_timeout=30, teardown_timeout=10
             }
         },
     )
-    # A request acts as a protocol barrier after the synchronous analysis.
+    client.wait_notification(
+        "textDocument/publishDiagnostics",
+        predicate=lambda message: (
+            message.get("params", {}).get("uri") == uri
+            and message.get("params", {}).get("version") == 1
+        ),
+        timeout=30,
+    )
+    # Sample after the worker has committed the accepted snapshot.
     opened_stats = client.request("$/elisa/stats", {})["result"]
     assert_budget_shape(
         opened_stats,
         open_count=1,
         source_bytes=source_bytes,
-        uri_bytes=uri_bytes,
+        uri_bytes=uri_bytes * 2,
         cache_bytes=opened_stats["derived_cache_bytes"],
     )
     assert opened_stats["derived_cache_bytes"] > 0, opened_stats
@@ -118,5 +126,5 @@ with LspSession(srv, startup_timeout=30, request_timeout=30, teardown_timeout=10
 
     assert client.finish(timeout=30) == 0
 
-print("resource budgets OK: configured transport/document/worker limits and synchronous queue/cache policy are observable")
+print("resource budgets OK: configured transport/document/worker limits and asynchronous queue/cache policy are observable")
 PY

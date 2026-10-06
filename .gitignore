@@ -1,3 +1,8 @@
 build/
 .DS_Store
 /bench
+!/bench/
+/bench/*
+!/bench/compiler-6b475d-control-2026-10-06.json
+!/bench/current-compiler-d4b40e3-2026-10-06.json
+/bench

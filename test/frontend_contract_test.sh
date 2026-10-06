@@ -19,7 +19,7 @@ import sys
 
 contract = Path(sys.argv[1]).read_text(encoding="utf-8")
 required = (
-    "**version 13**",
+    "**version 15**",
     "| Lex |",
     "| Parse |",
     "| Analyze |",
@@ -139,6 +139,11 @@ def main() -> int can[Console.Write, Memory.Allocate, Console.Format, Abort.Pani
     enum_shape_rejected: mutable i64 = 0
     enum_shape_rejected <- 1 if not frontend_table_valid(table, src, len, file.errors)
     table.enum_variant_owner.truncate(table.enum_variant_name.count)
+    saved_variant_module: sview = table.enum_variant_module[0]
+    table.enum_variant_module.truncate(0)
+    enum_module_shape_rejected: mutable i64 = 0
+    enum_module_shape_rejected <- 1 if not frontend_table_valid(table, src, len, file.errors)
+    table.enum_variant_module.push(saved_variant_module)
     original_variant_owner: sview = enum_variant_owner(table, 0)
     original_variant_name: sview = enum_variant_name(table, 0)
     variant_contents_rejected: mutable i64 = 0
@@ -316,6 +321,31 @@ def main() -> int can[Console.Write, Memory.Allocate, Console.Format, Abort.Pani
     exact_end_pos: Ast::Pos = Ast::Pos{line: 1, column: 1, offset: nav_len.u32() - 1, end_line: 1, end_column: 2, end_offset: nav_len.u32()}
     exact_source_end_valid: mutable i64 = 0
     exact_source_end_valid <- 1 if frontend_offsets_valid(exact_end_pos, nav_len)
+    declared_type_count: usize = binding_declared_type_count(table)
+    declared_parameter_type_ok: mutable bool = false
+    declared_local_type_ok: mutable bool = false
+    declared_index: mutable usize = 0
+    while declared_index < declared_type_count:
+        declared_pos: Ast::Pos = binding_declared_type_position(table, declared_index)
+        declaration_pos: Ast::Pos = table.binding_declared_types[declared_index].pos
+        declared_id: Semantic::BindingId = table.binding_declared_types[declared_index].binding_id
+        type_is_i64: mutable bool = false
+        if declared_pos.end_offset > declared_pos.offset and declared_pos.end_offset.usize() <= len:
+            type_bytes: usize = (declared_pos.end_offset - declared_pos.offset).usize()
+            type_is_i64 <- string_views_eq(Positions::source_view_span(src, len, declared_pos.offset.usize(), type_bytes), "i64") != 0
+        reference_index: mutable usize = 0
+        while reference_index < table.ref_binding_ids.count:
+            reference_id: Semantic::BindingId = table.ref_binding_ids[reference_index]
+            reference_pos: Ast::Pos = table.ref_pos[reference_index]
+            same_id: bool = reference_id.owner.value == declared_id.owner.value and reference_id.serial == declared_id.serial
+            same_binder: bool = reference_pos.offset == declaration_pos.offset and reference_pos.end_offset == declaration_pos.end_offset
+            if same_id and same_binder and type_is_i64:
+                declared_parameter_type_ok <- true if table.ref_kind[reference_index] == OCC_PARAM.u8() and table.ref_name[reference_index] == "p"
+                declared_local_type_ok <- true if table.ref_kind[reference_index] == OCC_LOCAL.u8() and table.ref_name[reference_index] == "local"
+            reference_index <- reference_index + 1
+        declared_index <- declared_index + 1
+    declared_type_accessors_ok: mutable i64 = 0
+    declared_type_accessors_ok <- 1 if declared_type_count == 2 and declared_parameter_type_ok and declared_local_type_ok
     print(v)
     print(comment_count)
     print(shadow_valid)
@@ -344,6 +374,7 @@ def main() -> int can[Console.Write, Memory.Allocate, Console.Format, Abort.Pani
     print(ref_pos_shape_rejected)
     print(bad_ref_position_rejected)
     print(enum_shape_rejected)
+    print(enum_module_shape_rejected)
     print(alias_shape_rejected)
     print(nav_table_valid)
     print(bad_target_rejected)
@@ -359,6 +390,7 @@ def main() -> int can[Console.Write, Memory.Allocate, Console.Format, Abort.Pani
     print(reversed_offsets_rejected)
     print(out_of_source_offsets_rejected)
     print(exact_source_end_valid)
+    print(declared_type_accessors_ok)
     print(variant_accessors_ok)
     print(variant_contents_rejected)
     line_only_occurrence_sentinel: Ast::Pos = Ast::Pos{line: 1, column: 0, offset: 0, end_line: 1, end_column: 0, end_offset: 0}
@@ -497,13 +529,13 @@ if stderr:
     print(f"frontend contract FAILED: unexpected stderr: {stderr[-4000:]}", file=sys.stderr)
     raise SystemExit(1)
 got = " ".join(stdout.split())
-# version=13, comment-side-channel ownership, exact compiler/adapter occurrence spans and same-line shadow identities, line-only missing-span hints, existing adapter facts, exact navigation spans, alias-shape and
+# version=15, comment-side-channel ownership, exact occurrence spans and same-line shadow identities, BindingId-keyed declared type spans, line-only missing-span hints, existing adapter facts, exact navigation spans, alias-shape and
 # fail-closed checks
 # for malformed snapshots, a narrow missing-function-name recovery case, and
 # consistency between parser errors, completeness state, and sidecar counts.
-want = "13 1 1 1 1 1 1 1 2 -1 0 1 1 1 4 4 10 78 84 1 4 10 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1"
+want = "15 1 1 1 1 1 1 1 2 -1 0 1 1 1 4 4 10 78 84 1 4 10 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1"
 if got != want:
     print(f"frontend contract FAILED: got [{got}] want [{want}]", file=sys.stderr)
     raise SystemExit(1)
 PY
-echo "frontend contract OK: v13; lexer comment side channel, exact compiler occurrence positions/identities, line-only missing-span hints, enum variant accessors, array shapes, alias metadata, navigation spans, parser recovery, and diagnostic offset boundaries"
+echo "frontend contract OK: v15; lexer comment side channel, exact compiler occurrence positions/identities, BindingId-keyed declared types, line-only missing-span hints, enum variant owner/name/module alignment, array shapes, alias metadata, navigation spans, parser recovery, and diagnostic offset boundaries"

@@ -3,11 +3,12 @@
 # At analysis time `build_hover_index` serializes the compiler's file symbols,
 # param/local occurrences, and exact resolver-produced definition edges into a
 # compact analysis stream stored in the document's flat storage. Providers later
-# scan that stream (not the live
-# SymbolTable, whose sviews would dangle after storage compaction) and resolves
+# scan that stream (not the live SymbolTable, whose sviews would dangle after
+# storage compaction) and resolve
 # the identifier under the cursor:
 #   1. a param/local occurrence at the exact byte span wins (H02 precedence) —
-#      `(parameter) name` / `(local) name`;
+#      `(parameter) name: DeclaredType` / `(local) name: DeclaredType` when the
+#      compiler retained an explicit annotation;
 #   2. otherwise a file-level declaration matched by name — its category plus
 #      the declared return type when the frontend carries one.
 # Unknown identifiers or no document summary yield empty (the caller then falls
@@ -17,12 +18,16 @@
 # Record stream: each record starts with REC (0x1e); the first byte is `s`
 # (symbol: name, category, line, return-type, name-byte-offset, declaration-ID),
 # `v` (enum variant: owner and name), `o` (occurrence: byte start/end,
-# name, ref-kind, binding owner/serial), or `d` (definition: source start/end and target start/end, all
-# in negotiated LSP positions). Fields are FS-separated (0x1f). Identifier
-# and numeric fields never contain control bytes, so the encoding is unambiguous.
+# name, ref-kind, binding owner/serial), `d` (definition source/target ranges),
+# or `t` (declared binding type: BindingId, exact source span, and hex-encoded
+# annotation). Fields are FS-separated (0x1f); source-derived type text is hex
+# encoded so arbitrary bytes cannot corrupt the record stream.
 
 const HOVER_REC: u8 = 30
 const HOVER_FS: u8 = 31
+const HOVER_TYPE_BINDING: u8 = 116
+const HOVER_TYPE_SOURCE_LIMIT: usize = 2048
+const HOVER_TYPE_TOTAL_LIMIT: usize = 65536
 
 
 def hover_symbol_category(kind: i64) -> sview:
@@ -73,10 +78,114 @@ def hover_definition_span_matches(src: u8&, src_len: usize, start: u32, finish: 
     return string_views_eq(Positions::source_view_span(src, src_len, a, b - a), name) != 0
 
 
-def build_hover_index(table: Semantic::SymbolTable&, occurrence_positions: darray[Ast::Pos], src: u8&, src_len: usize, line_starts: darray[usize]&, span_start: usize, span_count: usize, utf8: bool) -> darray[u8]:
+def hover_push_hex_source(out: mutable darray[u8]&, src: u8&, start: usize, count: usize) -> void can[Memory.Allocate, Abort.Panic]:
+    digits: sview = "0123456789abcdef"
+    i: mutable usize = 0
+    while i < count:
+        byte: u8 = src[start + i]
+        out.push(sview_at(digits, (byte >> 4).usize()))
+        out.push(sview_at(digits, (byte & 15).usize()))
+        i <- i + 1
+
+
+def hover_token_index_at(tokens: darray[Lexer::Token], offset: u32, index_out: mutable usize&) -> bool:
+    lo: mutable usize = 0
+    hi: mutable usize = tokens.count
+    while lo < hi:
+        mid: usize = lo + (hi - lo) / 2
+        if tokens[mid].start < offset:
+            lo <- mid + 1
+        else:
+            hi <- mid
+    return false if lo >= tokens.count or tokens[lo].start != offset
+    index_out <- lo
+    return true
+
+
+def hover_type_delimiter_open(kind: Lexer::TokenKind) -> bool:
+    return kind == Lexer::TokenKind.LParen or kind == Lexer::TokenKind.LBracket or kind == Lexer::TokenKind.LBrace
+
+
+def hover_type_delimiter_close(kind: Lexer::TokenKind) -> bool:
+    return kind == Lexer::TokenKind.RParen or kind == Lexer::TokenKind.RBracket or kind == Lexer::TokenKind.RBrace
+
+
+def hover_type_binder_index(tokens: darray[Lexer::Token], binder_pos: Ast::Pos, src_len: usize, index_out: mutable usize&) -> bool:
+    if binder_pos.end_offset > binder_pos.offset and binder_pos.end_offset.usize() <= src_len:
+        exact_index: mutable usize = 0
+        if hover_token_index_at(tokens, binder_pos.offset, exact_index):
+            exact: Lexer::Token = tokens[exact_index]
+            exact_end: usize = exact.start.usize() + exact.length.usize()
+            has_colon: bool = exact_index + 1 < tokens.count and tokens[exact_index + 1].kind == Lexer::TokenKind.Colon
+            if exact.kind == Lexer::TokenKind.Ident and exact_end == binder_pos.end_offset.usize() and has_colon:
+                index_out <- exact_index
+                return true
+    # Some current compiler recovery rows retain a declaration line but not its
+    # exact binder token. Recover only one `Ident:` candidate on that line;
+    # multiple candidates remain unresolved. The emitted type record is still
+    # keyed by the compiler's exact BindingId, never by this token's spelling.
+    line: u32 = binder_pos.line
+    return false if line == 0
+    matches: mutable usize = 0
+    candidate_index: mutable usize = 0
+    i: mutable usize = 0
+    while i < tokens.count:
+        token: Lexer::Token = tokens[i]
+        if token.line == line and token.kind == Lexer::TokenKind.Ident and i + 1 < tokens.count and tokens[i + 1].kind == Lexer::TokenKind.Colon:
+            matches <- matches + 1
+            candidate_index <- i
+        i <- i + 1
+    return false if matches != 1
+    index_out <- candidate_index
+    return true
+
+
+# The compiler's current AST position for composite `Index`/`IndexN` types can
+# describe only the subscript punctuation. Starting from the compiler's exact
+# binder span, use the lexer token contract to recover the complete annotation
+# up to its top-level parameter/default/declaration delimiter. Unknown or
+# malformed token shapes produce no type record rather than partial text.
+def hover_declared_type_source_span(tokens: darray[Lexer::Token], src: u8&, src_len: usize, binder_pos: Ast::Pos, annotation_pos: Ast::Pos, start_out: mutable usize&, end_out: mutable usize&) -> bool:
+    return false if binder_pos.line == 0
+    return false if annotation_pos.end_offset <= annotation_pos.offset or annotation_pos.end_offset.usize() > src_len
+    binder_index: mutable usize = 0
+    return false if not hover_type_binder_index(tokens, binder_pos, src_len, binder_index)
+    binder: Lexer::Token = tokens[binder_index]
+    return false if binder.kind != Lexer::TokenKind.Ident
+    return false if not hover_definition_span_matches(src, src_len, binder.start, binder.start + binder.length, Lexer::text_or_empty(binder, src))
+    colon_index: usize = binder_index + 1
+    return false if colon_index >= tokens.count or tokens[colon_index].kind != Lexer::TokenKind.Colon
+    depth: mutable i64 = 0
+    cursor: mutable usize = colon_index + 1
+    source_start: mutable usize = 0
+    source_end: mutable usize = 0
+    while cursor < tokens.count:
+        token: Lexer::Token = tokens[cursor]
+        if depth == 0 and (token.kind == Lexer::TokenKind.Comma or token.kind == Lexer::TokenKind.Assign or token.kind == Lexer::TokenKind.RParen or token.kind == Lexer::TokenKind.Newline or token.kind == Lexer::TokenKind.Semicolon):
+            break
+        if hover_type_delimiter_open(token.kind):
+            depth <- depth + 1
+        elif hover_type_delimiter_close(token.kind):
+            return false if depth == 0
+            depth <- depth - 1
+        token_start: usize = token.start.usize()
+        token_end: usize = token_start + token.length.usize()
+        return false if token_end > src_len
+        source_start <- token_start if source_end == 0
+        source_end <- token_end
+        cursor <- cursor + 1
+    return false if depth != 0 or source_end <= source_start
+    start_out <- source_start
+    end_out <- source_end
+    return true
+
+
+def build_hover_index(table: Semantic::SymbolTable&, occurrence_positions: darray[Ast::Pos], tokens: darray[Lexer::Token], src: u8&, src_len: usize, line_starts: darray[usize]&, span_start: usize, span_count: usize, utf8: bool) -> darray[u8]:
     can Memory.Allocate, Abort.Panic:
         body: mutable darray[u8] = []
         i: mutable usize = 0
+        declared_type_count: usize = binding_declared_type_count(table)
+        retained_type_source_bytes: mutable usize = 0
         while i < symbol_count(table):
             source_line: u32 = symbol_source_line(table, i)
             if source_line > 0 and symbol_name(table, i).len > 0:
@@ -180,6 +289,29 @@ def build_hover_index(table: Semantic::SymbolTable&, occurrence_positions: darra
                     body.push(HOVER_FS)
                     push_int(body, target_end_char)
             i <- i + 1
+        i <- 0
+        while i < declared_type_count:
+            annotation_pos: Ast::Pos = binding_declared_type_position(table, i)
+            binder_pos: Ast::Pos = binding_declared_type_declaration_position(table, i)
+            type_start: mutable usize = 0
+            type_end: mutable usize = 0
+            if hover_declared_type_source_span(tokens, src, src_len, binder_pos, annotation_pos, type_start, type_end):
+                type_bytes: usize = type_end - type_start
+                if type_bytes <= HOVER_TYPE_SOURCE_LIMIT and retained_type_source_bytes <= HOVER_TYPE_TOTAL_LIMIT - type_bytes:
+                    body.push(HOVER_REC)
+                    body.push(HOVER_TYPE_BINDING)
+                    body.push(HOVER_FS)
+                    push_int(body, binding_declared_type_owner(table, i).i64())
+                    body.push(HOVER_FS)
+                    push_int(body, binding_declared_type_serial(table, i).i64())
+                    body.push(HOVER_FS)
+                    push_int(body, type_start.i64())
+                    body.push(HOVER_FS)
+                    push_int(body, type_end.i64())
+                    body.push(HOVER_FS)
+                    hover_push_hex_source(body, src, type_start, type_bytes)
+                    retained_type_source_bytes <- retained_type_source_bytes + type_bytes
+            i <- i + 1
         return body
 
 
@@ -214,7 +346,7 @@ def hover_parse_i64(text: sview) -> i64:
 
 
 # ref_kind of an occurrence matching the exact half-open byte span and name, or -1.
-def hover_occ_kind(blob: sview, start: i64, finish: i64, name: sview) -> i64:
+def hover_occ_kind(blob: sview, start: i64, finish: i64, name: sview, owner_out: mutable i64&, serial_out: mutable i64&) -> i64:
     rec_start: mutable usize = 0
     i: mutable usize = 0
     n: usize = blob.len.usize()
@@ -225,32 +357,137 @@ def hover_occ_kind(blob: sview, start: i64, finish: i64, name: sview) -> i64:
                 fe: mutable sview = sview("", 0, 0)
                 fn: mutable sview = sview("", 0, 0)
                 fk: mutable sview = sview("", 0, 0)
-                if hover_field(blob, rec_start, i, 1, fs) and hover_field(blob, rec_start, i, 2, fe) and hover_field(blob, rec_start, i, 3, fn) and hover_field(blob, rec_start, i, 4, fk):
+                fo: mutable sview = sview("", 0, 0)
+                fb: mutable sview = sview("", 0, 0)
+                if hover_field(blob, rec_start, i, 1, fs) and hover_field(blob, rec_start, i, 2, fe) and hover_field(blob, rec_start, i, 3, fn) and hover_field(blob, rec_start, i, 4, fk) and hover_field(blob, rec_start, i, 5, fo) and hover_field(blob, rec_start, i, 6, fb):
                     if hover_parse_i64(fs) == start and hover_parse_i64(fe) == finish and string_views_eq(fn, name) != 0:
+                        owner_out <- hover_parse_i64(fo)
+                        serial_out <- hover_parse_i64(fb)
                         return hover_parse_i64(fk)
             rec_start <- i + 1
         i <- i + 1
     return -1
 
 
-def hover_symbol_info(blob: sview, name: sview, cat_out: mutable sview&, ret_out: mutable sview&) -> bool:
+# Resolve an explicit annotation by the exact resolver identity. Repeated rows
+# for one binding are treated as invalid cache data instead of selected by name.
+def hover_binding_type_hex(blob: sview, owner: i64, serial: i64, out: mutable sview&) -> bool:
     rec_start: mutable usize = 0
     i: mutable usize = 0
     n: usize = blob.len.usize()
+    matches: mutable usize = 0
+    found: mutable sview = sview("", 0, 0)
+    while i <= n:
+        if i == n or sview_at(blob, i) == HOVER_REC:
+            if i > rec_start and sview_at(blob, rec_start) == HOVER_TYPE_BINDING:
+                fo: mutable sview = sview("", 0, 0)
+                fb: mutable sview = sview("", 0, 0)
+                ft: mutable sview = sview("", 0, 0)
+                if hover_field(blob, rec_start, i, 1, fo) and hover_field(blob, rec_start, i, 2, fb) and hover_field(blob, rec_start, i, 5, ft):
+                    if hover_parse_i64(fo) == owner and hover_parse_i64(fb) == serial:
+                        matches <- matches + 1
+                        found <- ft
+            rec_start <- i + 1
+        i <- i + 1
+    return false if matches != 1 or found.len == 0
+    out <- found
+    return true
+
+
+# Resolve one spelling in a single pass over the retained record stream.
+# Results: 0 = unknown, 1 = unique declaration, 2 = unique enum variant,
+# 3 = overloaded, repeated, or cross-category ambiguous.
+def hover_name_info(blob: sview, name: sview, cat_out: mutable sview&, ret_out: mutable sview&, owner_out: mutable sview&, declaration_id_out: mutable i64&) -> i64:
+    rec_start: mutable usize = 0
+    i: mutable usize = 0
+    n: usize = blob.len.usize()
+    symbol_matches: mutable i64 = 0
+    variant_matches: mutable i64 = 0
+    found_category: mutable sview = sview("", 0, 0)
+    found_return: mutable sview = sview("", 0, 0)
+    found_owner: mutable sview = sview("", 0, 0)
+    found_declaration_id: mutable i64 = -1
     while i <= n:
         if i == n or sview_at(blob, i) == HOVER_REC:
             if i > rec_start and sview_at(blob, rec_start) == 115:
                 fn: mutable sview = sview("", 0, 0)
                 fc: mutable sview = sview("", 0, 0)
                 fr: mutable sview = sview("", 0, 0)
-                if hover_field(blob, rec_start, i, 1, fn) and hover_field(blob, rec_start, i, 2, fc) and hover_field(blob, rec_start, i, 4, fr):
+                declaration_id_text: mutable sview = sview("", 0, 0)
+                if hover_field(blob, rec_start, i, 1, fn) and hover_field(blob, rec_start, i, 2, fc) and hover_field(blob, rec_start, i, 4, fr) and hover_field(blob, rec_start, i, 6, declaration_id_text):
                     if string_views_eq(fn, name) != 0:
-                        cat_out <- fc
-                        ret_out <- fr
-                        return true
+                        symbol_matches <- symbol_matches + 1
+                        found_category <- fc
+                        found_return <- fr
+                        found_declaration_id <- hover_parse_i64(declaration_id_text)
+                        return 3 if symbol_matches > 1
+            elif i > rec_start and sview_at(blob, rec_start) == 118:
+                owner: mutable sview = sview("", 0, 0)
+                variant: mutable sview = sview("", 0, 0)
+                if hover_field(blob, rec_start, i, 1, owner) and hover_field(blob, rec_start, i, 2, variant):
+                    if string_views_eq(variant, name) != 0:
+                        variant_matches <- variant_matches + 1
+                        found_owner <- owner
+                        return 3 if variant_matches > 1
             rec_start <- i + 1
         i <- i + 1
-    return false
+    return 3 if symbol_matches > 0 and variant_matches > 0
+    if variant_matches == 1:
+        owner_out <- found_owner
+        return 2
+    if symbol_matches == 1:
+        cat_out <- found_category
+        ret_out <- found_return
+        declaration_id_out <- found_declaration_id
+        return 1
+    return 0
+
+
+def hover_decode_signature_hex(encoded: sview, out: mutable darray[u8]&) -> bool can[Memory.Allocate, Abort.Panic]:
+    return false if encoded.len == 0 or encoded.len.usize() % 2 != 0 or encoded.len > 4096
+    decoded: mutable darray[u8] = []
+    index: mutable usize = 0
+    while index < encoded.len.usize():
+        high: u8 = sview_at(encoded, index)
+        low: u8 = sview_at(encoded, index + 1)
+        high_value: mutable i64 = -1
+        low_value: mutable i64 = -1
+        if high >= 48 and high <= 57:
+            high_value <- high.i64() - 48
+        elif high >= 97 and high <= 102:
+            high_value <- high.i64() - 87
+        if low >= 48 and low <= 57:
+            low_value <- low.i64() - 48
+        elif low >= 97 and low <= 102:
+            low_value <- low.i64() - 87
+        return false if high_value < 0 or low_value < 0
+        decoded.push(((high_value << 4) | low_value).u8())
+        index <- index + 2
+    return false if decoded.count == 0
+    out.extend([byte for byte in decoded])
+    return true
+
+
+def hover_append_signature(value: mutable darray[u8]&, signature: darray[u8], markdown: bool) -> void can[Memory.Allocate, Abort.Panic]:
+    if markdown:
+        longest_ticks: mutable usize = 0
+        run: mutable usize = 0
+        for byte in signature:
+            if byte == 96:
+                run <- run + 1
+                longest_ticks <- run if run > longest_ticks
+            else:
+                run <- 0
+        fence: usize = 3 if longest_ticks < 3 else longest_ticks + 1
+        for _ in 0..<fence:
+            value.push(96)
+        push_str(value, "elisa\n")
+        value.extend([byte for byte in signature])
+        push_str(value, "\n")
+        for _ in 0..<fence:
+            value.push(96)
+    else:
+        value.extend([byte for byte in signature])
 
 
 def hover_is_ident_byte(b: u8) -> bool:
@@ -322,7 +559,7 @@ def hover_label_from(cat: sview, name: sview, ret: sview) -> darray[u8]:
 
 
 # Returns the full hover result body, or empty when nothing resolves.
-def general_hover_body(document: DocumentSnapshotView, storage: darray[u8]&, source_start: usize, document_line_starts: darray[usize]&, span_start: usize, span_count: usize, hover_start: usize, line_no: i64, char_no: i64, markdown: bool, utf8: bool) -> darray[u8]:
+def general_hover_body(document: DocumentSnapshotView, storage: darray[u8]&, source_start: usize, document_line_starts: darray[usize]&, span_start: usize, span_count: usize, hover_start: usize, signature_start: usize, line_no: i64, char_no: i64, markdown: bool, utf8: bool) -> darray[u8]:
     can Memory.Allocate, Abort.Panic:
         if document.caches.hover_len == 0 or line_no < 0 or char_no < 0:
             return []
@@ -340,19 +577,52 @@ def general_hover_body(document: DocumentSnapshotView, storage: darray[u8]&, sou
         if document.caches.hover_len > storage.count - hover_start:
             return []
         blob: sview = bytes_view_range_ref(storage, hover_start, document.caches.hover_len)
+        signature_blob: mutable sview = sview("", 0, 0)
+        if document.caches.signature_len > 0:
+            if signature_start > storage.count or document.caches.signature_len > storage.count - signature_start:
+                return []
+            signature_blob <- bytes_view_range_ref(storage, signature_start, document.caches.signature_len)
         value: mutable darray[u8] = []
-        occ: i64 = hover_occ_kind(blob, byte_start, byte_end, name)
+        binding_owner: mutable i64 = -1
+        binding_serial: mutable i64 = -1
+        occ: i64 = hover_occ_kind(blob, byte_start, byte_end, name, binding_owner, binding_serial)
         if occ == OCC_PARAM:
             push_str(value, "(parameter) ")
             hover_push(value, name)
+            type_hex: mutable sview = sview("", 0, 0)
+            declared_type: mutable darray[u8] = []
+            if hover_binding_type_hex(blob, binding_owner, binding_serial, type_hex) and hover_decode_signature_hex(type_hex, declared_type):
+                push_str(value, ": ")
+                value.extend([byte for byte in declared_type])
         elif occ == OCC_LOCAL:
             push_str(value, "(local) ")
             hover_push(value, name)
+            type_hex: mutable sview = sview("", 0, 0)
+            declared_type: mutable darray[u8] = []
+            if hover_binding_type_hex(blob, binding_owner, binding_serial, type_hex) and hover_decode_signature_hex(type_hex, declared_type):
+                push_str(value, ": ")
+                value.extend([byte for byte in declared_type])
         else:
             cat: mutable sview = sview("", 0, 0)
             ret: mutable sview = sview("", 0, 0)
-            if hover_symbol_info(blob, name, cat, ret):
-                value <- hover_label_from(cat, name, ret)
+            owner: mutable sview = sview("", 0, 0)
+            declaration_id: mutable i64 = -1
+            info_kind: i64 = hover_name_info(blob, name, cat, ret, owner, declaration_id)
+            if info_kind == 3:
+                return []
+            if info_kind == 2:
+                push_str(value, "enum ")
+                hover_push(value, owner)
+                push_str(value, ".")
+                hover_push(value, name)
+            elif info_kind == 1:
+                signature_hex: mutable sview = sview("", 0, 0)
+                signature_bytes: mutable darray[u8] = []
+                has_signature: bool = string_view_eq(cat, "fn") == 1 and signature_source_hex_for_row(signature_blob, declaration_id, signature_hex) and hover_decode_signature_hex(signature_hex, signature_bytes)
+                if has_signature:
+                    hover_append_signature(value, signature_bytes, markdown)
+                else:
+                    value <- hover_label_from(cat, name, ret)
         if value.count == 0:
             return []
         body: mutable darray[u8] = []

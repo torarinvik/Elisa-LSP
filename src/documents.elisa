@@ -24,6 +24,12 @@ enum DocumentCacheTarget:
 struct DocumentUriIndex:
     uri_start: mutable usize
     uri_len: mutable usize
+    # Preserve the latest client-visible spelling separately from the
+    # canonical key used by the hash index. Scheduled jobs use it when
+    # building diagnostics and document-symbol payloads.
+    spelling_start: mutable usize
+    spelling_len: mutable usize
+    spelling_capacity: mutable usize
     hash: mutable u64
     next: mutable u32
 
@@ -58,6 +64,7 @@ struct DocumentLifecycle:
     generation: mutable u64
     analysis_job_id: mutable i64
     analysis_state: mutable DocumentAnalysisState
+    analysis_queued: mutable bool
     open: mutable bool
     last_diag_version: mutable i64
     last_diag_fp: mutable u64
@@ -146,6 +153,7 @@ def document_begin_snapshot(document: mutable LspDocument&, version: i64) -> voi
     document.lifecycle.open <- true
     document.lifecycle.version <- version
     document.lifecycle.analysis_state <- DocumentAnalysisState.Pending
+    document.lifecycle.analysis_queued <- true
     document.lifecycle.analysis_job_id <- 0
     document.caches.semantic_len <- 0
     document.caches.symbols_len <- 0
@@ -163,6 +171,7 @@ def document_analysis_is_current(document: LspDocument, job_id: i64, generation:
 
 def document_mark_analysis_failed(document: mutable LspDocument&) -> void:
     document.lifecycle.analysis_state <- DocumentAnalysisState.Failed
+    document.lifecycle.analysis_queued <- false
     document.caches.semantic_len <- 0
     document.caches.symbols_len <- 0
     document.caches.hover_len <- 0
@@ -172,6 +181,7 @@ def document_mark_analysis_failed(document: mutable LspDocument&) -> void:
 
 def document_mark_analysis_ready(document: mutable LspDocument&) -> void:
     document.lifecycle.analysis_state <- DocumentAnalysisState.Ready
+    document.lifecycle.analysis_queued <- false
 
 
 def document_close(document: mutable LspDocument&) -> void:
@@ -191,6 +201,7 @@ def document_close(document: mutable LspDocument&) -> void:
     document.caches.line_index_count <- 0
     document.caches.line_index_capacity <- 0
     document.lifecycle.analysis_state <- DocumentAnalysisState.Pending
+    document.lifecycle.analysis_queued <- false
     document.lifecycle.generation <- document.lifecycle.generation + 1
     document.lifecycle.analysis_job_id <- 0
     document.lifecycle.last_diag_version <- -1
@@ -216,6 +227,7 @@ def document_clear_derived_cache(document: mutable LspDocument&) -> usize:
     # Eviction retains the accepted source/version, but semantic providers must
     # decline the result until a later analysis replaces the missing caches.
     document.lifecycle.analysis_state <- DocumentAnalysisState.Pending if document.lifecycle.open and not document.lifecycle.free
+    document.lifecycle.analysis_queued <- false
     document.caches.last_access <- 0
     return released
 
@@ -324,6 +336,9 @@ def document_slot(documents: mutable darray[LspDocument]&, storage: mutable darr
         d.lifecycle.generation <- d.lifecycle.generation + 1
         d.uri_index.uri_start <- storage.count
         d.uri_index.uri_len <- uri.len.usize()
+        d.uri_index.spelling_start <- storage.count
+        d.uri_index.spelling_len <- 0
+        d.uri_index.spelling_capacity <- 0
         d.source.text_start <- storage.count
         d.source.text_len <- 0
         d.source.text_capacity <- 0
@@ -348,6 +363,7 @@ def document_slot(documents: mutable darray[LspDocument]&, storage: mutable darr
         d.caches.last_access <- 0
         d.lifecycle.analysis_job_id <- 0
         d.lifecycle.analysis_state <- DocumentAnalysisState.Pending
+        d.lifecycle.analysis_queued <- false
         d.lifecycle.open <- false
         d.lifecycle.free <- false
         d.lifecycle.last_diag_version <- -1
@@ -361,7 +377,7 @@ def document_slot(documents: mutable darray[LspDocument]&, storage: mutable darr
         return slot
     uri_start: usize = storage.count
     documents.push(LspDocument{
-        uri_index: DocumentUriIndex{uri_start: uri_start, uri_len: uri.len.usize(), hash: hash, next: previous},
+        uri_index: DocumentUriIndex{uri_start: uri_start, uri_len: uri.len.usize(), spelling_start: 0, spelling_len: 0, spelling_capacity: 0, hash: hash, next: previous},
         source: DocumentSource{text_start: 0, text_len: 0, text_capacity: 0},
         caches: DocumentDerivedCaches{
             semantic_start: 0, semantic_len: 0, semantic_capacity: 0,
@@ -373,7 +389,7 @@ def document_slot(documents: mutable darray[LspDocument]&, storage: mutable darr
         },
         lifecycle: DocumentLifecycle{
             version: -1, generation: 0, analysis_job_id: 0,
-            analysis_state: DocumentAnalysisState.Pending, open: false,
+            analysis_state: DocumentAnalysisState.Pending, analysis_queued: false, open: false,
             last_diag_version: -1, last_diag_fp: 0, last_diag_valid: false, free: false
         }
     })
@@ -382,6 +398,23 @@ def document_slot(documents: mutable darray[LspDocument]&, storage: mutable darr
         storage.push(sview_at(uri, i))
     heads <- heads.put(hash, slot.u32())
     return slot
+
+
+# Store the latest client-visible URI spelling in the same reclaimable flat
+# byte store as canonical keys, source, and provider caches. Canonical identity
+# stays stable while equivalent incoming spellings may differ.
+def document_store_uri_spelling(document: mutable LspDocument&, storage: mutable darray[u8]&, spelling: sview) -> void can[Memory.Allocate, Abort.Panic]:
+    needed: usize = spelling.len.usize()
+    if document.uri_index.spelling_capacity >= needed and document.uri_index.spelling_capacity > 0:
+        for i in 0..<needed:
+            storage[document.uri_index.spelling_start + i] <- sview_at(spelling, i)
+        document.uri_index.spelling_len <- needed
+        return
+    document.uri_index.spelling_start <- storage.count
+    document.uri_index.spelling_len <- needed
+    document.uri_index.spelling_capacity <- needed
+    for i in 0..<needed:
+        storage.push(sview_at(spelling, i))
 
 
 # Remove `slot` from its hash chain so a freed slot can be reused without a
@@ -592,7 +625,7 @@ def storage_live_bytes(documents: darray[LspDocument]&) -> usize:
     while i < documents.count:
         d: LspDocument = documents[i]
         if not d.lifecycle.free:
-            live <- live + d.uri_index.uri_len
+            live <- live + d.uri_index.uri_len + d.uri_index.spelling_len
             if d.lifecycle.open:
                 live <- live + d.source.text_len + d.caches.semantic_len + d.caches.symbols_len + d.caches.hover_len + d.caches.signature_len
         i <- i + 1
@@ -613,6 +646,9 @@ def storage_reclaim(documents: mutable darray[LspDocument]&, storage: mutable da
             # Freed slots retain nothing; reclaim their URI bytes too.
             d.uri_index.uri_start <- temp.count
             d.uri_index.uri_len <- 0
+            d.uri_index.spelling_start <- temp.count
+            d.uri_index.spelling_len <- 0
+            d.uri_index.spelling_capacity <- 0
             d.source.text_start <- temp.count
             d.source.text_len <- 0
             d.source.text_capacity <- 0
@@ -636,6 +672,13 @@ def storage_reclaim(documents: mutable darray[LspDocument]&, storage: mutable da
         while j < d.uri_index.uri_len:
             temp.push(storage[old_uri + j])
             j <- j + 1
+        old_spelling: usize = d.uri_index.spelling_start
+        d.uri_index.spelling_start <- temp.count
+        j <- 0
+        while j < d.uri_index.spelling_len:
+            temp.push(storage[old_spelling + j])
+            j <- j + 1
+        d.uri_index.spelling_capacity <- d.uri_index.spelling_len
         if d.lifecycle.open:
             old_text: usize = d.source.text_start
             d.source.text_start <- temp.count

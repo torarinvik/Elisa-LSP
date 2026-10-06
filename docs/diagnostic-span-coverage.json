@@ -1,20 +1,20 @@
 {
   "schema_version": 1,
-  "compiler_source_fingerprint": "56868fba124d5f56905635d2529b3e70acbd22033a0a3ce5ff7225330cbb5393",
+  "compiler_source_fingerprint": "32e2a49805f25ad79de69118c741aa75ee6e0ad9856ea27af9b0a0818e927638",
   "inventory_method": "static_named_struct_literal_scan",
   "position_field_semantics": "An explicit pos field is not proof of a precise or valid runtime span. The LSP integration tests separately verify exact ranges and bounded fallback behavior.",
   "summary": {
-    "diagnostic_kind_count": 621,
-    "source_file_count": 815,
-    "construction_site_count": 1032,
-    "classified_construction_site_count": 1023,
-    "unclassified_construction_site_count": 9,
-    "kinds_with_constructors": 596,
-    "kinds_with_only_explicit_position_arguments": 191,
+    "diagnostic_kind_count": 641,
+    "source_file_count": 865,
+    "construction_site_count": 1093,
+    "classified_construction_site_count": 1083,
+    "unclassified_construction_site_count": 10,
+    "kinds_with_constructors": 617,
+    "kinds_with_only_explicit_position_arguments": 212,
     "kinds_with_default_position_sites": 405,
-    "explicit_position_site_count": 428,
-    "default_position_site_count": 604,
-    "unclassified_explicit_position_site_count": 4,
+    "explicit_position_site_count": 483,
+    "default_position_site_count": 610,
+    "unclassified_explicit_position_site_count": 5,
     "unclassified_default_position_site_count": 5,
     "unclassified_sites": [
       {
@@ -24,22 +24,27 @@
       },
       {
         "kind_expression": "diagnostic_kind",
-        "site": "src/semantic/resolve_types_initializers.elisa:205",
+        "site": "src/semantic/resolve_types_initializers.elisa:261",
+        "explicit_position_argument": true
+      },
+      {
+        "kind_expression": "diagnostic_kind",
+        "site": "src/semantic/resolve_types_initializers.elisa:267",
         "explicit_position_argument": true
       },
       {
         "kind_expression": "duplicate_kind",
-        "site": "src/semantic/symbols_duplicates.elisa:316",
+        "site": "src/semantic/symbols_duplicates.elisa:320",
         "explicit_position_argument": true
       },
       {
         "kind_expression": "dynamic/unknown",
-        "site": "src/semantic/semantic_api_severity.elisa:222",
+        "site": "src/semantic/semantic_api_severity.elisa:225",
         "explicit_position_argument": false
       },
       {
         "kind_expression": "fallback_kind",
-        "site": "src/semantic/check_precondition_violated.elisa:207",
+        "site": "src/semantic/check_precondition_violated.elisa:230",
         "explicit_position_argument": false
       },
       {
@@ -49,7 +54,7 @@
       },
       {
         "kind_expression": "kind",
-        "site": "src/semantic/check_borrow_after_move.elisa:631",
+        "site": "src/semantic/check_borrow_after_move.elisa:648",
         "explicit_position_argument": true
       },
       {
@@ -59,7 +64,7 @@
       },
       {
         "kind_expression": "kind",
-        "site": "src/semantic/check_local_view_return_escape.elisa:389",
+        "site": "src/semantic/check_local_view_return_escape.elisa:616",
         "explicit_position_argument": true
       }
     ],
@@ -159,10 +164,10 @@
       "construction_sites": 4,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/check_affine_collection.elisa:537",
-        "src/semantic/check_affine_collection.elisa:541",
-        "src/semantic/check_affine_collection.elisa:669",
-        "src/semantic/check_affine_collection.elisa:670"
+        "src/semantic/check_affine_collection.elisa:582",
+        "src/semantic/check_affine_collection.elisa:586",
+        "src/semantic/check_affine_collection.elisa:709",
+        "src/semantic/check_affine_collection.elisa:710"
       ]
     },
     {
@@ -182,7 +187,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/check_affine_collection.elisa:773"
+        "src/semantic/check_affine_collection.elisa:816"
       ]
     },
     {
@@ -190,9 +195,9 @@
       "construction_sites": 12,
       "explicit_position_sites": 9,
       "default_position_sites": [
-        "src/semantic/check_affine_collection.elisa:675",
-        "src/semantic/check_affine_use_linear.elisa:507",
-        "src/semantic/check_firm_arg_type_mismatch.elisa:302"
+        "src/semantic/check_affine_collection.elisa:715",
+        "src/semantic/check_affine_use_linear.elisa:567",
+        "src/semantic/check_firm_arg_type_mismatch.elisa:323"
       ]
     },
     {
@@ -200,8 +205,8 @@
       "construction_sites": 2,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/check_affine_collection.elisa:105",
-        "src/semantic/check_affine_collection.elisa:129"
+        "src/semantic/check_affine_collection.elisa:153",
+        "src/semantic/check_affine_collection.elisa:174"
       ]
     },
     {
@@ -209,9 +214,9 @@
       "construction_sites": 3,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/check_affine_use_linear.elisa:564",
-        "src/semantic/check_affine_use_linear.elisa:565",
-        "src/semantic/check_affine_use_linear.elisa:566"
+        "src/semantic/check_affine_use_linear.elisa:624",
+        "src/semantic/check_affine_use_linear.elisa:625",
+        "src/semantic/check_affine_use_linear.elisa:626"
       ]
     },
     {
@@ -221,7 +226,7 @@
       "default_position_sites": [
         "src/semantic/check_affine_use.elisa:127",
         "src/semantic/check_affine_use.elisa:172",
-        "src/semantic/check_affine_use_linear.elisa:209"
+        "src/semantic/check_affine_use_linear.elisa:269"
       ]
     },
     {
@@ -281,6 +286,12 @@
       ]
     },
     {
+      "kind": "AppendOnlyStore",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
       "kind": "ArenaGrowEscape",
       "construction_sites": 1,
       "explicit_position_sites": 0,
@@ -294,7 +305,7 @@
       "explicit_position_sites": 2,
       "default_position_sites": [
         "src/semantic/check_atomic_payload.elisa:30",
-        "src/semantic/resolve_expr.elisa:132"
+        "src/semantic/resolve_expr.elisa:136"
       ]
     },
     {
@@ -412,8 +423,8 @@
     },
     {
       "kind": "AssignValueMismatch",
-      "construction_sites": 6,
-      "explicit_position_sites": 6,
+      "construction_sites": 5,
+      "explicit_position_sites": 5,
       "default_position_sites": []
     },
     {
@@ -430,7 +441,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_types_match.elisa:418"
+        "src/semantic/resolve_types_match.elisa:423"
       ]
     },
     {
@@ -443,19 +454,19 @@
     },
     {
       "kind": "AutoRegionReturnEscape",
-      "construction_sites": 0,
-      "explicit_position_sites": 0,
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
       "default_position_sites": []
     },
     {
       "kind": "AutoRegionStoreEscape",
-      "construction_sites": 4,
-      "explicit_position_sites": 0,
+      "construction_sites": 7,
+      "explicit_position_sites": 3,
       "default_position_sites": [
         "src/semantic/check_auto_region_escape.elisa:169",
         "src/semantic/check_auto_region_escape.elisa:288",
         "src/semantic/check_owned_extraction.elisa:116",
-        "src/semantic/check_view_provenance.elisa:255"
+        "src/semantic/check_view_provenance.elisa:310"
       ]
     },
     {
@@ -517,7 +528,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_flow.elisa:389"
+        "src/semantic/resolve_flow.elisa:420"
       ]
     },
     {
@@ -561,11 +572,11 @@
       "default_position_sites": [
         "src/semantic/check_arg_forwarding.elisa:50",
         "src/semantic/check_callback_named_args.elisa:54",
-        "src/semantic/resolve_expr.elisa:209",
-        "src/semantic/resolve_expr.elisa:216",
-        "src/semantic/resolve_expr.elisa:257",
+        "src/semantic/resolve_expr.elisa:213",
+        "src/semantic/resolve_expr.elisa:220",
         "src/semantic/resolve_expr.elisa:261",
-        "src/semantic/resolve_expr.elisa:287"
+        "src/semantic/resolve_expr.elisa:265",
+        "src/semantic/resolve_expr.elisa:291"
       ]
     },
     {
@@ -599,7 +610,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_value_blocks.elisa:394"
+        "src/semantic/resolve_value_blocks.elisa:444"
       ]
     },
     {
@@ -607,7 +618,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_value_blocks.elisa:399"
+        "src/semantic/resolve_value_blocks.elisa:449"
       ]
     },
     {
@@ -620,9 +631,10 @@
     },
     {
       "kind": "CatchArmOutOfSet",
-      "construction_sites": 1,
+      "construction_sites": 2,
       "explicit_position_sites": 0,
       "default_position_sites": [
+        "src/semantic/check_catch_arm_variant.elisa:52",
         "src/semantic/check_catch_out_of_set.elisa:113"
       ]
     },
@@ -792,8 +804,8 @@
     },
     {
       "kind": "ConstructFieldTypeMismatch",
-      "construction_sites": 9,
-      "explicit_position_sites": 9,
+      "construction_sites": 10,
+      "explicit_position_sites": 10,
       "default_position_sites": []
     },
     {
@@ -816,7 +828,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_flow.elisa:392"
+        "src/semantic/resolve_flow.elisa:423"
       ]
     },
     {
@@ -853,8 +865,8 @@
     },
     {
       "kind": "ContractNotFirst",
-      "construction_sites": 1,
-      "explicit_position_sites": 1,
+      "construction_sites": 3,
+      "explicit_position_sites": 3,
       "default_position_sites": []
     },
     {
@@ -1008,8 +1020,23 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/check_derived_state_constructor.elisa:111"
+        "src/semantic/check_derived_state_constructor.elisa:194"
       ]
+    },
+    {
+      "kind": "DerivedStateEvidenceUnproven",
+      "construction_sites": 4,
+      "explicit_position_sites": 2,
+      "default_position_sites": [
+        "src/semantic/check_derived_source_frontier.elisa:375",
+        "src/semantic/check_derived_source_frontier.elisa:382"
+      ]
+    },
+    {
+      "kind": "DerivedStateResultMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
     },
     {
       "kind": "DerivedStateRuleNotFieldBased",
@@ -1030,7 +1057,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_types_initializers.elisa:472"
+        "src/semantic/resolve_types_initializers.elisa:545"
       ]
     },
     {
@@ -1180,7 +1207,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/symbols.elisa:336"
+        "src/semantic/symbols.elisa:371"
       ]
     },
     {
@@ -1188,7 +1215,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_expr.elisa:240"
+        "src/semantic/resolve_expr.elisa:244"
       ]
     },
     {
@@ -1207,8 +1234,8 @@
     },
     {
       "kind": "DuplicateLocal",
-      "construction_sites": 2,
-      "explicit_position_sites": 2,
+      "construction_sites": 3,
+      "explicit_position_sites": 3,
       "default_position_sites": []
     },
     {
@@ -1254,7 +1281,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/symbols.elisa:382"
+        "src/semantic/symbols.elisa:424"
       ]
     },
     {
@@ -1446,11 +1473,11 @@
       "construction_sites": 5,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_expr.elisa:373",
-        "src/semantic/resolve_expr.elisa:375",
-        "src/semantic/resolve_expr.elisa:388",
-        "src/semantic/resolve_expr.elisa:391",
-        "src/semantic/resolve_expr.elisa:400"
+        "src/semantic/resolve_expr.elisa:377",
+        "src/semantic/resolve_expr.elisa:379",
+        "src/semantic/resolve_expr.elisa:392",
+        "src/semantic/resolve_expr.elisa:395",
+        "src/semantic/resolve_expr.elisa:404"
       ]
     },
     {
@@ -1696,8 +1723,8 @@
     },
     {
       "kind": "FirmArgTypeMismatch",
-      "construction_sites": 10,
-      "explicit_position_sites": 10,
+      "construction_sites": 11,
+      "explicit_position_sites": 11,
       "default_position_sites": []
     },
     {
@@ -1824,8 +1851,14 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/semantic_api.elisa:540"
+        "src/semantic/semantic_api.elisa:562"
       ]
+    },
+    {
+      "kind": "FnValueEffectRow",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
     },
     {
       "kind": "ForeignEnumOpenFromC",
@@ -2007,6 +2040,12 @@
       "default_position_sites": [
         "src/semantic/check_ghost_local_read.elisa:59"
       ]
+    },
+    {
+      "kind": "GlobalStorageReturnEscape",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
     },
     {
       "kind": "GuardNonnullNonOptionalParam",
@@ -2232,7 +2271,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/check_pointer_erasure_cast.elisa:280"
+        "src/semantic/check_pointer_erasure_cast.elisa:294"
       ]
     },
     {
@@ -2264,7 +2303,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_flow.elisa:221"
+        "src/semantic/resolve_flow.elisa:227"
       ]
     },
     {
@@ -2312,7 +2351,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_types_match.elisa:217"
+        "src/semantic/resolve_types_match.elisa:222"
       ]
     },
     {
@@ -2320,7 +2359,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_types_match.elisa:228"
+        "src/semantic/resolve_types_match.elisa:233"
       ]
     },
     {
@@ -2360,8 +2399,8 @@
       "construction_sites": 2,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/check_mutate_while_iterating.elisa:198",
-        "src/semantic/check_mutate_while_iterating.elisa:258"
+        "src/semantic/check_mutate_while_iterating.elisa:202",
+        "src/semantic/check_mutate_while_iterating.elisa:262"
       ]
     },
     {
@@ -2456,7 +2495,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/check_affine_use_linear.elisa:557"
+        "src/semantic/check_affine_use_linear.elisa:617"
       ]
     },
     {
@@ -2479,11 +2518,9 @@
     },
     {
       "kind": "LmutAliasing",
-      "construction_sites": 1,
-      "explicit_position_sites": 0,
-      "default_position_sites": [
-        "src/semantic/resolve_expr.elisa:83"
-      ]
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
     },
     {
       "kind": "LmutFalseClaim",
@@ -2498,7 +2535,7 @@
       "construction_sites": 2,
       "explicit_position_sites": 1,
       "default_position_sites": [
-        "src/semantic/check_lmut_mutation_reassignment.elisa:69"
+        "src/semantic/check_lmut_mutation_reassignment.elisa:77"
       ]
     },
     {
@@ -2563,6 +2600,12 @@
       "default_position_sites": [
         "src/semantic/check_logical_constant_operand.elisa:19"
       ]
+    },
+    {
+      "kind": "LoopElementReadWidened",
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
+      "default_position_sites": []
     },
     {
       "kind": "LoopInvariantNotEstablished",
@@ -2648,7 +2691,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_expr.elisa:247"
+        "src/semantic/resolve_expr.elisa:251"
       ]
     },
     {
@@ -2738,10 +2781,10 @@
       "construction_sites": 4,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/check_mutate_while_iterating.elisa:257",
-        "src/semantic/check_mutate_while_iterating.elisa:262",
-        "src/semantic/check_mutate_while_iterating.elisa:265",
-        "src/semantic/check_mutate_while_iterating.elisa:268"
+        "src/semantic/check_mutate_while_iterating.elisa:261",
+        "src/semantic/check_mutate_while_iterating.elisa:266",
+        "src/semantic/check_mutate_while_iterating.elisa:269",
+        "src/semantic/check_mutate_while_iterating.elisa:272"
       ]
     },
     {
@@ -2749,7 +2792,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/check_mutual_decreases_cycle.elisa:565"
+        "src/semantic/check_mutual_decreases_cycle.elisa:585"
       ]
     },
     {
@@ -2770,6 +2813,12 @@
       ]
     },
     {
+      "kind": "NamedStateArgumentUnknown",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
       "kind": "NamedStatesWithoutDerive",
       "construction_sites": 1,
       "explicit_position_sites": 1,
@@ -2777,8 +2826,8 @@
     },
     {
       "kind": "NamedTypeMismatch",
-      "construction_sites": 4,
-      "explicit_position_sites": 4,
+      "construction_sites": 5,
+      "explicit_position_sites": 5,
       "default_position_sites": []
     },
     {
@@ -2827,7 +2876,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/semantic_api.elisa:495"
+        "src/semantic/semantic_api.elisa:517"
       ]
     },
     {
@@ -2862,8 +2911,8 @@
     },
     {
       "kind": "NonBoolCondition",
-      "construction_sites": 3,
-      "explicit_position_sites": 3,
+      "construction_sites": 6,
+      "explicit_position_sites": 6,
       "default_position_sites": []
     },
     {
@@ -2874,8 +2923,8 @@
     },
     {
       "kind": "NonBoolOperand",
-      "construction_sites": 2,
-      "explicit_position_sites": 2,
+      "construction_sites": 3,
+      "explicit_position_sites": 3,
       "default_position_sites": []
     },
     {
@@ -2923,7 +2972,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_expr_walk.elisa:75"
+        "src/semantic/resolve_expr_walk.elisa:93"
       ]
     },
     {
@@ -2976,8 +3025,14 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/semantic_api.elisa:573"
+        "src/semantic/semantic_api.elisa:595"
       ]
+    },
+    {
+      "kind": "OneShotClosure",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
     },
     {
       "kind": "OptionalComparison",
@@ -3298,7 +3353,7 @@
       "explicit_position_sites": 0,
       "default_position_sites": [
         "src/semantic/check_precondition_invariant_violated.elisa:148",
-        "src/semantic/check_precondition_multiparam.elisa:99",
+        "src/semantic/check_precondition_multiparam.elisa:101",
         "src/semantic/check_precondition_violated.elisa:122"
       ]
     },
@@ -3347,9 +3402,63 @@
       ]
     },
     {
+      "kind": "ProtocolConstructorUnauthorized",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ProtocolGraphDuplicateEdge",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ProtocolGraphDuplicateState",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ProtocolGraphEmptyFamily",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ProtocolGraphMixedDerived",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ProtocolGraphNoNamedFamily",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ProtocolGraphUnknownState",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ProtocolGraphUnresolvedFamily",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
       "kind": "ProtocolRequiresConcreteType",
       "construction_sites": 2,
       "explicit_position_sites": 2,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ProtocolTransitionRejected",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
       "default_position_sites": []
     },
     {
@@ -3444,8 +3553,8 @@
     },
     {
       "kind": "ReadonlyRefMutationNote",
-      "construction_sites": 2,
-      "explicit_position_sites": 2,
+      "construction_sites": 3,
+      "explicit_position_sites": 3,
       "default_position_sites": []
     },
     {
@@ -3489,7 +3598,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_struct_layout.elisa:240"
+        "src/semantic/resolve_struct_layout.elisa:244"
       ]
     },
     {
@@ -3497,7 +3606,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_expr_walk.elisa:101"
+        "src/semantic/resolve_expr_walk.elisa:119"
       ]
     },
     {
@@ -3666,7 +3775,7 @@
       "construction_sites": 2,
       "explicit_position_sites": 1,
       "default_position_sites": [
-        "src/semantic/check_region_escape.elisa:367"
+        "src/semantic/check_region_escape.elisa:450"
       ]
     },
     {
@@ -3712,7 +3821,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/region_escape_stores.elisa:189"
+        "src/semantic/region_escape_stores.elisa:186"
       ]
     },
     {
@@ -3731,20 +3840,20 @@
     },
     {
       "kind": "RegionParamArgumentMismatch",
-      "construction_sites": 1,
-      "explicit_position_sites": 1,
+      "construction_sites": 2,
+      "explicit_position_sites": 2,
       "default_position_sites": []
     },
     {
       "kind": "RegionParamInferenceFailure",
-      "construction_sites": 1,
-      "explicit_position_sites": 1,
+      "construction_sites": 3,
+      "explicit_position_sites": 3,
       "default_position_sites": []
     },
     {
       "kind": "RegionParamUninferable",
-      "construction_sites": 2,
-      "explicit_position_sites": 2,
+      "construction_sites": 4,
+      "explicit_position_sites": 4,
       "default_position_sites": []
     },
     {
@@ -3766,13 +3875,19 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/check_region_escape.elisa:368"
+        "src/semantic/check_region_escape.elisa:451"
       ]
     },
     {
+      "kind": "RegionShadowsEnclosing",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
+    },
+    {
       "kind": "RegionStoreEscape",
-      "construction_sites": 8,
-      "explicit_position_sites": 0,
+      "construction_sites": 12,
+      "explicit_position_sites": 3,
       "default_position_sites": [
         "src/semantic/region_escape_assignments.elisa:110",
         "src/semantic/region_escape_assignments.elisa:116",
@@ -3780,17 +3895,24 @@
         "src/semantic/region_escape_assignments.elisa:72",
         "src/semantic/region_escape_assignments.elisa:81",
         "src/semantic/region_escape_assignments.elisa:95",
-        "src/semantic/region_escape_stores.elisa:213",
-        "src/semantic/region_escape_stores.elisa:218"
+        "src/semantic/region_escape_stores.elisa:212",
+        "src/semantic/region_escape_stores.elisa:219",
+        "src/semantic/region_escape_stores.elisa:224"
       ]
+    },
+    {
+      "kind": "RegionStoreEscapeVia",
+      "construction_sites": 4,
+      "explicit_position_sites": 4,
+      "default_position_sites": []
     },
     {
       "kind": "RegionTiedReturn",
       "construction_sites": 2,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/check_region_tied_return.elisa:353",
-        "src/semantic/check_region_tied_return.elisa:366"
+        "src/semantic/check_region_tied_return.elisa:580",
+        "src/semantic/check_region_tied_return.elisa:593"
       ]
     },
     {
@@ -3871,6 +3993,12 @@
       "kind": "RuntimeDictKeyUnsupported",
       "construction_sites": 3,
       "explicit_position_sites": 3,
+      "default_position_sites": []
+    },
+    {
+      "kind": "ScopeOwnedRegionReturnEscape",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
       "default_position_sites": []
     },
     {
@@ -4070,14 +4198,14 @@
     },
     {
       "kind": "StorageDependencyInvalidated",
-      "construction_sites": 2,
-      "explicit_position_sites": 2,
+      "construction_sites": 3,
+      "explicit_position_sites": 3,
       "default_position_sites": []
     },
     {
       "kind": "StoreRefToLocal",
-      "construction_sites": 3,
-      "explicit_position_sites": 3,
+      "construction_sites": 5,
+      "explicit_position_sites": 5,
       "default_position_sites": []
     },
     {
@@ -4143,7 +4271,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_struct_layout.elisa:203"
+        "src/semantic/resolve_struct_layout.elisa:207"
       ]
     },
     {
@@ -4228,7 +4356,7 @@
       "explicit_position_sites": 0,
       "default_position_sites": [
         "src/semantic/check_closure_capture.elisa:91",
-        "src/semantic/check_thread_shareability.elisa:56"
+        "src/semantic/check_thread_shareability.elisa:69"
       ]
     },
     {
@@ -4241,10 +4369,12 @@
     },
     {
       "kind": "ThreadTransferRegionDependency",
-      "construction_sites": 1,
+      "construction_sites": 3,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/check_thread_transfer_provenance.elisa:122"
+        "src/semantic/check_thread_transfer_provenance.elisa:175",
+        "src/semantic/check_thread_transfer_provenance.elisa:177",
+        "src/semantic/check_thread_transfer_provenance.elisa:201"
       ]
     },
     {
@@ -4252,7 +4382,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/check_thread_transfer_provenance.elisa:121"
+        "src/semantic/check_thread_transfer_provenance.elisa:174"
       ]
     },
     {
@@ -4337,13 +4467,13 @@
     },
     {
       "kind": "TypeMismatch",
-      "construction_sites": 24,
-      "explicit_position_sites": 20,
+      "construction_sites": 25,
+      "explicit_position_sites": 21,
       "default_position_sites": [
         "src/semantic/check_void_value_use.elisa:49",
-        "src/semantic/resolve_types_initializers.elisa:393",
-        "src/semantic/resolve_types_initializers.elisa:428",
-        "src/semantic/resolve_types_initializers.elisa:430"
+        "src/semantic/resolve_types_initializers.elisa:467",
+        "src/semantic/resolve_types_initializers.elisa:501",
+        "src/semantic/resolve_types_initializers.elisa:503"
       ]
     },
     {
@@ -4401,7 +4531,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/check_pointer_erasure_cast.elisa:271"
+        "src/semantic/check_pointer_erasure_cast.elisa:285"
       ]
     },
     {
@@ -4440,7 +4570,7 @@
         "src/semantic/check_abstract_effects.elisa:366",
         "src/semantic/check_default_param_ref.elisa:13",
         "src/semantic/check_where_scope.elisa:114",
-        "src/semantic/resolve_expr_walk.elisa:417"
+        "src/semantic/resolve_expr_walk.elisa:438"
       ]
     },
     {
@@ -4448,7 +4578,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/check_pointer_erasure_cast.elisa:291"
+        "src/semantic/check_pointer_erasure_cast.elisa:305"
       ]
     },
     {
@@ -4483,11 +4613,12 @@
     },
     {
       "kind": "UngrantedPointerCast",
-      "construction_sites": 2,
+      "construction_sites": 3,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/check_pointer_erasure_cast.elisa:314",
-        "src/semantic/check_pointer_erasure_cast.elisa:335"
+        "src/semantic/check_pointer_erasure_cast.elisa:339",
+        "src/semantic/check_pointer_erasure_cast.elisa:344",
+        "src/semantic/check_pointer_erasure_cast.elisa:365"
       ]
     },
     {
@@ -4495,7 +4626,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/check_uninitialized_zeroed.elisa:911"
+        "src/semantic/check_uninitialized_zeroed.elisa:913"
       ]
     },
     {
@@ -4517,7 +4648,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_expr.elisa:238"
+        "src/semantic/resolve_expr.elisa:242"
       ]
     },
     {
@@ -4595,7 +4726,7 @@
       "construction_sites": 2,
       "explicit_position_sites": 1,
       "default_position_sites": [
-        "src/semantic/resolve_expr_walk.elisa:342"
+        "src/semantic/resolve_expr_walk.elisa:362"
       ]
     },
     {
@@ -4603,7 +4734,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_flow.elisa:153"
+        "src/semantic/resolve_flow.elisa:158"
       ]
     },
     {
@@ -4655,7 +4786,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_mutability.elisa:581"
+        "src/semantic/resolve_mutability.elisa:674"
       ]
     },
     {
@@ -4680,8 +4811,8 @@
     },
     {
       "kind": "ValueBlockMutation",
-      "construction_sites": 3,
-      "explicit_position_sites": 3,
+      "construction_sites": 4,
+      "explicit_position_sites": 4,
       "default_position_sites": []
     },
     {
@@ -4689,8 +4820,8 @@
       "construction_sites": 2,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_enums.elisa:470",
-        "src/semantic/resolve_expr_walk.elisa:320"
+        "src/semantic/resolve_enums.elisa:473",
+        "src/semantic/resolve_expr_walk.elisa:340"
       ]
     },
     {

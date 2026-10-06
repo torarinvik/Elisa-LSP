@@ -1,6 +1,6 @@
 # Frontend adapter contract
 
-The adapter contract is **version 13**. `frontend_contract_version()` in
+The adapter contract is **version 15**. `frontend_contract_version()` in
 `src/frontend_adapter.elisa` is the runtime identifier exposed by the server
 status probe and compiled by `test/frontend_contract_test.sh`. Bump it whenever
 the frontend operation surface, result shape, interpretation, or ownership
@@ -23,16 +23,36 @@ concrete span against the accepted source and uses it directly; only these
 zero-span sentinel rows enter the conservative `(line, name)` fallback, which
 pairs candidates only when counts and roles are unambiguous.
 This removes traversal-order pairing for ordinary parameter/local references,
-including same-line shadow initializers. Pattern binders, interpolation rows,
-and other compiler constructs that still lack occurrence records or physical
-positions remain explicit follow-up work.
+including same-line shadow initializers. Exact nested f-string parameter
+identity is covered end to end by definition, references, and rename fixtures
+(`test/fstring_semtokens_test.sh`, `test/rename_test.sh`). Pattern binders and
+other compiler constructs that still lack occurrence records or physical
+positions remain explicit follow-up work; sentinel rows continue to use only
+the conservative correlation described above.
+
+The frontend also retains `BindingDeclaredType` rows for annotated parameters
+and locals. Version 14 exposes their count, exact `BindingId` owner/serial, and
+the source position of the AST annotation through named adapter accessors.
+`frontend_table_valid` accepts a missing annotation span only as the frontend's
+absent-position sentinel; every concrete annotation and declaration span must
+remain within the accepted source. The hover provider serializes bounded exact
+source slices keyed by `BindingId`, so same-spelling shadowed variables keep
+their own declarations. These are explicit annotations, not inferred types;
+AST/table views remain job-local and only owned bytes cross into document
+storage.
+
+Version 15 also requires `enum_variant_module` to remain parallel with the
+variant owner/name arrays. The LSP uses `(owner, module)` to decide whether a
+leading-dot variant spelling has one safe registry identity; a repeated name
+across owners or modules, or a colliding ordinary declaration, remains
+unclassified without an exact compiler occurrence target.
 
 | Operation | Adapter boundary and result | Ownership and lifetime |
 | --- | --- | --- |
 | Lex | `tokenize_frontend_source(source, source_len)` calls the expanded-unit lexer and returns `LspFrontendTokenBatch` with parser tokens and comment tokens. | The batch descriptors and backing arrays belong to the current analysis-job region. Token/comment text is represented by spans into the source. Keep source and batch alive together through parsing, queries, and serialization; do not store either descriptor or borrowed text in the session document store. |
 | Parse | `frontend_parser_parse_file(source, tokens)` returns `Ast::File`, including parser errors and recovery nodes. | The file belongs to the current job. It may refer to the source and token stream; keep both alive through semantic analysis and every adapter query. Parser errors are part of the result even when recovery produced usable declarations. |
 | Analyze | `Semantic::check(file)` returns `Semantic::SymbolTable`, including compiler diagnostics and the semantic side tables consumed by the adapter. In the current frontend, each `Symbol.id` is a `DeclId` equal to that symbol's row index in this table. | The table is job-local and is consumed while its source, token batch, and AST remain alive. Treat all table arrays and any views into them as borrowed from this job; never retain frontend pointers or container descriptors in `LspDocument`. A declaration ID is table-local and expires with this analysis result; it is not a cross-file or cross-version identity. |
-| Query | Named `frontend_*` accessors read symbol, occurrence, enum-variant owner/name, definition-edge, and diagnostic facts from a validated symbol table. The enum variant arrays must have equal lengths and contain nonempty owner and name views. | Scalar results are copied values. Returned `sview` values and source positions are borrowed from the source or table and may be used only during the same job. Copy bytes into an owned result before the job ends. |
+| Query | Named `frontend_*` accessors read symbol, occurrence, enum-variant owner/name/module, exact BindingId-keyed declared type spans, definition-edge, and diagnostic facts from a validated symbol table. The three enum variant arrays must have equal lengths; owner and name views must be nonempty. | Scalar results are copied values. Returned `sview` values and source positions are borrowed from the source or table and may be used only during the same job. Copy bytes into an owned result before the job ends. |
 | Snapshot projection | `LspFrontendAnalysisSnapshot` groups the contract version, source length, token/comment batch, recovered `Ast::File`, `Semantic::SymbolTable`, symbol and diagnostic arrays, occurrence positions, and a `Complete` / `Recovered` / `Rejected` state. The worker builds semantic tokens, symbols, hover/navigation/signature indexes, and diagnostics from that value before serializing the result packet. | The record is a job-local shallow projection; it does not extend the lifetime of its source, token, AST, or table owners. The packet owns serialized bytes and scalar snapshot identity. The parent validates identity, completeness, payload shape, and spans before copying cache bytes into document-store storage. No AST, table, token, comment, or borrowed view crosses the process boundary. |
 
 Completeness is explicit and has two gates. `Complete` means the parser

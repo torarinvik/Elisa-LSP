@@ -45,9 +45,19 @@ def typed(value: u32, real: f64, flag: bool, label: dstr, glyph: char) -> i64:
 def called() -> i64:
     return 1
 
+def reference_signature(ref_source: i64&) -> i64:
+    return ref_source
+
+def borrow_locally(input: i64) -> void:
+    reference: i64& = &input
+    return
+
+def and_value(a: i64, b: i64) -> i64:
+    return a & b
+
 @inline
 def annotated(x: i64) -> i64:
-    return fn(y: i64) => y
+    return fn(y: i64) -> i64 => y
 
 def lambda_type() -> fn(i64) -> i64:
     return fn(z: i64) => z
@@ -188,6 +198,10 @@ expect("def typed", "u32", "elisa.type.int.unsigned")
 expect("def typed", "value", "elisa.bind.param")
 expect("def typed", "bool", "elisa.type.scalar")
 expect("return called", "called", "elisa.fn.use")
+expect("def reference_signature", "&", "elisa.mem.qualifier")
+expect("reference: i64& = &input", "&", "elisa.mem.qualifier", occurrence=0)
+expect("reference: i64& = &input", "&", "elisa.mem.qualifier", occurrence=1)
+expect("return a & b", "&", "elisa.op.bitwise")
 expect("def family", "family", "elisa.fn.def")
 expect("const Limit", "=", "elisa.op.assign")
 expect("# family comment", "# family comment", "elisa.comment")

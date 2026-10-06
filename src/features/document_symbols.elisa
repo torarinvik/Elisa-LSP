@@ -14,11 +14,12 @@
 # - The enclosing `range` extends over the indentation block opened by the
 #   declaration. This is a source-coordinate projection, not a replacement
 #   for compiler declaration extents. It is used for containment only when a
-#   module row and a child row have the compiler's source-order evidence.
+#   parent and child row have source-order and indentation evidence.
 # - Hierarchical output attaches source-ordered named rows to the nearest
-#   enclosing module row. Struct fields and enum variants remain omitted:
-#   current semantic registries expose their names but no declaration lines or
-#   stable identities, so emitting them would create un-navigable children.
+#   enclosing declaration block. Struct fields and enum variants remain
+#   omitted: current semantic registries expose their names but no declaration
+#   lines or stable identities, so emitting them would create un-navigable
+#   children.
 # - `Unknown` kinds are omitted rather than guessed at.
 # Shape follows the session: hierarchical clients get `DocumentSymbol`,
 # others get `SymbolInformation` (both spec-legal). Kinds clamp to the
@@ -33,7 +34,7 @@ struct DocSymbolEntry:
     name_start: usize
     name_end: usize
     parent: i64
-    module: bool
+    container: bool
     name_exact: bool
 
 
@@ -291,15 +292,16 @@ def build_symbols_body(uri: sview, table: Semantic::SymbolTable, tokens: darray[
                     name_end: mutable usize = 0
                     name_exact: bool = docsym_name_span(name, category, source_line, symbol_name_position(table, i), tokens, src, src_len, name_start, name_end)
                     parent: mutable i64 = -1
+                    container: bool = category == SYMBOL_KIND_MODULE or category == SYMBOL_KIND_STRUCT or category == SYMBOL_KIND_ENUM or category == SYMBOL_KIND_FUNCTION or category == SYMBOL_KIND_EXTERN
                     if hier:
                         j: mutable i64 = entries.count.i64() - 1
                         while j >= 0:
                             candidate: DocSymbolEntry = entries[j.usize()]
-                            if candidate.module and candidate.line < line0 and line0 <= candidate.end_line and indent[line0.usize()] >= 0 and indent[candidate.line.usize()] >= 0 and indent[line0.usize()] > indent[candidate.line.usize()]:
+                            if candidate.container and candidate.line < line0 and line0 <= candidate.end_line and indent[line0.usize()] >= 0 and indent[candidate.line.usize()] >= 0 and indent[line0.usize()] > indent[candidate.line.usize()]:
                                 parent <- j
                                 break
                             j <- j - 1
-                    entries.push(clone[DocSymbolEntry](DocSymbolEntry{name: name, kind: kind, module: category == SYMBOL_KIND_MODULE, line: line0, end_line: docsym_block_end(indent, nlines, line0), name_start: name_start, name_end: name_end, name_exact: name_exact, parent: parent}))
+                    entries.push(clone[DocSymbolEntry](DocSymbolEntry{name: name, kind: kind, container: container, line: line0, end_line: docsym_block_end(indent, nlines, line0), name_start: name_start, name_end: name_end, name_exact: name_exact, parent: parent}))
             i <- i + 1
         body: mutable darray[u8] = []
         body.push_str("[")

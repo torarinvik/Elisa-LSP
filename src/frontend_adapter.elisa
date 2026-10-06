@@ -64,11 +64,12 @@ struct FrontendOccurrenceCandidate:
     binding_role: i64
     next: i64
 
-# The frontend contract revision this adapter is written against. Version 13
-# accepts the compiler's zero-span, source-line-only occurrence sentinel while
-# keeping concrete spans exact and bounded; v12 added enum-variant accessors.
+# The frontend contract revision this adapter is written against. Version 15
+# also validates enum variant module ownership alongside the owner/name rows;
+# v14 exposes binding-declared type expressions by exact BindingId and v13
+# accepts the compiler's zero-span, source-line-only occurrence sentinel.
 def frontend_contract_version() -> i64:
-    return 13
+    return 15
 
 
 enum LspFrontendCompleteness:
@@ -490,6 +491,7 @@ def frontend_table_valid(table: Semantic::SymbolTable&, src: u8&, source_len: us
     return false if table.ref_line.count != table.ref_binding_ids.count
     return false if table.ref_line.count != table.ref_pos.count
     return false if table.enum_variant_owner.count != table.enum_variant_name.count
+    return false if table.enum_variant_owner.count != table.enum_variant_module.count
     return false if table.type_alias_name.count != table.type_alias_target.count or table.type_alias_name.count != table.type_alias_module.count
     i: mutable usize = 0
     while i < table.ref_kind.count:
@@ -515,6 +517,13 @@ def frontend_table_valid(table: Semantic::SymbolTable&, src: u8&, source_len: us
         return false if sview_len(table.symbols[edge.declaration_id.value.usize()].name) == 0
         return false if not frontend_span_valid(edge.pos, source_len, false)
         i <- i + 1
+    i <- 0
+    while i < table.binding_declared_types.count:
+        declared: Semantic::BindingDeclaredType = table.binding_declared_types[i]
+        return false if not frontend_span_valid(declared.pos, source_len, true)
+        annotation_pos: Ast::Pos = Ast::expr_pos(declared.annotation)
+        return false if not frontend_span_valid(annotation_pos, source_len, true)
+        i <- i + 1
     return true
 
 
@@ -527,6 +536,46 @@ def adapter_name_hash(name: sview) -> u64:
         hash <- (hash ^ sview_at(name, i).u64()) * 1099511628211
         i <- i + 1
     return hash
+
+
+# Build a collision-safe hash-chain index for the compiler's immutable-const
+# name set. The power-of-two bucket count stays at least twice the row count;
+# entries that share a bucket are always compared by exact bytes at lookup.
+def immutable_const_index_build(table: Semantic::SymbolTable&, heads: mutable dict[u64, i64]&, next: mutable darray[i64]&, mask_out: mutable u64&) -> void can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        heads <- {}
+        next <- []
+        bucket_count: mutable usize = 16
+        target_count: usize = table.immutable_const_names.count * 2
+        while bucket_count < target_count:
+            bucket_count <- bucket_count * 2
+        mask_out <- (bucket_count - 1).u64()
+        i: mutable usize = 0
+        while i < table.immutable_const_names.count:
+            next.push(-1)
+            i <- i + 1
+        i <- 0
+        while i < table.immutable_const_names.count:
+            name: sview = table.immutable_const_names[i]
+            if name.len > 0:
+                key: u64 = adapter_name_hash(name) & mask_out
+                previous: mutable i64 = -1
+                previous <- head if heads.get(key) is head
+                next[i] <- previous
+                heads <- heads.put(key, i.i64())
+            i <- i + 1
+
+
+def immutable_const_named_indexed(table: Semantic::SymbolTable&, heads: dict[u64, i64]&, next: darray[i64]&, mask: u64, name: sview) -> bool:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    key: u64 = adapter_name_hash(name) & mask
+    if heads.get(key) is head:
+        current: mutable i64 = head
+        while current >= 0:
+            index: usize = current.usize()
+            return true if index < table.immutable_const_names.count and string_views_eq(table.immutable_const_names[index], name) != 0
+            current <- next[index]
+    return false
 
 
 # Iterate the file's declaration symbols without exposing the storage field.
@@ -597,17 +646,6 @@ def symbol_return_type(table: Semantic::SymbolTable&, index: usize) -> sview:
 def symbol_name_position(table: Semantic::SymbolTable&, index: usize) -> Ast::Pos:
     lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
     return table.symbols[index].name_pos
-
-
-# The compiler records immutable `const` names as a separate semantic set. Keep
-# this fact behind the adapter so semantic-token modifiers do not depend on the
-# frontend's parallel-array layout. A missing name is deliberately false: the
-# highlighter must never guess readonly from spelling alone.
-def immutable_const_named(table: Semantic::SymbolTable&, name: sview) -> bool:
-    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
-    for immutable_name in table.immutable_const_names:
-        return true if string_views_eq(immutable_name, name) != 0
-    return false
 
 
 # Index of the first declaration whose name matches exactly, or -1. A scan is
@@ -745,7 +783,7 @@ def enum_variant_index_build(table: Semantic::SymbolTable&, name_heads: mutable 
 
 # H04 symbol index: hash-chain file symbols by name. `symbol_index_of`'s linear
 # scan is the reference; this makes a repeated unknown/type lookup O(1) average.
-def symbol_index_build(table: Semantic::SymbolTable&, name_heads: mutable dict[u64, i64]&, sym_next: mutable darray[i64]&) -> void:
+def symbol_index_build(table: Semantic::SymbolTable&, name_heads: mutable dict[u64, i64]&, sym_next: mutable darray[i64]&, definition_reference_heads: mutable dict[i64, i64]&, definition_reference_next: mutable darray[i64]&) -> void:
     can Memory.Allocate, Abort.Panic:
         i: mutable usize = 0
         while i < table.symbols.count:
@@ -760,6 +798,24 @@ def symbol_index_build(table: Semantic::SymbolTable&, name_heads: mutable dict[u
                 previous <- head if name_heads.get(key) is head
                 sym_next[i] <- previous
                 name_heads <- name_heads.put(key, i.i64())
+            i <- i + 1
+        # Resolved function-use edges are sparse, exact source occurrences.
+        # Index them by byte offset once with the name index so semantic-token
+        # classification can use the resolver's target without a per-token scan.
+        reference_count: usize = definition_reference_count(table)
+        i <- 0
+        while i < reference_count:
+            definition_reference_next.push(-1)
+            i <- i + 1
+        i <- 0
+        while i < reference_count:
+            pos: Ast::Pos = definition_reference_position(table, i)
+            if pos.end_offset > pos.offset:
+                key: i64 = pos.offset.i64()
+                previous: mutable i64 = -1
+                previous <- head if definition_reference_heads.get(key) is head
+                definition_reference_next[i] <- previous
+                definition_reference_heads <- definition_reference_heads.put(key, i.i64())
             i <- i + 1
 
 
@@ -841,6 +897,35 @@ def enum_variant_anywhere_indexed(table: Semantic::SymbolTable&, name_heads: dic
             return true if string_views_eq(table.enum_variant_name[index], name) != 0
             current <- name_next[index]
     return false
+
+
+# Return 0 when the name is absent, 1 when all registry rows identify one
+# owner/module pair with no ordinary-symbol collision, and 2 when the bare
+# spelling is ambiguous. Variant-name records do not currently carry exact
+# occurrence targets, so a token without an owner cannot safely choose one of
+# several enum declarations.
+def enum_variant_name_resolution_indexed(table: Semantic::SymbolTable&, name_heads: dict[u64, i64]&, name_next: darray[i64]&, symbol_heads: dict[u64, i64]&, symbol_next: darray[i64]&, name: sview) -> i64:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    key: u64 = adapter_name_hash(name)
+    found: mutable bool = false
+    first_owner: mutable sview = sview("", 0, 0)
+    first_module: mutable sview = sview("", 0, 0)
+    if name_heads.get(key) is head:
+        current: mutable i64 = head
+        while current >= 0:
+            index: usize = current.usize()
+            if string_views_eq(table.enum_variant_name[index], name) != 0:
+                return 2 if index >= table.enum_variant_owner.count or index >= table.enum_variant_module.count
+                if not found:
+                    first_owner <- table.enum_variant_owner[index]
+                    first_module <- table.enum_variant_module[index]
+                    found <- true
+                else:
+                    return 2 if string_views_eq(first_owner, table.enum_variant_owner[index]) == 0 or string_views_eq(first_module, table.enum_variant_module[index]) == 0
+            current <- name_next[index]
+    return 0 if not found
+    return 2 if symbol_index_of_indexed(table, symbol_heads, symbol_next, name) >= 0
+    return 1
 
 
 # The frontend's located findings. Wording/severity stay frontend-owned.
@@ -934,6 +1019,35 @@ def occurrence_binding_serial(table: Semantic::SymbolTable&, index: usize) -> u6
     return table.ref_binding_ids[index].serial
 
 
+# Exact declared type syntax attached to a lexical BindingId. The returned
+# AST span is source-backed and job-local; providers must copy it before the
+# frontend analysis region ends. Missing annotations return the frontend's
+# absent-span sentinel and are not inferred here.
+def binding_declared_type_count(table: Semantic::SymbolTable&) -> usize:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    return table.binding_declared_types.count
+
+
+def binding_declared_type_owner(table: Semantic::SymbolTable&, index: usize) -> u32:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    return table.binding_declared_types[index].binding_id.owner.value
+
+
+def binding_declared_type_serial(table: Semantic::SymbolTable&, index: usize) -> u64:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    return table.binding_declared_types[index].binding_id.serial
+
+
+def binding_declared_type_declaration_position(table: Semantic::SymbolTable&, index: usize) -> Ast::Pos:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    return table.binding_declared_types[index].pos
+
+
+def binding_declared_type_position(table: Semantic::SymbolTable&, index: usize) -> Ast::Pos:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    return Ast::expr_pos(table.binding_declared_types[index].annotation)
+
+
 def occurrence_kind_index(table: Semantic::SymbolTable&, index: usize) -> i64:
     lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
     return table.ref_kind[index].i64()
@@ -969,3 +1083,24 @@ def definition_reference_target_name(table: Semantic::SymbolTable&, index: usize
     lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
     target: u32 = table.definition_references[index].declaration_id.value
     return table.symbols[target.usize()].name
+
+
+# Return the target declaration row for a resolver-produced edge at this exact
+# token span. Multiple distinct targets at one position are treated as
+# ambiguous; spelling and call shape alone never manufacture a target.
+def definition_reference_target_index_at(table: Semantic::SymbolTable&, position_heads: dict[i64, i64]&, reference_next: darray[i64]&, offset: u32, length: u32, name: sview) -> i64:
+    lsp_adapter_query_calls <- lsp_adapter_query_calls + 1
+    if position_heads.get(offset.i64()) is head:
+        current: mutable i64 = head
+        target: mutable i64 = -1
+        while current >= 0:
+            index: usize = current.usize()
+            pos: Ast::Pos = definition_reference_position(table, index)
+            if pos.offset == offset and pos.end_offset > pos.offset and pos.end_offset - pos.offset == length and string_views_eq(definition_reference_target_name(table, index), name) != 0:
+                candidate: i64 = definition_reference_symbol_index(table, index).i64()
+                return -1 if candidate >= symbol_count(table).i64()
+                return -1 if target >= 0 and target != candidate
+                target <- candidate
+            current <- reference_next[index]
+        return target
+    return -1

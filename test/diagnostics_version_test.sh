@@ -50,6 +50,15 @@ def change_doc(client, uri, text, version):
     })
 
 
+def wait_diagnostics(client, uri, version=None):
+    return client.wait_notification(
+        "textDocument/publishDiagnostics",
+        timeout=60,
+        predicate=lambda n: n.get("params", {}).get("uri") == uri
+        and (version is None or n["params"].get("version") == version),
+    )
+
+
 GOOD = "def one() -> void:\n    x: i64 = 1\n"
 BAD = "def broken() -> void:\n    z: bool = 3\n"
 
@@ -60,8 +69,14 @@ uri = "file:///ver.elisa"
 
 def version_publication_case(client):
     open_doc(client, uri, BAD, 1)
+    wait_diagnostics(client, uri, 1)
     open_doc(client, uri, BAD, 1)
+    duplicate_tokens = client.request("textDocument/semanticTokens/full", {
+        "textDocument": {"uri": uri},
+    })
+    assert "result" in duplicate_tokens, duplicate_tokens
     change_doc(client, uri, GOOD, 2)
+    wait_diagnostics(client, uri, 2)
 
 
 ps = pubs(run_session(version_publication_case), uri)
@@ -77,6 +92,7 @@ curi = "file:///cap.elisa"
 
 def flood_control_case(client):
     open_doc(client, curi, big_text, 1)
+    wait_diagnostics(client, curi, 1)
 
 
 ps = pubs(run_session(flood_control_case), curi)

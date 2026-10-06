@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# F04: exact same-document highlights for resolver-backed top-level functions.
+# F04: exact same-document highlights for resolver-backed symbols/bindings.
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 SRV="$ROOT/build/elisa-lsp"
@@ -28,6 +28,11 @@ source = (
     "        value: i64 = p + value\n"
     "        return value\n"
     "    return value\n"
+    "def write_refs(seed: i64) -> i64:\n"
+    "    total: mutable i64 = seed\n"
+    "    total <- total + seed\n"
+    "    total <- seed\n"
+    "    return total\n"
 )
 lines = source.splitlines()
 
@@ -102,33 +107,52 @@ def run(encoding):
         from_second_call = highlights(3, "target", occurrence=1)
         assert from_second_call.get("result") == expected, from_second_call
 
-        # Exact BindingIds also drive parameter/local highlights. The current
-        # frontend does not classify reads versus writes, so these omit kind.
+        # Exact BindingIds drive parameter/local highlights. Declarations are
+        # Text, uses are Read, and direct `<-` targets are Write.
         parameter_binding = [
-            expected_location(4, "p", encoding, kind=None),
-            expected_location(5, "p", encoding, kind=None),
-            expected_location(6, "p", encoding, occurrence=0, kind=None),
-            expected_location(6, "p", encoding, occurrence=1, kind=None),
+            expected_location(4, "p", encoding, kind=1),
+            expected_location(5, "p", encoding, kind=2),
+            expected_location(6, "p", encoding, occurrence=0, kind=2),
+            expected_location(6, "p", encoding, occurrence=1, kind=2),
         ]
         got_parameter_binding = highlights(6, "p", occurrence=1, inside=0)
         assert got_parameter_binding.get("result") == parameter_binding, got_parameter_binding
         local_binding = [
-            expected_location(5, "value", encoding, kind=None),
-            expected_location(6, "value", encoding, kind=None),
+            expected_location(5, "value", encoding, kind=1),
+            expected_location(6, "value", encoding, kind=2),
         ]
         assert highlights(6, "value").get("result") == local_binding
         # Same-spelling nested locals remain distinct resolver identities.
         inner_value = [
-            expected_location(10, "value", encoding, kind=None),
-            expected_location(11, "value", encoding, kind=None),
+            expected_location(10, "value", encoding, kind=1),
+            expected_location(11, "value", encoding, kind=2),
         ]
         assert highlights(11, "value").get("result") == inner_value
         outer_value = [
-            expected_location(8, "value", encoding, kind=None),
-            expected_location(10, "value", encoding, occurrence=1, kind=None),
-            expected_location(12, "value", encoding, kind=None),
+            expected_location(8, "value", encoding, kind=1),
+            expected_location(10, "value", encoding, occurrence=1, kind=2),
+            expected_location(12, "value", encoding, kind=2),
         ]
         assert highlights(12, "value").get("result") == outer_value
+
+        # The exact left-hand occurrence of direct `<-` is a Write, while its
+        # right-hand occurrence remains a Read. Initializers and returns read.
+        expected_total = [
+            expected_location(14, "total", encoding, kind=1),
+            expected_location(15, "total", encoding, occurrence=0, kind=3),
+            expected_location(15, "total", encoding, occurrence=1, kind=2),
+            expected_location(16, "total", encoding, kind=3),
+            expected_location(17, "total", encoding, kind=2),
+        ]
+        direct_write = highlights(15, "total", occurrence=0, inside=0)
+        assert direct_write.get("result") == expected_total, direct_write
+        expected_seed = [
+            expected_location(13, "seed", encoding, kind=1),
+            expected_location(14, "seed", encoding, kind=2),
+            expected_location(15, "seed", encoding, kind=2),
+            expected_location(16, "seed", encoding, kind=2),
+        ]
+        assert highlights(16, "seed").get("result") == expected_seed
 
         # Other symbols, punctuation, token-end positions, missing documents,
         # and out-of-range positions stay empty; no spelling fallback leaks in.
@@ -176,5 +200,5 @@ def run(encoding):
 utf16_start = run("utf-16")
 utf8_start = run("utf-8")
 assert utf8_start == utf16_start + 1, (utf16_start, utf8_start)
-print("document highlights OK: exact resolver spans, Text/Read kinds, UTF-8/UTF-16, validation and unsupported cases")
+print("document highlights OK: exact resolver spans, declaration/read/direct-write kinds, UTF-8/UTF-16, validation and unsupported cases")
 PY

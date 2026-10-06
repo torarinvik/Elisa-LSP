@@ -13,6 +13,8 @@ using Bytes
 
 const SIGNATURE_REC: u8 = 30
 const SIGNATURE_FS: u8 = 31
+const SIGNATURE_HOVER_HEADER_LIMIT: usize = 2048
+const SIGNATURE_HOVER_TOTAL_LIMIT: usize = 262144
 
 
 def signature_is_open(kind: Lexer::TokenKind) -> bool:
@@ -59,6 +61,78 @@ def signature_token_at_offset(tokens: darray[Lexer::Token], offset: u32, found: 
     return false if lo >= tokens.count or tokens[lo].start != offset
     found <- lo
     return true
+
+
+# Find the exact source header for a unique function declaration. The AST and
+# resolver establish the declaration identity; lexer tokens locate its closing
+# top-level colon without being confused by colons in parameter types/defaults.
+def signature_header_source_span(tokens: darray[Lexer::Token], src: u8&, src_len: usize, name: sview, name_pos: Ast::Pos, start_out: mutable usize&, end_out: mutable usize&) -> bool:
+    return false if not signature_name_span_matches(src, src_len, name, name_pos)
+    name_index: mutable usize = 0
+    return false if not signature_token_at_offset(tokens, name_pos.offset, name_index)
+    name_token: Lexer::Token = tokens[name_index]
+    return false if name_token.kind != Lexer::TokenKind.Ident or name_token.length != name_pos.end_offset - name_pos.offset
+    def_index: mutable usize = tokens.count
+    scan_back: mutable usize = name_index
+    while scan_back > 0:
+        scan_back <- scan_back - 1
+        candidate: Lexer::Token = tokens[scan_back]
+        if candidate.kind == Lexer::TokenKind.Def and candidate.line == name_pos.line:
+            def_index <- scan_back
+            break
+    return false if def_index >= tokens.count
+    header_start: usize = tokens[def_index].start.usize()
+    depth: mutable i64 = 0
+    cursor: mutable usize = name_index + 1
+    while cursor < tokens.count:
+        token: Lexer::Token = tokens[cursor]
+        if signature_is_open(token.kind):
+            depth <- depth + 1
+        elif token.kind == Lexer::TokenKind.RParen or token.kind == Lexer::TokenKind.RBracket or token.kind == Lexer::TokenKind.RBrace:
+            return false if depth <= 0
+            depth <- depth - 1
+        elif token.kind == Lexer::TokenKind.Colon and depth == 0:
+            header_end: usize = (token.start + token.length).usize()
+            return false if header_end <= header_start or header_end > src_len
+            start_out <- header_start
+            end_out <- header_end
+            return true
+        elif token.kind == Lexer::TokenKind.Eof:
+            return false
+        cursor <- cursor + 1
+    return false
+
+
+def signature_hex_header(src: u8&, start: usize, count: usize) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        output: mutable darray[u8] = []
+        digits: sview = "0123456789abcdef"
+        i: mutable usize = 0
+        while i < count:
+            byte: u8 = src[start + i]
+            output.push(sview_at(digits, (byte >> 4).usize()))
+            output.push(sview_at(digits, (byte & 15).usize()))
+            i <- i + 1
+        return output
+
+
+# Return the hex-encoded exact signature header for a retained semantic row.
+# Empty/missing fields mean the declaration was outside the bounded display
+# cache, never that a partial signature should be guessed.
+def signature_source_hex_for_row(blob: sview, declaration_id: i64, out: mutable sview&) -> bool:
+    cursor: mutable usize = 0
+    kind: mutable u8 = 0
+    record_start: mutable usize = 0
+    record_end: mutable usize = 0
+    while signature_record_next(blob, cursor, kind, record_start, record_end):
+        continue if kind != 83
+        row: i64 = signature_integer_field(blob, record_start, record_end, 0)
+        continue if row != declaration_id
+        arity: i64 = signature_integer_field(blob, record_start, record_end, 2)
+        return false if arity < 0 or arity > 4096
+        return false if not signature_record_field(blob, record_start, record_end, arity.usize() + 3, out)
+        return out.len > 0
+    return false
 
 
 # Best-effort target for one unmatched call in a broken source snapshot. The
@@ -125,6 +199,7 @@ def build_signature_help_index(file: Ast::File&, table: Semantic::SymbolTable&, 
     can Memory.Allocate, Abort.Panic:
         out: mutable darray[u8] = []
         signature_rows: mutable darray[i64] = []
+        retained_hover_header_bytes: mutable usize = 0
         for declaration in file.top_decls:
             if declaration is Ast::Decl.Func(function_name, params, _, _, _, _, declaration_pos):
                 row: mutable i64 = -1
@@ -153,6 +228,15 @@ def build_signature_help_index(file: Ast::File&, table: Semantic::SymbolTable&, 
                             signature_push_int_field(out, params.count.i64())
                             for parameter in params:
                                 signature_push_field(out, parameter.name)
+                            header_start: mutable usize = 0
+                            header_end: mutable usize = 0
+                            header_hex: mutable darray[u8] = []
+                            if signature_header_source_span(tokens, src, src_len, function_name, symbol_name_position(table, row.usize()), header_start, header_end):
+                                header_bytes: usize = header_end - header_start
+                                if header_bytes <= SIGNATURE_HOVER_HEADER_LIMIT and retained_hover_header_bytes <= SIGNATURE_HOVER_TOTAL_LIMIT - header_bytes:
+                                    header_hex <- signature_hex_header(src, header_start, header_bytes)
+                                    retained_hover_header_bytes <- retained_hover_header_bytes + header_bytes
+                            signature_push_field(out, bytes_view_range_ref(header_hex, 0, header_hex.count) if header_hex.count > 0 else sview("", 0, 0))
 
         # Map resolver edges to the exact identifier token followed by an opening
         # parenthesis. Declaration self-edges are excluded by exact target span;

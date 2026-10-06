@@ -38,6 +38,16 @@ with LspSession(srv, request_timeout=30, teardown_timeout=5) as client:
             },
         )
 
+    # Hold each query until its accepted snapshot has been analyzed. The
+    # workers are serialized, so checking stats immediately after the opens
+    # would inspect only Pending snapshots before any derived cache exists.
+    for index in range(8):
+        response = client.request("textDocument/semanticTokens/full", {
+            "textDocument": {"uri": f"file:///cache-eviction-{index}.elisa"},
+        })
+        token_result = response.get("result")
+        assert isinstance(token_result, dict) and isinstance(token_result.get("data"), list), response
+
     stats = client.request("$/elisa/stats", {})["result"]
     cache = stats["budgets"]["cache"]
     assert cache["aggregate_limit_bytes"] == limit, cache

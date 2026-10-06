@@ -51,9 +51,10 @@ extern elisa_lsp_write_timeout_millis() -> i64 can[Console]
 extern elisa_lsp_analysis_worker_begin(timeout_millis: i64) -> int can[Console]
 extern elisa_lsp_analysis_worker_write(buf: void&, count: usize) -> isize can[Console]
 extern elisa_lsp_analysis_worker_child_exit(status: int) -> void can[Console]
-extern elisa_lsp_analysis_worker_read(buf: void&, count: usize) -> isize can[Console]
-extern elisa_lsp_analysis_worker_finish() -> int can[Console]
+extern elisa_lsp_analysis_worker_read_available(buf: void&, count: usize) -> isize can[Console]
+extern elisa_lsp_analysis_worker_try_finish() -> int can[Console]
 extern elisa_lsp_analysis_worker_abort() -> void can[Console]
+extern elisa_lsp_analysis_worker_wait_event(timeout_millis: int) -> int can[Console]
 extern elisa_lsp_analysis_timeout_millis() -> i64 can[Console]
 extern elisa_lsp_validate_provider_ranges() -> int can[Console]
 extern elisa_lsp_log_level() -> i64 can[Console]
@@ -64,7 +65,70 @@ extern elisa_lsp_log_max_bytes() -> i64 can[Console]
 # lifecycle phases explicit so protocol gates cannot drift between handlers.
 enum LspMessageStep:
     Next
+    WaitInput
     Stop(status: i64)
+
+
+enum LspFramePhase:
+    Header
+    Body
+
+
+# Persistent transport state. Header and body bytes survive event-loop turns,
+# so a split frame is parsed once as bytes arrive instead of rescanning a
+# growing prefix or blocking until the complete body has been read.
+struct LspFrameDecoder:
+    phase: mutable LspFramePhase
+    active: mutable bool
+    header_line: mutable darray[u8]
+    body: mutable darray[u8]
+    header_bytes: mutable i64
+    header_lines: mutable i64
+    content_length: mutable i64
+    body_remaining: mutable i64
+    content_type_seen: mutable bool
+    content_encoding_seen: mutable bool
+
+
+# Parent-side identity and partial packet state for one foreground analysis.
+# Pending document snapshots live in DocumentLifecycle and coalesce by job id;
+# this record is only the bounded in-flight worker.
+struct LspAnalysisWorkerRuntime:
+    packet: mutable darray[u8]
+    slot: mutable usize
+    source_len: mutable usize
+    job_id: mutable i64
+    generation: mutable i64
+    version: mutable i64
+    uri_hash: mutable i64
+    source_hash: mutable i64
+    active: mutable bool
+    eof_seen: mutable bool
+    utf8: mutable bool
+    symbols_hier: mutable bool
+    related: mutable bool
+
+
+struct LspPendingAnalysisRequest:
+    body_start: mutable usize
+    body_len: mutable usize
+    key_start: mutable usize
+    key_len: mutable usize
+    response_id_start: mutable usize
+    response_id_len: mutable usize
+    slot: mutable usize
+    job_id: mutable i64
+    generation: mutable i64
+    version: mutable i64
+    priority: mutable i64
+    queued_at_ms: mutable i64
+    ready: mutable bool
+
+
+struct LspPendingAnalysisQueue:
+    requests: mutable darray[LspPendingAnalysisRequest]
+    storage: mutable darray[u8]
+    body_bytes: mutable usize
 
 
 # The response boundary uses one validator for every range-bearing provider.
@@ -134,6 +198,7 @@ const MAX_ANALYSIS_TIMEOUT_MS: i64 = 300000
 const TRANSPORT_CHUNK: usize = 8192
 global mutable lsp_transport_output_failed: bool = false
 global mutable lsp_transport_input_failed: bool = false
+global mutable lsp_transport_input_eof: bool = false
 global mutable lsp_transport_write_timeout_ms: i64 = 15000
 global mutable lsp_frontend_validation_failure_logs: i64 = 0
 global mutable lsp_analysis_worker_failure_logs: i64 = 0
@@ -183,6 +248,8 @@ const MAX_RETAINED_LINE_INDEX_ENTRIES: usize = 1048576
 # handlers only record the first termination signal; this converts it to the
 # conventional 128 + signal status after restoring the caller's dispositions.
 def transport_finish(status: i64) -> i64 can[Console]:
+    # Any exit path owns cleanup of the single active child and its pipe.
+    elisa_lsp_analysis_worker_abort() can Console
     signal_number: mutable int = elisa_lsp_pending_termination_signal() can Console
     restored: int = elisa_lsp_restore_termination_handlers() can Console
     if signal_number == 0:
@@ -207,35 +274,11 @@ def transport_fill(buf: mutable darray[u8]&, pos: mutable usize&) -> bool can[Co
     got: isize = elisa_lsp_read_retry(0, (&buf[start]).cast[void&], TRANSPORT_CHUNK) can Console
     if got <= 0:
         lsp_transport_input_failed <- true if got < 0
+        lsp_transport_input_eof <- true if got == 0
         buf.truncate(start)
         return false
     buf.truncate(start + got.usize())
     return true
-
-
-# Read one header line, requiring the caller to verify CRLF. `eof` is set only
-# when the stream ended before LF was seen; `too_long` stops a hostile line at
-# the remaining header budget instead of allowing an unbounded allocation.
-def transport_read_line(buf: mutable darray[u8]&, pos: mutable usize&, eof: mutable bool&, crlf: mutable bool&, max_raw_bytes: i64, too_long: mutable bool&) -> darray[u8] can[Console, Memory.Allocate, Abort.Panic]:
-    out: mutable darray[u8] = []
-    crlf[0] <- false
-    too_long[0] <- false
-    while true:
-        if not transport_fill(buf, pos):
-            eof[0] <- true
-            return out
-        b: u8 = buf[pos[0]]
-        pos[0] <- pos[0] + 1
-        if b == 10:
-            if out.count > 0 and out[out.count - 1] == 13:
-                out.truncate(out.count - 1)
-                crlf[0] <- true
-            return out
-        if out.count.i64() >= max_raw_bytes:
-            too_long[0] <- true
-            return out
-        out.push(b)
-    return out
 
 
 # Header field names use the HTTP token grammar. LSP headers themselves are
@@ -374,78 +417,87 @@ def content_length_of(line: darray[u8]) -> i64 can[Memory.Allocate, Abort.Panic]
     return n
 
 
-# Read one full LSP message body from the shared buffer.
-#   0   clean EOF between messages (nothing buffered)
-#   1   a complete frame was read into `body`
-#   -1  malformed/unsupported header or invalid/missing/oversized length
-#   -2  truncated header (EOF before its CRLF terminator)
-#   -3  truncated body (EOF before all Content-Length bytes arrive)
-#   -4  reserved for other framing failures. Read syscall errors are tracked
-#       separately so the main loop cannot confuse them with clean EOF.
-# A zero-byte body is a complete frame and goes through JSON ParseError.
-def read_message(body: mutable darray[u8]&, buf: mutable darray[u8]&, pos: mutable usize&, max_header_bytes: i64, max_header_lines: i64, max_body_bytes: i64) -> i64 can[Console, Memory.Allocate, Abort.Panic]:
-    content_length: mutable i64 = -1
-    content_type_seen: mutable bool = false
-    content_encoding_seen: mutable bool = false
-    header_bytes: mutable i64 = 0
-    header_lines: mutable i64 = 0
-    first: mutable bool = true
+# Reset all per-frame parser state while keeping bounded darray capacity for
+# reuse by the next frame.
+def frame_decoder_reset(decoder: mutable LspFrameDecoder&) -> void:
+    decoder.phase <- LspFramePhase.Header
+    decoder.active <- false
+    decoder.header_line.truncate(0)
+    decoder.body.truncate(0)
+    decoder.header_bytes <- 0
+    decoder.header_lines <- 0
+    decoder.content_length <- -1
+    decoder.body_remaining <- 0
+    decoder.content_type_seen <- false
+    decoder.content_encoding_seen <- false
+
+
+# Consume only bytes already present in `buf`. Results are 0 for clean EOF,
+# 1 for a complete frame, 2 when more input is needed, and negative for
+# malformed or truncated framing. Header and body progress remains in
+# `decoder` across event-loop turns.
+def frame_decoder_step(body: mutable darray[u8]&, decoder: mutable LspFrameDecoder&, buf: mutable darray[u8]&, pos: mutable usize&, max_header_bytes: i64, max_header_lines: i64, max_body_bytes: i64) -> i64 can[Memory.Allocate, Abort.Panic]:
+    decoder.active <- true
     while true:
-        eof: mutable bool = false
-        crlf: mutable bool = false
-        too_long: mutable bool = false
-        # One extra raw byte allows a terminating CR to be held until LF; the
-        # post-line check applies the exact CRLF-inclusive header budget.
-        line_budget: i64 = max_header_bytes - header_bytes - 1
-        return -1 if line_budget < 0
-        line: darray[u8] = transport_read_line(buf, pos, eof, crlf, line_budget, too_long)
-        return -1 if too_long
-        if eof:
-            # Nothing consumed yet at message start: clean EOF. Otherwise the
-            # header was cut off mid-message.
-            return 0 if first and line.count == 0 else -2
-        first <- false
-        header_bytes <- header_bytes + line.count.i64() + 2
-        header_lines <- header_lines + 1
-        return -1 if not crlf
-        if header_bytes > max_header_bytes or header_lines > max_header_lines:
-            return -1
-        if line.count == 0:
-            break
-        return -1 if not header_line_valid(line)
-        cl: i64 = content_length_of(line)
-        if cl == -2:
-            return -1
-        if cl >= 0:
-            # Conflicting duplicate lengths are ambiguous; identical repeats are
-            # tolerated. A duplicate may not contradict the first.
-            return -1 if content_length >= 0 and content_length != cl
-            content_length <- cl
-        if header_name_is(line, "content-type"):
-            return -1 if content_type_seen or not content_type_valid(line)
-            content_type_seen <- true
-        if header_name_is(line, "content-encoding"):
-            return -1 if content_encoding_seen or not content_encoding_valid(line)
-            content_encoding_seen <- true
-    if content_length < 0:
-        return -1
-    if content_length > max_body_bytes:
-        return -1
-    body.truncate(0)
-    return 1 if content_length == 0
-    remaining: mutable i64 = content_length
-    while remaining > 0:
-        if not transport_fill(buf, pos):
-            return -3
+        if decoder.phase == LspFramePhase.Header:
+            while pos[0] < buf.count and decoder.phase == LspFramePhase.Header:
+                b: u8 = buf[pos[0]]
+                pos[0] <- pos[0] + 1
+                decoder.header_bytes <- decoder.header_bytes + 1
+                return -1 if decoder.header_bytes > max_header_bytes
+                if b == 10:
+                    return -1 if decoder.header_line.count == 0 or decoder.header_line[decoder.header_line.count - 1] != 13
+                    decoder.header_line.truncate(decoder.header_line.count - 1)
+                    decoder.header_lines <- decoder.header_lines + 1
+                    return -1 if decoder.header_lines > max_header_lines
+                    if decoder.header_line.count == 0:
+                        return -1 if decoder.content_length < 0 or decoder.content_length > max_body_bytes
+                        decoder.body_remaining <- decoder.content_length
+                        decoder.phase <- LspFramePhase.Body
+                        if decoder.body_remaining == 0:
+                            body.truncate(0)
+                            frame_decoder_reset(decoder)
+                            return 1
+                    else:
+                        return -1 if not header_line_valid(decoder.header_line)
+                        cl: i64 = content_length_of(decoder.header_line)
+                        return -1 if cl == -2
+                        if cl >= 0:
+                            return -1 if decoder.content_length >= 0 and decoder.content_length != cl
+                            decoder.content_length <- cl
+                        if header_name_is(decoder.header_line, "content-type"):
+                            return -1 if decoder.content_type_seen or not content_type_valid(decoder.header_line)
+                            decoder.content_type_seen <- true
+                        if header_name_is(decoder.header_line, "content-encoding"):
+                            return -1 if decoder.content_encoding_seen or not content_encoding_valid(decoder.header_line)
+                            decoder.content_encoding_seen <- true
+                    decoder.header_line.truncate(0)
+                else:
+                    decoder.header_line.push(b)
+            if decoder.phase == LspFramePhase.Header:
+                return -2 if lsp_transport_input_eof and (decoder.header_bytes > 0 or decoder.header_line.count > 0 or decoder.header_lines > 0)
+                return 0 if lsp_transport_input_eof
+                return 2
         available: i64 = (buf.count - pos[0]).i64()
-        take: i64 = available if available < remaining else remaining
-        i: mutable usize = 0
-        while i < take.usize():
-            body.push(buf[pos[0] + i])
-            i <- i + 1
-        pos[0] <- pos[0] + take.usize()
-        remaining <- remaining - take
-    return 1
+        if available > 0:
+            take: i64 = available if available < decoder.body_remaining else decoder.body_remaining
+            i: mutable usize = 0
+            while i < take.usize():
+                decoder.body.push(buf[pos[0] + i])
+                i <- i + 1
+            pos[0] <- pos[0] + take.usize()
+            decoder.body_remaining <- decoder.body_remaining - take
+        if decoder.body_remaining == 0:
+            body.truncate(0)
+            copy_index: mutable usize = 0
+            while copy_index < decoder.body.count:
+                body.push(decoder.body[copy_index])
+                copy_index <- copy_index + 1
+            frame_decoder_reset(decoder)
+            return 1
+        return -3 if lsp_transport_input_eof
+        return 2
+    return -1
 
 
 # ---- request inspection (Json module) ----------------------------------------------
@@ -1454,6 +1506,28 @@ def method_requires_analysis_snapshot(method: sview) -> bool:
             return false
 
 
+# Hover keeps a lexical fallback when analysis has failed or the document is
+# unavailable, but a Pending accepted snapshot must wait for its semantic
+# index instead of returning an early, incomplete answer.
+def method_waits_for_analysis_snapshot(method: sview) -> bool:
+    match method:
+        "textDocument/hover":
+            return true
+        _:
+            return method_requires_analysis_snapshot(method)
+
+
+# A queued cursor lookup is user-blocking work. Tokens, symbols, and other
+# document-wide requests still outrank unrequested snapshots, while retaining
+# FIFO job order among requests with the same priority.
+def analysis_request_priority(method: sview) -> i64:
+    match method:
+        "textDocument/hover" | "textDocument/completion" | "textDocument/signatureHelp" | "textDocument/definition" | "textDocument/references" | "textDocument/prepareRename" | "textDocument/rename" | "textDocument/documentHighlight":
+            return 0
+        _:
+            return 1
+
+
 def request_has_failed_analysis_snapshot(root: Json::Value, method: sview, documents: darray[LspDocument]&, storage: darray[u8]&, heads: dict[u64, u32]&) -> bool can[Memory.Allocate, Abort.Panic]:
     can Memory.Allocate, Abort.Panic:
         return false if not method_requires_analysis_snapshot(method)
@@ -1568,6 +1642,12 @@ const MAX_ANALYSIS_PACKET_BYTES: usize = 67108864
 const ANALYSIS_WORKER_READ_CHUNK: usize = 8192
 const ANALYSIS_WORKER_HEADER_BYTES: usize = 1024
 const ANALYSIS_WORKER_HEADER_FIELDS: usize = 23
+const MAX_PENDING_ANALYSIS_REQUESTS: usize = 128
+const MAX_PENDING_ANALYSIS_REQUEST_BYTES: usize = 4194304
+const MAX_PENDING_ANALYSIS_STORAGE_BYTES: usize = 13631488
+const LSP_ERROR_REQUEST_CANCELLED: i64 = -32800
+const LSP_ERROR_CONTENT_MODIFIED: i64 = -32801
+const LSP_ERROR_SERVER_BUSY: i64 = -32000
 
 
 def analysis_source_fingerprint(src: u8&, len: usize) -> u64:
@@ -1675,26 +1755,6 @@ def analysis_worker_send_packet(job_id: i64, generation: i64, version: i64, sour
     return false if not analysis_worker_write_bytes(signature)
     return false if not analysis_worker_write_bytes(diagnostics)
     return true
-
-
-def analysis_worker_read_packet(packet: mutable darray[u8]&) -> bool can[Console, Memory.Allocate, Abort.Panic]:
-    chunk: mutable darray[u8] = []
-    for i in 0..<ANALYSIS_WORKER_READ_CHUNK:
-        chunk.push(0)
-    while true:
-        received: isize = elisa_lsp_analysis_worker_read((&chunk[0]).cast[void&], chunk.count) can Console
-        if received < 0:
-            elisa_lsp_analysis_worker_abort() can Console
-            return false
-        break if received == 0
-        count: usize = received.usize()
-        if count > MAX_ANALYSIS_PACKET_BYTES or packet.count > MAX_ANALYSIS_PACKET_BYTES - count:
-            elisa_lsp_analysis_worker_abort() can Console
-            return false
-        for i in 0..<count:
-            packet.push(chunk[i])
-    finished: int = elisa_lsp_analysis_worker_finish() can Console
-    return finished == 0
 
 
 def analysis_worker_parse_integer(packet: darray[u8]&, start: usize, end: usize, value_out: mutable i64&) -> bool:
@@ -2141,6 +2201,29 @@ def analysis_worker_occurrence_span_matches(start_offset: i64, end_offset: i64, 
     return true
 
 
+def analysis_worker_hex_digit(byte: u8) -> i64:
+    if byte >= 48 and byte <= 57:
+        return byte.i64() - 48
+    if byte >= 97 and byte <= 102:
+        return byte.i64() - 87
+    return -1
+
+
+def analysis_worker_hex_source_matches(encoded: sview, start_offset: i64, end_offset: i64, src: u8&, src_len: usize) -> bool:
+    return false if start_offset < 0 or end_offset <= start_offset or end_offset.usize() > src_len
+    source_count: usize = (end_offset - start_offset).usize()
+    return false if source_count > 2048 or encoded.len.usize() != source_count * 2
+    source_start: usize = start_offset.usize()
+    index: mutable usize = 0
+    while index < source_count:
+        high: i64 = analysis_worker_hex_digit(sview_at(encoded, index * 2))
+        low: i64 = analysis_worker_hex_digit(sview_at(encoded, index * 2 + 1))
+        return false if high < 0 or low < 0
+        return false if ((high << 4) | low).u8() != src[source_start + index]
+        index <- index + 1
+    return true
+
+
 def analysis_worker_private_record_stream(blob: sview, hover_stream: bool, src_len: usize, src: u8&, starts: darray[usize]&, span_start: usize, span_count: usize, utf8: bool) -> bool can[Abort.Panic]:
     rec: u8 = 30
     separator: u8 = 31
@@ -2212,6 +2295,21 @@ def analysis_worker_private_record_stream(blob: sview, hover_stream: bool, src_l
                 return false if not analysis_worker_occurrence_span_matches(start_offset, end_offset, name, src, src_len)
                 return false if not analysis_worker_source_position_valid(start_line, start_char, src, src_len, starts, span_start, span_count, utf8) or not analysis_worker_source_position_valid(end_line, end_char, src, src_len, starts, span_start, span_count, utf8)
                 return false if start_line > end_line or (start_line == end_line and start_char >= end_char)
+            elif tag == 116: # declared binding type: identity, exact source span, hex source text
+                return false if field_count != 6
+                owner_field: mutable sview = sview("", 0, 0)
+                serial_field: mutable sview = sview("", 0, 0)
+                start_field: mutable sview = sview("", 0, 0)
+                end_field: mutable sview = sview("", 0, 0)
+                type_hex: mutable sview = sview("", 0, 0)
+                return false if not hover_field(blob, record_start, record_end, 1, owner_field) or not hover_field(blob, record_start, record_end, 2, serial_field) or not hover_field(blob, record_start, record_end, 3, start_field) or not hover_field(blob, record_start, record_end, 4, end_field) or not hover_field(blob, record_start, record_end, 5, type_hex)
+                owner: mutable i64 = -1
+                serial: mutable i64 = -1
+                type_start: mutable i64 = -1
+                type_end: mutable i64 = -1
+                return false if not analysis_worker_ascii_uinteger(owner_field, owner) or not analysis_worker_ascii_uinteger(serial_field, serial)
+                return false if not analysis_worker_ascii_uinteger(start_field, type_start) or not analysis_worker_ascii_uinteger(end_field, type_end)
+                return false if not analysis_worker_hex_source_matches(type_hex, type_start, type_end, src, src_len)
             elif tag == 100: # definition edge: tag plus four source and four target coordinates
                 return false if field_count != 9
                 values: mutable darray[i64] = []
@@ -2232,7 +2330,7 @@ def analysis_worker_private_record_stream(blob: sview, hover_stream: bool, src_l
             # signature_record_field starts at record_start + 3, where its
             # record_start is the REC byte (as supplied by signature_record_next).
             signature_record_start: usize = record_start - 1
-            if tag == 83: # signature: tag, symbol row, name, arity, parameter names
+            if tag == 83: # signature: tag, symbol row, name, arity, parameter names, bounded exact header hex
                 return false if field_count < 4
                 row_field: mutable sview = sview("", 0, 0)
                 name: mutable sview = sview("", 0, 0)
@@ -2242,10 +2340,15 @@ def analysis_worker_private_record_stream(blob: sview, hover_stream: bool, src_l
                 return false if not signature_record_field(blob, signature_record_start, record_end, 0, row_field) or not analysis_worker_ascii_uinteger(row_field, row)
                 return false if not signature_record_field(blob, signature_record_start, record_end, 1, name) or name.len == 0
                 return false if not signature_record_field(blob, signature_record_start, record_end, 2, arity_field) or not analysis_worker_ascii_uinteger(arity_field, arity)
-                return false if field_count != 4 + arity
+                return false if field_count != 5 + arity
                 for field_index in 0..<arity.usize():
                     parameter: mutable sview = sview("", 0, 0)
                     return false if not signature_record_field(blob, signature_record_start, record_end, field_index + 3, parameter) or parameter.len == 0
+                header_hex: mutable sview = sview("", 0, 0)
+                return false if not signature_record_field(blob, signature_record_start, record_end, arity.usize() + 3, header_hex)
+                return false if header_hex.len > 4096 or header_hex.len.usize() % 2 != 0
+                for byte in header_hex:
+                    return false if not (byte >= 48 and byte <= 57) and not (byte >= 97 and byte <= 102)
             elif tag == 69: # comma event: tag, call ID, exclusive source byte offset
                 return false if field_count != 3
                 call_field: mutable sview = sview("", 0, 0)
@@ -2557,7 +2660,7 @@ def document_source_admission_fits(documents: darray[LspDocument]&, excluded_slo
     return incoming_source_bytes <= limit - retained
 
 
-# Apply document-count and retained canonical-URI budgets before a new open
+# Apply document-count and retained URI-metadata budgets before a new open
 # can reserve a document slot or insert into the URI index. Duplicate opens
 # exclude their existing slot, then add the replacement URI back into the
 # admission calculation so the document does not consume a second slot.
@@ -2575,6 +2678,8 @@ def document_open_metadata_admission_fits(documents: darray[LspDocument]&, exclu
             retained_documents <- retained_documents + 1
             return false if document.uri_index.uri_len > max_uri_bytes - retained_uri_bytes
             retained_uri_bytes <- retained_uri_bytes + document.uri_index.uri_len
+            return false if document.uri_index.spelling_len > max_uri_bytes - retained_uri_bytes
+            retained_uri_bytes <- retained_uri_bytes + document.uri_index.spelling_len
         i <- i + 1
     return false if retained_documents >= max_documents
     return incoming_uri_bytes <= max_uri_bytes - retained_uri_bytes
@@ -2597,109 +2702,238 @@ def log_document_admission_rejection() -> void can[Console, Memory.Allocate, Abo
         lsp_document_admission_rejection_logs <- lsp_document_admission_rejection_logs + 1
 
 
+# Keep the element borrow used to replace source text inside a short helper.
+# The current frontend invalidates views derived from `documents` and
+# `storage` after this mutation, so callers must reacquire them at the next
+# function boundary before constructing analysis views.
+def store_document_text_at_slot(documents: mutable darray[LspDocument]&, storage: mutable darray[u8]&, slot: usize, source: darray[u8]) -> void can[Memory.Allocate, Abort.Panic]:
+    document: mutable LspDocument& = &documents[slot]
+    store_document_text(document, storage, source)
+
+
+def store_document_spelling_at_slot(documents: mutable darray[LspDocument]&, storage: mutable darray[u8]&, slot: usize, spelling: sview) -> void can[Memory.Allocate, Abort.Panic]:
+    document: mutable LspDocument& = &documents[slot]
+    document_store_uri_spelling(document, storage, spelling)
+
+
+def store_analysis_cache_blob_at_slot(documents: mutable darray[LspDocument]&, storage: mutable darray[u8]&, slot: usize, target: DocumentCacheTarget, packet: darray[u8]&, source_start: usize, needed: usize) -> bool can[Memory.Allocate, Abort.Panic]:
+    document: mutable LspDocument& = &documents[slot]
+    return document_store_cache_blob(document, target, storage, packet, source_start, needed)
+
+
+# Encode a canonical, typed request-ID key. Numeric spellings normalize to the
+# parsed integer and escaped string spellings normalize to the decoded value.
+# This keeps integer 1 distinct from string "1" while cancellation is pending.
+def pending_request_id_token(value: Json::Value, out: mutable darray[u8]&) -> bool can[Memory.Allocate, Abort.Panic]:
+    out.truncate(0)
+    match value:
+        Json::Value.Num(text):
+            match Json::as_lsp_integer_result(value):
+                Json::I64ParseOutcome.Valid(number):
+                    out.push(78)
+                    push_int(out, number)
+                    return true
+                Json::I64ParseOutcome.Invalid:
+                    return false
+        Json::Value.Str(_):
+            decoded: mutable darray[u8] = []
+            Json::decode_into(value, decoded)
+            out.push(83)
+            out.push(34)
+            json_escape_utf8(out, bytes_view_range_ref(decoded, 0, decoded.count))
+            out.push(34)
+            return true
+        _:
+            return false
+
+
+def pending_analysis_request_index(queue: LspPendingAnalysisQueue&, id_token: darray[u8]&) -> i64:
+    i: mutable usize = 0
+    while i < queue.requests.count:
+        if string_views_eq(bytes_view_range_ref(queue.storage, queue.requests[i].key_start, queue.requests[i].key_len), bytes_view_range_ref(id_token, 0, id_token.count)) != 0:
+            return i.i64()
+        i <- i + 1
+    return -1
+
+
+def pending_analysis_request_remove(queue: mutable LspPendingAnalysisQueue&, index: usize) -> void can[Abort.Panic]:
+    return if index >= queue.requests.count
+    removed: LspPendingAnalysisRequest = queue.requests[index]
+    removed_len: usize = removed.body_len + removed.key_len + removed.response_id_len
+    removed_start: usize = removed.body_start
+    tail_start: usize = removed_start + removed_len
+    tail_len: usize = queue.storage.count - tail_start if tail_start <= queue.storage.count else 0
+    i: mutable usize = 0
+    while i < tail_len:
+        queue.storage[removed_start + i] <- queue.storage[tail_start + i]
+        i <- i + 1
+    queue.storage.truncate(queue.storage.count - removed_len) if removed_len <= queue.storage.count
+    i <- index + 1
+    while i < queue.requests.count:
+        queue.requests[i].body_start <- queue.requests[i].body_start - removed_len
+        queue.requests[i].key_start <- queue.requests[i].key_start - removed_len
+        queue.requests[i].response_id_start <- queue.requests[i].response_id_start - removed_len
+        i <- i + 1
+    queue.body_bytes <- queue.body_bytes - removed.body_len if removed.body_len <= queue.body_bytes
+    _ = queue.requests.remove_at(index)
+
+
+def pending_analysis_request_enqueue(root: Json::Value, method: sview, body: darray[u8]&, documents: darray[LspDocument]&, storage: darray[u8]&, heads: dict[u64, u32]&, runtime: LspAnalysisWorkerRuntime&, queue: mutable LspPendingAnalysisQueue&) -> bool can[Memory.Allocate, Abort.Panic, Console]:
+    return false if not method_waits_for_analysis_snapshot(method)
+    spell_bytes: mutable darray[u8] = []
+    canon_bytes: mutable darray[u8] = []
+    uri: sview = request_identity(root, spell_bytes, canon_bytes)
+    return false if uri.len == 0
+    found: i64 = document_index(documents, storage, heads, uri)
+    return false if found < 0
+    slot: usize = found.usize()
+    document: LspDocument = documents[slot]
+    return false if not document.lifecycle.open or document.lifecycle.analysis_state != DocumentAnalysisState.Pending
+    is_scheduled: bool = document.lifecycle.analysis_queued or (runtime.active and runtime.slot == slot)
+    return false if not is_scheduled
+
+    id_token: mutable darray[u8] = extract_id(root)
+    request_key: mutable darray[u8] = []
+    valid_key: mutable bool = false
+    if Json::get(root, "id") is request_id:
+        valid_key <- pending_request_id_token(request_id, request_key)
+    return false if not valid_key
+    duplicate: i64 = pending_analysis_request_index(queue, request_key)
+    if duplicate >= 0:
+        duplicate_request: LspPendingAnalysisRequest = queue.requests[duplicate.usize()]
+        duplicate_id: mutable darray[u8] = []
+        duplicate_id.extend([b for b in bytes_view_range_ref(queue.storage, duplicate_request.response_id_start, duplicate_request.response_id_len)])
+        pending_analysis_request_remove(queue, duplicate.usize())
+        send_error(duplicate_id, -32600, "InvalidRequest: duplicate pending request ID")
+        return true
+
+    request_storage_bytes: usize = body.count + request_key.count + id_token.count
+    if queue.requests.count >= MAX_PENDING_ANALYSIS_REQUESTS or body.count > MAX_PENDING_ANALYSIS_REQUEST_BYTES or body.count > MAX_PENDING_ANALYSIS_REQUEST_BYTES - queue.body_bytes or request_storage_bytes > MAX_PENDING_ANALYSIS_STORAGE_BYTES or queue.storage.count > MAX_PENDING_ANALYSIS_STORAGE_BYTES - request_storage_bytes:
+        send_error(id_token, LSP_ERROR_SERVER_BUSY, "ServerBusy")
+        return true
+
+    body_start: usize = queue.storage.count
+    queue.storage.extend([b for b in body])
+    key_start: usize = queue.storage.count
+    queue.storage.extend([b for b in request_key])
+    response_id_start: usize = queue.storage.count
+    queue.storage.extend([b for b in id_token])
+    queued_at_ms: i64 = lsp_timing_start() can Console
+    pending: LspPendingAnalysisRequest = LspPendingAnalysisRequest{body_start: body_start, body_len: body.count, key_start: key_start, key_len: request_key.count, response_id_start: response_id_start, response_id_len: id_token.count, slot: slot, job_id: document.lifecycle.analysis_job_id, generation: document.lifecycle.generation.i64(), version: document.lifecycle.version, priority: analysis_request_priority(method), queued_at_ms: queued_at_ms, ready: false}
+    queue.body_bytes <- queue.body_bytes + body.count
+    queue.requests.push(pending)
+    return true
+
+
+def pending_analysis_requests_rebind(queue: mutable LspPendingAnalysisQueue&, slot: usize, job_id: i64, generation: i64, version: i64) -> void:
+    i: mutable usize = 0
+    while i < queue.requests.count:
+        if queue.requests[i].slot == slot:
+            queue.requests[i].job_id <- job_id
+            queue.requests[i].generation <- generation
+            queue.requests[i].version <- version
+            queue.requests[i].ready <- false
+        i <- i + 1
+
+
+def pending_analysis_requests_mark_ready(queue: mutable LspPendingAnalysisQueue&, slot: usize, job_id: i64, generation: i64, version: i64) -> void:
+    i: mutable usize = 0
+    while i < queue.requests.count:
+        if queue.requests[i].slot == slot and queue.requests[i].job_id == job_id and queue.requests[i].generation == generation and queue.requests[i].version == version:
+            queue.requests[i].ready <- true
+        i <- i + 1
+
+
+def pending_analysis_request_take_ready(queue: mutable LspPendingAnalysisQueue&, body: mutable darray[u8]&) -> bool can[Memory.Allocate, Abort.Panic, Console]:
+    i: mutable usize = 0
+    while i < queue.requests.count:
+        if queue.requests[i].ready:
+            request: LspPendingAnalysisRequest = queue.requests[i]
+            body.extend([b for b in bytes_view_range_ref(queue.storage, request.body_start, request.body_len)])
+            lsp_timing_queue_wait_ms <- 0 if lsp_timing_enabled
+            replayed_at_ms: i64 = lsp_timing_start() can Console
+            lsp_timing_queue_wait_ms <- replayed_at_ms - request.queued_at_ms if replayed_at_ms >= request.queued_at_ms and request.queued_at_ms >= 0
+            pending_analysis_request_remove(queue, i)
+            return true
+        i <- i + 1
+    return false
+
+
+def pending_analysis_request_cancel(root: Json::Value, queue: mutable LspPendingAnalysisQueue&) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    id_token: mutable darray[u8] = []
+    if Json::get(root, "params") is params:
+        if Json::get(params, "id") is cancel_id:
+            if pending_request_id_token(cancel_id, id_token):
+                pass
+            else:
+                return
+        else:
+            return
+    else:
+        return
+    found: i64 = pending_analysis_request_index(queue, id_token)
+    cancel_log: mutable darray[u8] = []
+    push_str(cancel_log, "event=pending_cancel matched=true") if found >= 0
+    push_str(cancel_log, "event=pending_cancel matched=false") if found < 0
+    push_str(cancel_log, " queued=")
+    push_int(cancel_log, queue.requests.count.i64())
+    log_line(LSP_LOG_DEBUG, cancel_log)
+    return if found < 0
+    request: LspPendingAnalysisRequest = queue.requests[found.usize()]
+    response_id: mutable darray[u8] = []
+    response_id.extend([b for b in bytes_view_range_ref(queue.storage, request.response_id_start, request.response_id_len)])
+    pending_analysis_request_remove(queue, found.usize())
+    send_error(response_id, LSP_ERROR_REQUEST_CANCELLED, "RequestCancelled")
+
+
+def pending_analysis_requests_cancel_slot(queue: mutable LspPendingAnalysisQueue&, slot: usize, code: i64, message: cstr) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    i: mutable usize = 0
+    while i < queue.requests.count:
+        if queue.requests[i].slot == slot:
+            request: LspPendingAnalysisRequest = queue.requests[i]
+            response_id: mutable darray[u8] = []
+            response_id.extend([b for b in bytes_view_range_ref(queue.storage, request.response_id_start, request.response_id_len)])
+            pending_analysis_request_remove(queue, i)
+            send_error(response_id, code, message)
+        else:
+            i <- i + 1
+
+
+def pending_analysis_requests_cancel_all(queue: mutable LspPendingAnalysisQueue&, code: i64, message: cstr) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    while queue.requests.count > 0:
+        index: usize = queue.requests.count - 1
+        request: LspPendingAnalysisRequest = queue.requests[index]
+        response_id: mutable darray[u8] = []
+        response_id.extend([b for b in bytes_view_range_ref(queue.storage, request.response_id_start, request.response_id_len)])
+        pending_analysis_request_remove(queue, index)
+        send_error(response_id, code, message)
+
+
 # Run the frontend over the document and publish its findings. The decoded
 # text and its uri are stored in the session cache so later semantic-token and
 # hover requests can retrieve the correct snapshot for their own URI.
 # D01: versioned lifecycle — accept text into the store only for eligible
 # versions; stale/equal versions never mutate; duplicate opens start a new
 # generation; malformed notifications mutate nothing.
-def check_and_publish(root: Json::Value, documents: mutable darray[LspDocument]&, storage: mutable darray[u8]&, heads: mutable dict[u64, u32]&, line_starts: mutable darray[usize]&, utf8: bool, symbols_hier: bool, allowed_kinds: darray[i64]&, related: bool) -> void can[Console, Memory.Allocate, Abort.Panic]:
-    spell_bytes: mutable darray[u8] = []
-    canon_bytes: mutable darray[u8] = []
-    uri: sview = request_identity(root, spell_bytes, canon_bytes)
-    return if uri.len == 0
-    spell: sview = bytes_view_range_ref(spell_bytes, 0, spell_bytes.count)
-    is_open: bool = method_is(root, "textDocument/didOpen")
-    decoded: mutable darray[u8] = []
-    if is_open:
-        # Full text first: a malformed open must not allocate a slot.
-        edit_started_ms: i64 = lsp_timing_start() can Console
-        accepted_full_text: bool = collect_full_text(root, true, decoded)
-        lsp_timing_record(lsp_timing_edit_ms, edit_started_ms) can Console
-        return if not accepted_full_text
-    incoming_version: mutable i64 = 0
-    match request_version_state(root):
-        DocumentVersionState.Present(version):
-            incoming_version <- version
-        DocumentVersionState.Invalid:
-            # Missing or malformed versions are rejected before any slot or
-            # document state can be changed.
-            return
-    # Preflight decoded source before creating a slot, bumping a generation,
-    # replacing text, or clearing accepted caches. Rejecting a notification at
-    # this boundary therefore preserves the last valid snapshot atomically.
-    slot: mutable usize = 0
-    if is_open:
-        existing: i64 = document_index(documents, storage, heads, uri)
-        excluded_slot: mutable i64 = -1
-        excluded_slot <- existing if existing >= 0 and documents[existing.usize()].lifecycle.open
-        if not document_open_metadata_admission_fits(documents, excluded_slot, uri.len.usize()):
-            log_document_admission_rejection()
-            return
-        if not document_source_admission_fits(documents, excluded_slot, decoded.count):
-            log_document_admission_rejection()
-            return
-        slot <- document_slot(documents, storage, heads, uri)
-    else:
-        found: i64 = document_index(documents, storage, heads, uri)
-        return if found < 0
-        slot <- found.usize()
-        # didChange for a never-opened document: ignore (no lifetime to update).
-        return if not documents[slot].lifecycle.open
-        # Stale/equal-version didChange: ignore without mutating.
-        return if incoming_version <= documents[slot].lifecycle.version
-        changes: mutable darray[Json::Value] = []
-        if Json::get(root, "params") is params:
-            if Json::get(params, "contentChanges") is cv:
-                match cv:
-                    Json::Value.Arr(items):
-                        changes <- items
-                    _:
-                        return
-        return if changes.count == 0
-        current: sview = bytes_view_range_ref(storage, documents[slot].source.text_start, documents[slot].source.text_len - 1) if documents[slot].source.text_len > 0 else sview("", 0, 0)
-        edit_started_ms: i64 = lsp_timing_start() can Console
-        applied_changes: bool = apply_content_changes(current, changes, utf8, decoded)
-        lsp_timing_record(lsp_timing_edit_ms, edit_started_ms) can Console
-        return if not applied_changes
-        if not document_source_admission_fits(documents, slot.i64(), decoded.count):
-            log_document_admission_rejection()
-            return
-    if is_open and documents[slot].lifecycle.open:
-        # Duplicate open: new lifetime even if URI/version repeat. Bump only
-        # after source admission so an oversized replacement is a true no-op.
-        _ = document_advance_generation(&documents[slot])
-    # Reacquire after the mutating document-store operation invalidates views
-    # into the metadata array under the latest frontend's dependency analysis.
-    document: mutable LspDocument& = &documents[slot]
-    # Snapshot generation for the publish guard, captured AFTER this update's
-    # lifetime bump so it reflects the revision actually being analyzed.
-    gen: u64 = document.lifecycle.generation
-    # Accept source as the authoritative snapshot before deriving its caches.
-    # Pending state prevents cached providers from exposing the prior version
-    # if analysis later becomes asynchronous or recoverable.
-    source: mutable darray[u8] = []
-    source.extend([b for b in decoded])
-    source.push(0)
-    store_document_text(document, storage, source)
-    line_index_started_ms: i64 = lsp_timing_start() can Console
-    update_document_line_index(slot, documents, storage, line_starts)
-    lsp_timing_record(lsp_timing_line_index_ms, line_index_started_ms) can Console
-    document_begin_snapshot(&documents[slot], incoming_version)
-    lsp_last_document_generation <- documents[slot].lifecycle.generation.i64()
-    lsp_last_analysis_status <- 3
-    lsp_last_cache_outcome <- LSP_CACHE_UPDATED
-    log_document_snapshot(is_open, lsp_last_document_generation, incoming_version)
-    lsp_analysis_job_sequence <- 1 if lsp_analysis_job_sequence >= 9223372036854775806 else lsp_analysis_job_sequence + 1
-    job_id: i64 = lsp_analysis_job_sequence
-    document_assign_analysis_job(&documents[slot], job_id)
+def analysis_worker_start_slot(slot: usize, documents: mutable darray[LspDocument]&, storage: mutable darray[u8]&, line_starts: mutable darray[usize]&, utf8: bool, symbols_hier: bool, allowed_kinds: darray[i64]&, related: bool, runtime: mutable LspAnalysisWorkerRuntime&, queue: mutable LspPendingAnalysisQueue&) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    return if slot >= documents.count
+    return if documents[slot].lifecycle.free or not documents[slot].lifecycle.open or not documents[slot].lifecycle.analysis_queued
+    source_len: usize = documents[slot].source.text_len - 1 if documents[slot].source.text_len > 0 else 0
+    spell: sview = bytes_view_range_ref(storage, documents[slot].uri_index.spelling_start, documents[slot].uri_index.spelling_len)
+    incoming_version: i64 = documents[slot].lifecycle.version
+    job_id: i64 = documents[slot].lifecycle.analysis_job_id
     snapshot_generation: i64 = documents[slot].lifecycle.generation.i64()
-    source_len: usize = source.count - 1
+    if documents[slot].source.text_len == 0:
+        mark_analysis_worker_failed(&documents[slot], spell, incoming_version, 1)
+        pending_analysis_requests_mark_ready(queue, slot, job_id, snapshot_generation, incoming_version)
+        return
+    source: u8& = &storage[documents[slot].source.text_start]
     uri_hash: i64 = documents[slot].uri_index.hash.i64()
-    source_hash: i64 = analysis_source_fingerprint(&source[0], source_len).i64()
+    source_hash: i64 = analysis_source_fingerprint(source, source_len).i64()
     worker_role: int = elisa_lsp_analysis_worker_begin(lsp_analysis_timeout_ms) can Console
     if worker_role < 0:
         mark_analysis_worker_failed(&documents[slot], spell, incoming_version, 1)
+        pending_analysis_requests_mark_ready(queue, slot, job_id, snapshot_generation, incoming_version)
         return
     if worker_role == 1:
         base_tokenize: i64 = lsp_frontend_tokenize_calls
@@ -2711,22 +2945,22 @@ def check_and_publish(root: Json::Value, documents: mutable darray[LspDocument]&
         base_line_index_fallback: i64 = lsp_line_index_fallback_build_calls
         signature_index: mutable darray[u8] = []
         analysis_valid: mutable bool = false
-        token_batch: LspFrontendTokenBatch = tokenize_frontend_source(&source[0], source_len)
+        token_batch: LspFrontendTokenBatch = tokenize_frontend_source(source, source_len)
         # Keep the source, token batch, parsed AST, and semantic table in one
         # analysis scope. The table retains views into parser/source storage,
         # so returning it from a helper with a local `Ast::File` would outlive
         # the owners that keep those views valid.
         parse_started_ms: i64 = lsp_timing_start() can Console
         lsp_frontend_parse_calls <- lsp_frontend_parse_calls + 1
-        file: Ast::File = frontend_parser_parse_file(&source[0], token_batch.tokens)
+        file: Ast::File = frontend_parser_parse_file(source, token_batch.tokens)
         lsp_timing_record(lsp_timing_parse_ms, parse_started_ms) can Console
         check_started_ms: i64 = lsp_timing_start() can Console
         lsp_frontend_check_calls <- lsp_frontend_check_calls + 1
         table: Semantic::SymbolTable = Semantic::check(file)
         lsp_timing_record(lsp_timing_check_ms, check_started_ms) can Console
         occurrence_positions: mutable darray[Ast::Pos] = []
-        analysis_valid <- frontend_table_valid(table, &source[0], source_len, file.errors)
-        analysis_valid <- frontend_occurrence_positions(table, token_batch.tokens, &source[0], source_len, occurrence_positions) if analysis_valid
+        analysis_valid <- frontend_table_valid(table, source, source_len, file.errors)
+        analysis_valid <- frontend_occurrence_positions(table, token_batch.tokens, source, source_len, occurrence_positions) if analysis_valid
         completeness: mutable LspFrontendCompleteness = LspFrontendCompleteness.Rejected
         completeness <- LspFrontendCompleteness.Recovered if analysis_valid and file.errors.count > 0
         completeness <- LspFrontendCompleteness.Complete if analysis_valid and file.errors.count == 0
@@ -2737,7 +2971,7 @@ def check_and_publish(root: Json::Value, documents: mutable darray[LspDocument]&
             occurrences: occurrence_positions, completeness: completeness
         }
         analysis_valid <- frontend_analysis_snapshot_valid(frontend_snapshot, source_len)
-        signature_index <- build_signature_help_index(frontend_snapshot.syntax, frontend_snapshot.semantic, frontend_snapshot.token_batch.tokens, &source[0], source_len) if analysis_valid
+        signature_index <- build_signature_help_index(frontend_snapshot.syntax, frontend_snapshot.semantic, frontend_snapshot.token_batch.tokens, source, source_len) if analysis_valid
         semantic: mutable darray[u8] = []
         symbols: mutable darray[u8] = []
         hover: mutable darray[u8] = []
@@ -2746,29 +2980,101 @@ def check_and_publish(root: Json::Value, documents: mutable darray[LspDocument]&
         index_started_ms: i64 = lsp_timing_start() can Console
         if analysis_valid:
             if documents[slot].caches.line_index_count > 0:
-                semantic <- semtok_data_body_with_table(&source[0], source_len, frontend_snapshot.token_batch.tokens, frontend_snapshot.token_batch.comments, frontend_snapshot.semantic, frontend_snapshot.occurrences, line_starts, documents[slot].caches.line_index_start, documents[slot].caches.line_index_count, utf8)
-                symbols <- build_symbols_body(spell, frontend_snapshot.semantic, frontend_snapshot.token_batch.tokens, &source[0], source_len, line_starts, documents[slot].caches.line_index_start, documents[slot].caches.line_index_count, utf8, symbols_hier, allowed_kinds)
-                hover <- build_hover_index(frontend_snapshot.semantic, frontend_snapshot.occurrences, &source[0], source_len, line_starts, documents[slot].caches.line_index_start, documents[slot].caches.line_index_count, utf8)
-                diagnostics <- build_publish_body(spell, frontend_snapshot.semantic, &source[0], source_len, line_starts, documents[slot].caches.line_index_start, documents[slot].caches.line_index_count, incoming_version, utf8, related)
+                semantic <- semtok_data_body_with_table(source, source_len, frontend_snapshot.token_batch.tokens, frontend_snapshot.token_batch.comments, frontend_snapshot.semantic, frontend_snapshot.occurrences, line_starts, documents[slot].caches.line_index_start, documents[slot].caches.line_index_count, utf8)
+                symbols <- build_symbols_body(spell, frontend_snapshot.semantic, frontend_snapshot.token_batch.tokens, source, source_len, line_starts, documents[slot].caches.line_index_start, documents[slot].caches.line_index_count, utf8, symbols_hier, allowed_kinds)
+                hover <- build_hover_index(frontend_snapshot.semantic, frontend_snapshot.occurrences, frontend_snapshot.token_batch.tokens, source, source_len, line_starts, documents[slot].caches.line_index_start, documents[slot].caches.line_index_count, utf8)
+                diagnostics <- build_publish_body(spell, frontend_snapshot.semantic, source, source_len, line_starts, documents[slot].caches.line_index_start, documents[slot].caches.line_index_count, incoming_version, utf8, related)
             else:
                 # Over-budget snapshots build one worker-local index and share
                 # it across every analysis-time provider for this job.
-                worker_fallback_starts: darray[usize] = Positions::build_line_starts(&source[0], source_len)
+                worker_fallback_starts: darray[usize] = Positions::build_line_starts(source, source_len)
                 lsp_line_index_fallback_build_calls <- lsp_line_index_fallback_build_calls + 1
-                semantic <- semtok_data_body_with_table(&source[0], source_len, frontend_snapshot.token_batch.tokens, frontend_snapshot.token_batch.comments, frontend_snapshot.semantic, frontend_snapshot.occurrences, worker_fallback_starts, 0, worker_fallback_starts.count, utf8)
-                symbols <- build_symbols_body(spell, frontend_snapshot.semantic, frontend_snapshot.token_batch.tokens, &source[0], source_len, worker_fallback_starts, 0, worker_fallback_starts.count, utf8, symbols_hier, allowed_kinds)
-                hover <- build_hover_index(frontend_snapshot.semantic, frontend_snapshot.occurrences, &source[0], source_len, worker_fallback_starts, 0, worker_fallback_starts.count, utf8)
-                diagnostics <- build_publish_body(spell, frontend_snapshot.semantic, &source[0], source_len, worker_fallback_starts, 0, worker_fallback_starts.count, incoming_version, utf8, related)
+                semantic <- semtok_data_body_with_table(source, source_len, frontend_snapshot.token_batch.tokens, frontend_snapshot.token_batch.comments, frontend_snapshot.semantic, frontend_snapshot.occurrences, worker_fallback_starts, 0, worker_fallback_starts.count, utf8)
+                symbols <- build_symbols_body(spell, frontend_snapshot.semantic, frontend_snapshot.token_batch.tokens, source, source_len, worker_fallback_starts, 0, worker_fallback_starts.count, utf8, symbols_hier, allowed_kinds)
+                hover <- build_hover_index(frontend_snapshot.semantic, frontend_snapshot.occurrences, frontend_snapshot.token_batch.tokens, source, source_len, worker_fallback_starts, 0, worker_fallback_starts.count, utf8)
+                diagnostics <- build_publish_body(spell, frontend_snapshot.semantic, source, source_len, worker_fallback_starts, 0, worker_fallback_starts.count, incoming_version, utf8, related)
             status_code <- 0
         lsp_timing_record(lsp_timing_index_ms, index_started_ms) can Console
         packet_written: bool = analysis_worker_send_packet(job_id, snapshot_generation, incoming_version, source_len.i64(), uri_hash, source_hash, status_code, semantic, symbols, hover, signature_index, diagnostics, lsp_frontend_tokenize_calls - base_tokenize, lsp_frontend_parse_calls - base_parse, lsp_frontend_check_calls - base_check, lsp_adapter_query_calls - base_queries, lsp_adapter_symbol_index_build_calls - base_symbol_index, lsp_adapter_occurrence_index_build_calls - base_occurrence_index, lsp_line_index_fallback_build_calls - base_line_index_fallback, lsp_timing_lex_ms, lsp_timing_parse_ms, lsp_timing_check_ms, lsp_timing_index_ms) can Console, Memory.Allocate, Abort.Panic
         elisa_lsp_analysis_worker_child_exit(0 if packet_written else 74) can Console
         return
 
-    packet: mutable darray[u8] = []
-    if not analysis_worker_read_packet(packet):
-        mark_analysis_worker_failed(&documents[slot], spell, incoming_version, 2)
-        return
+    runtime.active <- true
+    runtime.packet.truncate(0)
+    runtime.eof_seen <- false
+    runtime.slot <- slot
+    runtime.job_id <- job_id
+    runtime.generation <- snapshot_generation
+    runtime.version <- incoming_version
+    runtime.source_len <- source_len
+    runtime.uri_hash <- uri_hash
+    runtime.source_hash <- source_hash
+    runtime.utf8 <- utf8
+    runtime.symbols_hier <- symbols_hier
+    runtime.related <- related
+    documents[slot].lifecycle.analysis_queued <- false
+
+
+def analysis_worker_start_next_pending(documents: mutable darray[LspDocument]&, storage: mutable darray[u8]&, line_starts: mutable darray[usize]&, utf8: bool, symbols_hier: bool, allowed_kinds: darray[i64]&, related: bool, runtime: mutable LspAnalysisWorkerRuntime&, queue: mutable LspPendingAnalysisQueue&) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    while not runtime.active:
+        selected: mutable i64 = -1
+        selected_priority: mutable i64 = 3
+        selected_job: mutable i64 = 9223372036854775807
+        i: mutable usize = 0
+        while i < documents.count:
+            document: LspDocument = documents[i]
+            if document.lifecycle.open and not document.lifecycle.free and document.lifecycle.analysis_queued:
+                priority: mutable i64 = 2
+                request_i: mutable usize = 0
+                while request_i < queue.requests.count:
+                    request: LspPendingAnalysisRequest = queue.requests[request_i]
+                    if not request.ready and request.slot == i and request.job_id == document.lifecycle.analysis_job_id and request.generation == document.lifecycle.generation.i64() and request.version == document.lifecycle.version:
+                        priority <- request.priority if request.priority < priority
+                    request_i <- request_i + 1
+                if selected < 0 or priority < selected_priority or (priority == selected_priority and document.lifecycle.analysis_job_id < selected_job):
+                    selected <- i.i64()
+                    selected_priority <- priority
+                    selected_job <- document.lifecycle.analysis_job_id
+            i <- i + 1
+        return if selected < 0
+        analysis_worker_start_slot(selected.usize(), documents, storage, line_starts, utf8, symbols_hier, allowed_kinds, related, runtime, queue)
+
+
+def analysis_worker_runtime_clear(runtime: mutable LspAnalysisWorkerRuntime&) -> void:
+    runtime.active <- false
+    runtime.packet.truncate(0)
+    runtime.eof_seen <- false
+
+
+def analysis_worker_abort_runtime(runtime: mutable LspAnalysisWorkerRuntime&) -> void can[Console]:
+    elisa_lsp_analysis_worker_abort() can Console
+    analysis_worker_runtime_clear(runtime)
+
+
+def analysis_worker_fail_current(runtime: LspAnalysisWorkerRuntime&, documents: mutable darray[LspDocument]&, storage: darray[u8]&, reason: i64) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    return if runtime.slot >= documents.count
+    return if documents[runtime.slot].lifecycle.free
+    current: bool = document_analysis_is_current(documents[runtime.slot], runtime.job_id, runtime.generation, runtime.version)
+    return if not current
+    spell: sview = bytes_view_range_ref(storage, documents[runtime.slot].uri_index.spelling_start, documents[runtime.slot].uri_index.spelling_len)
+    mark_analysis_worker_failed(&documents[runtime.slot], spell, runtime.version, reason)
+
+
+def analysis_worker_commit_packet(runtime: mutable LspAnalysisWorkerRuntime&, packet: mutable darray[u8]&, documents: mutable darray[LspDocument]&, storage: mutable darray[u8]&, line_starts: mutable darray[usize]&) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    return if runtime.slot >= documents.count
+    slot: usize = runtime.slot
+    return if documents[slot].lifecycle.free
+    job_id: i64 = runtime.job_id
+    snapshot_generation: i64 = runtime.generation
+    incoming_version: i64 = runtime.version
+    source_len: usize = runtime.source_len
+    uri_hash: i64 = runtime.uri_hash
+    source_hash: i64 = runtime.source_hash
+    utf8: bool = runtime.utf8
+    symbols_hier: bool = runtime.symbols_hier
+    spelling_storage: mutable darray[u8] = []
+    spelling_storage.extend([b for b in bytes_view_range_ref(storage, documents[slot].uri_index.spelling_start, documents[slot].uri_index.spelling_len)])
+    spell: sview = bytes_view_range_ref(spelling_storage, 0, spelling_storage.count)
     fields: mutable darray[i64] = []
     payload_start: mutable usize = 0
     if not analysis_worker_parse_header(packet, fields, payload_start):
@@ -2876,22 +3182,21 @@ def check_and_publish(root: Json::Value, documents: mutable darray[LspDocument]&
     lsp_timing_check_ms <- fields[21]
     lsp_timing_index_ms <- fields[22]
     # Commit derived state only while the analyzed snapshot is still current.
-    if not document_store_cache_blob(&documents[slot], DocumentCacheTarget.Semantic, storage, packet, semantic_start, fields[7].usize()):
+    if not store_analysis_cache_blob_at_slot(documents, storage, slot, DocumentCacheTarget.Semantic, packet, semantic_start, fields[7].usize()):
         mark_analysis_worker_failed(&documents[slot], spell, incoming_version, 6)
         return
-    if not document_store_cache_blob(&documents[slot], DocumentCacheTarget.Symbols, storage, packet, symbols_start, fields[8].usize()):
+    if not store_analysis_cache_blob_at_slot(documents, storage, slot, DocumentCacheTarget.Symbols, packet, symbols_start, fields[8].usize()):
         mark_analysis_worker_failed(&documents[slot], spell, incoming_version, 6)
         return
-    if not document_store_cache_blob(&documents[slot], DocumentCacheTarget.Hover, storage, packet, hover_start, fields[9].usize()):
+    if not store_analysis_cache_blob_at_slot(documents, storage, slot, DocumentCacheTarget.Hover, packet, hover_start, fields[9].usize()):
         mark_analysis_worker_failed(&documents[slot], spell, incoming_version, 6)
         return
-    if not document_store_cache_blob(&documents[slot], DocumentCacheTarget.Signature, storage, packet, signature_start, fields[10].usize()):
+    if not store_analysis_cache_blob_at_slot(documents, storage, slot, DocumentCacheTarget.Signature, packet, signature_start, fields[10].usize()):
         mark_analysis_worker_failed(&documents[slot], spell, incoming_version, 6)
         return
     document_mark_analysis_ready(&documents[slot])
     document_touch_cache(documents, slot, lsp_cache_access_clock)
-    # Enforce the session-wide retained-cost limit only after the complete
-    # snapshot has been committed. The current server is synchronous, so no
+    # Cache commit and provider dispatch still run on the parent thread, so no
     # response can retain a cache span across this boundary.
     enforce_derived_cache_budget(documents)
     lsp_last_analysis_status <- 1
@@ -2905,6 +3210,153 @@ def check_and_publish(root: Json::Value, documents: mutable darray[LspDocument]&
         return
     document_record_published_diagnostics(&documents[slot], documents[slot].lifecycle.version, fp)
     send_message_span(packet, diagnostics_start, fields[11].usize())
+
+
+
+def analysis_worker_complete(runtime: mutable LspAnalysisWorkerRuntime&, documents: mutable darray[LspDocument]&, storage: mutable darray[u8]&, line_starts: mutable darray[usize]&, queue: mutable LspPendingAnalysisQueue&) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    analysis_worker_commit_packet(runtime, runtime.packet, documents, storage, line_starts)
+    pending_analysis_requests_mark_ready(queue, runtime.slot, runtime.job_id, runtime.generation, runtime.version)
+    analysis_worker_runtime_clear(runtime)
+
+
+def analysis_worker_process_events(events: int, runtime: mutable LspAnalysisWorkerRuntime&, documents: mutable darray[LspDocument]&, storage: mutable darray[u8]&, line_starts: mutable darray[usize]&, queue: mutable LspPendingAnalysisQueue&) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    return if not runtime.active
+    if (events & 8) != 0:
+        analysis_worker_fail_current(runtime, documents, storage, 2)
+        pending_analysis_requests_mark_ready(queue, runtime.slot, runtime.job_id, runtime.generation, runtime.version)
+        analysis_worker_abort_runtime(runtime)
+        return
+    if (events & 2) != 0 or (events & 16) != 0:
+        chunk: mutable darray[u8] = []
+        for i in 0..<ANALYSIS_WORKER_READ_CHUNK:
+            chunk.push(0)
+        while true:
+            received: isize = elisa_lsp_analysis_worker_read_available((&chunk[0]).cast[void&], chunk.count) can Console
+            if received == -2:
+                break
+            if received < 0:
+                analysis_worker_fail_current(runtime, documents, storage, 2)
+                pending_analysis_requests_mark_ready(queue, runtime.slot, runtime.job_id, runtime.generation, runtime.version)
+                analysis_worker_abort_runtime(runtime)
+                return
+            if received == 0:
+                runtime.eof_seen <- true
+                break
+            count: usize = received.usize()
+            if count > MAX_ANALYSIS_PACKET_BYTES or runtime.packet.count > MAX_ANALYSIS_PACKET_BYTES - count:
+                analysis_worker_fail_current(runtime, documents, storage, 5)
+                pending_analysis_requests_mark_ready(queue, runtime.slot, runtime.job_id, runtime.generation, runtime.version)
+                analysis_worker_abort_runtime(runtime)
+                return
+            for i in 0..<count:
+                runtime.packet.push(chunk[i])
+        if runtime.eof_seen:
+            finished: int = elisa_lsp_analysis_worker_try_finish() can Console
+            if finished < 0:
+                analysis_worker_fail_current(runtime, documents, storage, 2)
+                pending_analysis_requests_mark_ready(queue, runtime.slot, runtime.job_id, runtime.generation, runtime.version)
+                analysis_worker_abort_runtime(runtime)
+                return
+            if finished > 0:
+                analysis_worker_complete(runtime, documents, storage, line_starts, queue)
+
+
+def check_and_publish(root: Json::Value, documents: mutable darray[LspDocument]&, storage: mutable darray[u8]&, heads: mutable dict[u64, u32]&, line_starts: mutable darray[usize]&, utf8: bool, symbols_hier: bool, allowed_kinds: darray[i64]&, related: bool, runtime: mutable LspAnalysisWorkerRuntime&, queue: mutable LspPendingAnalysisQueue&) -> void can[Console, Memory.Allocate, Abort.Panic]:
+    spell_bytes: mutable darray[u8] = []
+    canon_bytes: mutable darray[u8] = []
+    uri: sview = request_identity(root, spell_bytes, canon_bytes)
+    return if uri.len == 0
+    spell: sview = bytes_view_range_ref(spell_bytes, 0, spell_bytes.count)
+    spelling_bytes: usize = spell.len.usize()
+    if uri.len.usize() > 18446744073709551615 - spelling_bytes:
+        log_document_admission_rejection()
+        return
+    uri_metadata_bytes: usize = uri.len.usize() + spelling_bytes
+    is_open: bool = method_is(root, "textDocument/didOpen")
+    decoded: mutable darray[u8] = []
+    if is_open:
+        # Full text first: a malformed open must not allocate a slot.
+        edit_started_ms: i64 = lsp_timing_start() can Console
+        accepted_full_text: bool = collect_full_text(root, true, decoded)
+        lsp_timing_record(lsp_timing_edit_ms, edit_started_ms) can Console
+        return if not accepted_full_text
+    incoming_version: mutable i64 = 0
+    match request_version_state(root):
+        DocumentVersionState.Present(version):
+            incoming_version <- version
+        DocumentVersionState.Invalid:
+            # Missing or malformed versions are rejected before any slot or
+            # document state can be changed.
+            return
+    # Preflight decoded source before creating a slot, bumping a generation,
+    # replacing text, or clearing accepted caches. Rejecting a notification at
+    # this boundary therefore preserves the last valid snapshot atomically.
+    slot: mutable usize = 0
+    if is_open:
+        existing: i64 = document_index(documents, storage, heads, uri)
+        excluded_slot: mutable i64 = -1
+        excluded_slot <- existing if existing >= 0 and documents[existing.usize()].lifecycle.open
+        if not document_open_metadata_admission_fits(documents, excluded_slot, uri_metadata_bytes):
+            log_document_admission_rejection()
+            return
+        if not document_source_admission_fits(documents, excluded_slot, decoded.count):
+            log_document_admission_rejection()
+            return
+        slot <- document_slot(documents, storage, heads, uri)
+    else:
+        found: i64 = document_index(documents, storage, heads, uri)
+        return if found < 0
+        slot <- found.usize()
+        # didChange for a never-opened document: ignore (no lifetime to update).
+        return if not documents[slot].lifecycle.open
+        # Stale/equal-version didChange: ignore without mutating.
+        return if incoming_version <= documents[slot].lifecycle.version
+        changes: mutable darray[Json::Value] = []
+        if Json::get(root, "params") is params:
+            if Json::get(params, "contentChanges") is cv:
+                match cv:
+                    Json::Value.Arr(items):
+                        changes <- items
+                    _:
+                        return
+        return if changes.count == 0
+        current: sview = bytes_view_range_ref(storage, documents[slot].source.text_start, documents[slot].source.text_len - 1) if documents[slot].source.text_len > 0 else sview("", 0, 0)
+        edit_started_ms: i64 = lsp_timing_start() can Console
+        applied_changes: bool = apply_content_changes(current, changes, utf8, decoded)
+        lsp_timing_record(lsp_timing_edit_ms, edit_started_ms) can Console
+        return if not applied_changes
+        if not document_source_admission_fits(documents, slot.i64(), decoded.count):
+            log_document_admission_rejection()
+            return
+        if not document_open_metadata_admission_fits(documents, slot.i64(), uri_metadata_bytes):
+            log_document_admission_rejection()
+            return
+    if runtime.active and runtime.slot == slot:
+        analysis_worker_abort_runtime(runtime)
+    if is_open and documents[slot].lifecycle.open:
+        # Duplicate open: new lifetime even if URI/version repeat. Bump only
+        # after source admission so an oversized replacement is a true no-op.
+        _ = document_advance_generation(&documents[slot])
+    store_document_spelling_at_slot(documents, storage, slot, spell)
+    # Accept source as the authoritative snapshot before deriving its caches.
+    # Pending state prevents cached providers from exposing the prior version
+    # if analysis later becomes asynchronous or recoverable.
+    source: mutable darray[u8] = []
+    source.extend([b for b in decoded])
+    source.push(0)
+    store_document_text_at_slot(documents, storage, slot, source)
+    line_index_started_ms: i64 = lsp_timing_start() can Console
+    update_document_line_index(slot, documents, storage, line_starts)
+    lsp_timing_record(lsp_timing_line_index_ms, line_index_started_ms) can Console
+    document_begin_snapshot(&documents[slot], incoming_version)
+    lsp_last_document_generation <- documents[slot].lifecycle.generation.i64()
+    lsp_last_analysis_status <- 3
+    lsp_last_cache_outcome <- LSP_CACHE_UPDATED
+    log_document_snapshot(is_open, lsp_last_document_generation, incoming_version)
+    lsp_analysis_job_sequence <- 1 if lsp_analysis_job_sequence >= 9223372036854775806 else lsp_analysis_job_sequence + 1
+    job_id: i64 = lsp_analysis_job_sequence
+    document_assign_analysis_job(&documents[slot], job_id)
+    pending_analysis_requests_rebind(queue, slot, job_id, documents[slot].lifecycle.generation.i64(), incoming_version)
 
 
 # FNV-1a over a complete notification body, mirroring `document_hash`.
@@ -3049,6 +3501,11 @@ def send_status(id_raw: darray[u8], max_header_bytes: i64, max_header_lines: i64
     push_str(body, ",\"compiler\":{\"status\":\"embedded\",\"source\":\"Elisa compiler frontend\",\"contract_version\":")
     push_int(body, frontend_contract_version())
     push_str(body, ",\"provenance\":\"build/manifest.json\",\"upgrade_policy\":\"manifest-pinned\"}")
+    # Search providers are deliberately conservative. Expose their actual
+    # scope so an empty same-document result is not mistaken for a complete
+    # project-wide search.
+    push_str(body, ",\"searchCoverage\":{\"references\":{\"scope\":\"sameDocument\",\"completeness\":\"partial\",\"crossDocument\":false,\"supportedIdentities\":[\"uniqueTopLevelFunctions\",\"parameters\",\"locals\"],\"emptyResultProvesProjectAbsence\":false}")
+    push_str(body, ",\"documentHighlight\":{\"scope\":\"sameDocument\",\"completeness\":\"partial\",\"crossDocument\":false},\"workspaceIndex\":\"unavailable\"}")
     push_str(body, ",\"configuration\":{\"position_encoding\":\"utf-8\"}") if utf8
     push_str(body, ",\"configuration\":{\"position_encoding\":\"utf-16\"}") if not utf8
     # Keep all values numeric and machine-readable so support reports can
@@ -3086,7 +3543,7 @@ def send_status(id_raw: darray[u8], max_header_bytes: i64, max_header_lines: i64
 # backing capacities for the flat byte store and document slots. A private `$/`
 # extension (never advertised as a capability); capacities are partial
 # allocation estimates, not total arena or process-memory measurements.
-def send_stats(id_raw: darray[u8], documents: darray[LspDocument]&, storage: darray[u8]&, heads: dict[u64, u32]&, line_starts: darray[usize]&, max_header_bytes: i64, max_header_lines: i64, max_body_bytes: i64) -> void can[Console, Memory.Allocate, Abort.Panic]:
+def send_stats(id_raw: darray[u8], documents: darray[LspDocument]&, storage: darray[u8]&, heads: dict[u64, u32]&, line_starts: darray[usize]&, worker_runtime: LspAnalysisWorkerRuntime&, pending_requests: LspPendingAnalysisQueue&, max_header_bytes: i64, max_header_lines: i64, max_body_bytes: i64) -> void can[Console, Memory.Allocate, Abort.Panic]:
     open_count: mutable i64 = 0
     open_uri_bytes: mutable usize = 0
     open_source_bytes: mutable usize = 0
@@ -3095,11 +3552,12 @@ def send_stats(id_raw: darray[u8], documents: darray[LspDocument]&, storage: dar
     pending_snapshots: mutable i64 = 0
     ready_snapshots: mutable i64 = 0
     failed_snapshots: mutable i64 = 0
+    queued_snapshots: mutable i64 = 0
     i: mutable usize = 0
     while i < documents.count:
         if documents[i].lifecycle.open and not documents[i].lifecycle.free:
             open_count <- open_count + 1
-            open_uri_bytes <- open_uri_bytes + documents[i].uri_index.uri_len
+            open_uri_bytes <- open_uri_bytes + documents[i].uri_index.uri_len + documents[i].uri_index.spelling_len
             open_source_bytes <- open_source_bytes + (documents[i].source.text_len - 1) if documents[i].source.text_len > 0
             document_cache_bytes: usize = documents[i].caches.semantic_len + documents[i].caches.symbols_len + documents[i].caches.hover_len + documents[i].caches.signature_len
             derived_cache_bytes <- derived_cache_bytes + document_cache_bytes
@@ -3110,6 +3568,7 @@ def send_stats(id_raw: darray[u8], documents: darray[LspDocument]&, storage: dar
                 ready_snapshots <- ready_snapshots + 1
             else:
                 failed_snapshots <- failed_snapshots + 1
+            queued_snapshots <- queued_snapshots + 1 if documents[i].lifecycle.analysis_queued
         i <- i + 1
     retained_cache_bytes: usize = derived_cache_retained_bytes(documents)
     live_storage_bytes: usize = storage_live_bytes(documents)
@@ -3146,6 +3605,27 @@ def send_stats(id_raw: darray[u8], documents: darray[LspDocument]&, storage: dar
     push_int(body, ready_snapshots)
     push_str(body, ",\"failed\":")
     push_int(body, failed_snapshots)
+    push_str(body, "}")
+    push_str(body, ",\"analysis_worker\":{\"active\":true") if worker_runtime.active
+    push_str(body, ",\"analysis_worker\":{\"active\":false") if not worker_runtime.active
+    push_str(body, ",\"packet_bytes\":")
+    push_int(body, worker_runtime.packet.count.i64())
+    push_str(body, ",\"packet_capacity\":")
+    push_int(body, worker_runtime.packet.capacity.i64())
+    push_str(body, ",\"queued_snapshots\":")
+    push_int(body, queued_snapshots)
+    push_str(body, ",\"pending_requests\":")
+    push_int(body, pending_requests.requests.count.i64())
+    push_str(body, ",\"pending_request_bytes\":")
+    push_int(body, pending_requests.body_bytes.i64())
+    push_str(body, ",\"pending_request_storage_bytes\":")
+    push_int(body, pending_requests.storage.count.i64())
+    push_str(body, ",\"pending_request_storage_capacity\":")
+    push_int(body, pending_requests.storage.capacity.i64())
+    push_str(body, ",\"pending_request_limit\":")
+    push_int(body, MAX_PENDING_ANALYSIS_REQUESTS.i64())
+    push_str(body, ",\"pending_request_storage_limit\":")
+    push_int(body, MAX_PENDING_ANALYSIS_STORAGE_BYTES.i64())
     push_str(body, "}")
     push_str(body, ",\"open_document_limit\":")
     push_int(body, lsp_max_open_documents)
@@ -3217,7 +3697,13 @@ def send_stats(id_raw: darray[u8], documents: darray[LspDocument]&, storage: dar
     push_int(body, open_source_bytes.i64())
     push_str(body, ",\"open_source_bytes_limit\":")
     push_int(body, lsp_max_open_source_bytes)
-    push_str(body, "},\"analysis\":{\"mode\":\"synchronous\",\"queued\":0,\"queue_capacity\":0,\"in_flight\":0,\"timeout_ms\":")
+    push_str(body, "},\"analysis\":{\"mode\":\"one_shot_worker\",\"queued\":")
+    push_int(body, queued_snapshots)
+    push_str(body, ",\"queue_capacity\":")
+    push_int(body, lsp_max_open_documents)
+    push_str(body, ",\"in_flight\":")
+    push_int(body, 1 if worker_runtime.active else 0)
+    push_str(body, ",\"timeout_ms\":")
     push_int(body, lsp_analysis_timeout_ms)
     push_str(body, ",\"worker_packet_limit_bytes\":")
     push_int(body, MAX_ANALYSIS_PACKET_BYTES.i64())
@@ -3264,13 +3750,16 @@ def send_stats(id_raw: darray[u8], documents: darray[LspDocument]&, storage: dar
 # generation, and clear client diagnostics. Freeing (rather than retaining)
 # keeps the slot table and storage bounded under URI churn (D04); the generation
 # bump ensures in-flight old work can never publish into a reused lifetime (D01).
-def handle_did_close(root: Json::Value, documents: mutable darray[LspDocument]&, storage: darray[u8]&, heads: mutable dict[u64, u32]&) -> void can[Console, Memory.Allocate, Abort.Panic]:
+def handle_did_close(root: Json::Value, documents: mutable darray[LspDocument]&, storage: darray[u8]&, heads: mutable dict[u64, u32]&, runtime: mutable LspAnalysisWorkerRuntime&, queue: mutable LspPendingAnalysisQueue&) -> void can[Console, Memory.Allocate, Abort.Panic]:
     spell_bytes: mutable darray[u8] = []
     canon_bytes: mutable darray[u8] = []
     uri: sview = request_identity(root, spell_bytes, canon_bytes)
     return if uri.len == 0
     found: i64 = document_index(documents, storage, heads, uri)
     return if found < 0
+    if runtime.active and runtime.slot == found.usize():
+        analysis_worker_abort_runtime(runtime)
+    pending_analysis_requests_cancel_slot(queue, found.usize(), LSP_ERROR_CONTENT_MODIFIED, "ContentModified")
     lsp_last_document_generation <- documents[found.usize()].lifecycle.generation.i64()
     lsp_last_analysis_status <- 0
     lsp_last_cache_outcome <- LSP_CACHE_UPDATED
@@ -3911,7 +4400,7 @@ def hover_line_range(doc: u8&, doc_len: usize, line_starts: darray[usize]&, span
 # If the source line [start,end) carries a loop-expression header `|item, …|` whose
 # closing `|` is followed by `:`/`->`, append a markdown summary (what it mutates vs
 # its loop-private accumulators) to `out` and return true. A bitwise `|` never matches.
-def hover_loop_header(doc: u8&, start: usize, end: usize, out: mutable darray[u8]&) -> bool can[Memory.Allocate, Abort.Panic]:
+def hover_loop_header(doc: u8&, start: usize, end: usize, cursor_byte_col: i64, doc_len: usize, line_starts: darray[usize]&, span_start: usize, span_count: usize, line_no: i64, utf8: bool, markdown: bool, out: mutable darray[u8]&, hover_start_char_out: mutable i64&, hover_end_char_out: mutable i64&) -> bool can[Memory.Allocate, Abort.Panic]:
     open: mutable usize = end
     p: mutable usize = start
     while p < end:
@@ -3936,6 +4425,11 @@ def hover_loop_header(doc: u8&, start: usize, end: usize, out: mutable darray[u8
     is_header <- true if r < end and doc[r] == 58
     is_header <- true if r + 1 < end and doc[r] == 45 and doc[r + 1] == 62
     false return if not is_header
+    header_start_col: i64 = (open - start).i64()
+    header_end_col: i64 = (close + 1.usize() - start).i64()
+    false return if cursor_byte_col < header_start_col or cursor_byte_col > header_end_col
+    hover_start_char_out <- Positions::byte_col_to_units_span_indexed(doc, doc_len, line_starts, span_start, span_count, line_no, header_start_col, utf8)
+    hover_end_char_out <- Positions::byte_col_to_units_span_indexed(doc, doc_len, line_starts, span_start, span_count, line_no, header_end_col, utf8)
     caps: mutable darray[u8] = []
     accs: mutable darray[u8] = []
     ncaps: mutable i64 = 0
@@ -3974,7 +4468,8 @@ def hover_loop_header(doc: u8&, start: usize, end: usize, out: mutable darray[u8
                 ncaps <- ncaps + 1
             item_start <- k + 1
         k <- k + 1
-    push_str(out, "**Loop header**\\n\\n")
+    push_str(out, "**Loop header**\\n\\n") if markdown
+    push_str(out, "Loop header\\n\\n") if not markdown
     if ncaps > 0:
         push_str(out, "Mutates (captured, in place): ")
         # Copy bytes one by one: `out.extend(caps)` would store the local
@@ -4008,6 +4503,11 @@ def handle_hover(root: Json::Value, snapshot: DocumentSnapshotView, document_sto
             return ProviderOutcome.InvalidRetainedCache
         if document.caches.hover_len > document_storage.count - hover_start:
             return ProviderOutcome.InvalidRetainedCache
+    if document.caches.signature_len > 0:
+        if document.caches.signature_start > document_storage.count:
+            return ProviderOutcome.InvalidRetainedCache
+        if document.caches.signature_len > document_storage.count - document.caches.signature_start:
+            return ProviderOutcome.InvalidRetainedCache
     if document.source.text_len <= 1:
         return ProviderOutcome.NoMatchNull
     doc_text: u8& = &document_storage[source_start]
@@ -4018,20 +4518,24 @@ def handle_hover(root: Json::Value, snapshot: DocumentSnapshotView, document_sto
     msg: mutable darray[u8] = []
     ok: mutable bool = false
     extra: mutable darray[u8] = []
+    loop_start_char: mutable i64 = 0
+    loop_end_char: mutable i64 = 0
     if line_no >= 0:
         if document.caches.line_index_count > 0:
             if hover_line_range(doc_text, document.source.text_len - 1, document_line_starts, document.caches.line_index_start, document.caches.line_index_count, line_no, ls, le):
-                ok <- hover_loop_header(doc_text, ls, le, msg)
+                cursor_byte_col: i64 = Positions::char_to_byte_col_span_indexed(doc_text, document.source.text_len - 1, document_line_starts, document.caches.line_index_start, document.caches.line_index_count, line_no, char_no, utf8)
+                ok <- hover_loop_header(doc_text, ls, le, cursor_byte_col, document.source.text_len - 1, document_line_starts, document.caches.line_index_start, document.caches.line_index_count, line_no, utf8, markdown, msg, loop_start_char, loop_end_char)
             if not ok and document.lifecycle.analysis_state == DocumentAnalysisState.Ready:
-                extra <- general_hover_body(document, document_storage, source_start, document_line_starts, document.caches.line_index_start, document.caches.line_index_count, hover_start, line_no, char_no, markdown, utf8)
+                extra <- general_hover_body(document, document_storage, source_start, document_line_starts, document.caches.line_index_start, document.caches.line_index_count, hover_start, document.caches.signature_start, line_no, char_no, markdown, utf8)
         else:
             # Loop-header and semantic hover share one fallback for this request.
             fallback_starts: darray[usize] = Positions::build_line_starts(doc_text, document.source.text_len - 1)
             lsp_line_index_fallback_build_calls <- lsp_line_index_fallback_build_calls + 1
             if hover_line_range(doc_text, document.source.text_len - 1, &fallback_starts, 0, fallback_starts.count, line_no, ls, le):
-                ok <- hover_loop_header(doc_text, ls, le, msg)
+                cursor_byte_col: i64 = Positions::char_to_byte_col_span_indexed(doc_text, document.source.text_len - 1, &fallback_starts, 0, fallback_starts.count, line_no, char_no, utf8)
+                ok <- hover_loop_header(doc_text, ls, le, cursor_byte_col, document.source.text_len - 1, &fallback_starts, 0, fallback_starts.count, line_no, utf8, markdown, msg, loop_start_char, loop_end_char)
             if not ok and document.lifecycle.analysis_state == DocumentAnalysisState.Ready:
-                extra <- general_hover_body(document, document_storage, source_start, &fallback_starts, 0, fallback_starts.count, hover_start, line_no, char_no, markdown, utf8)
+                extra <- general_hover_body(document, document_storage, source_start, &fallback_starts, 0, fallback_starts.count, hover_start, document.caches.signature_start, line_no, char_no, markdown, utf8)
     if not ok:
         # F01: general hover from the retained summary; null when nothing resolves.
         if extra.count > 0:
@@ -4042,7 +4546,9 @@ def handle_hover(root: Json::Value, snapshot: DocumentSnapshotView, document_sto
     push_str(body, "{\"contents\":{\"kind\":\"markdown\",\"value\":\"") if markdown
     push_str(body, "{\"contents\":{\"kind\":\"plaintext\",\"value\":\"") if not markdown
     body.extend(msg)
-    push_str(body, "\"}}")
+    push_str(body, "\"},\"range\":")
+    hover_push_range(body, line_no, loop_start_char, loop_end_char)
+    push_str(body, "}")
     result_body.extend(body)
     return ProviderOutcome.Result
 
@@ -4052,15 +4558,18 @@ def handle_hover(root: Json::Value, snapshot: DocumentSnapshotView, document_sto
 # Process one complete frame in its own function allocation region. Returning
 # releases parse nodes, body bytes, and serialization scratch before the server
 # reads the next message; only state explicitly passed by reference survives.
-def process_next_message[@docs, @storage, @line_starts, @heads, @profile, @roots, @input, @method](documents: mutable darray[LspDocument]& @docs, document_storage: mutable darray[u8]& @storage, document_line_starts: mutable darray[usize]& @line_starts, document_heads: mutable dict[u64, u32]& @heads, state: mutable LspSessionState&, semtok_profile: mutable SemTokProfile& @profile, allowed_kinds: mutable darray[i64]& @profile, allowed_completion_kinds: mutable darray[i64]& @profile, roots: mutable darray[u8]& @roots, inbuf: mutable darray[u8]& @input, inpos: mutable usize&, method_scratch: mutable darray[u8]& @method, max_header_bytes: i64, max_header_lines: i64, max_body_bytes: i64, malformed_notification_logs: mutable i64&) -> LspMessageStep can[Console, Memory.Allocate, Abort.Panic]:
-    lsp_timing_reset()
+def process_next_message[@docs, @storage, @line_starts, @heads, @profile, @roots, @input, @method, @frame, @worker, @requests](documents: mutable darray[LspDocument]& @docs, document_storage: mutable darray[u8]& @storage, document_line_starts: mutable darray[usize]& @line_starts, document_heads: mutable dict[u64, u32]& @heads, state: mutable LspSessionState&, semtok_profile: mutable SemTokProfile& @profile, allowed_kinds: mutable darray[i64]& @profile, allowed_completion_kinds: mutable darray[i64]& @profile, roots: mutable darray[u8]& @roots, inbuf: mutable darray[u8]& @input, inpos: mutable usize&, frame_decoder: mutable LspFrameDecoder& @frame, method_scratch: mutable darray[u8]& @method, worker_runtime: mutable LspAnalysisWorkerRuntime& @worker, pending_requests: mutable LspPendingAnalysisQueue& @requests, max_header_bytes: i64, max_header_lines: i64, max_body_bytes: i64, malformed_notification_logs: mutable i64&) -> LspMessageStep can[Console, Memory.Allocate, Abort.Panic]:
+    lsp_timing_reset() if not frame_decoder.active
     transport_started_ms: i64 = lsp_timing_start() can Console
     body: mutable darray[u8] = []
-    status: i64 = read_message(body, inbuf, inpos, max_header_bytes, max_header_lines, max_body_bytes)
+    status: mutable i64 = frame_decoder_step(body, frame_decoder, inbuf, inpos, max_header_bytes, max_header_lines, max_body_bytes)
+    if status == 2 and pending_analysis_request_take_ready(pending_requests, body):
+        status <- 1
     lsp_timing_add(lsp_timing_transport_ms, transport_started_ms) can Console
     pending_signal: int = elisa_lsp_pending_termination_signal() can Console
     return LspMessageStep.Stop(128 + pending_signal.i64()) if pending_signal != 0
     return LspMessageStep.Stop(1) if lsp_transport_input_failed
+    return LspMessageStep.WaitInput if status == 2
     # Clean EOF between messages is a transport-level orderly stop (the
     # same behavior as before P02). Any framing error is a controlled
     # nonzero exit — resynchronizing on arbitrary bytes is unsafe.
@@ -4167,6 +4676,8 @@ def process_next_message[@docs, @storage, @line_starts, @heads, @profile, @roots
         send_error(invalid_id, -32602, "InvalidParams") if has_id
         log_malformed_notification(malformed_notification_logs) if not has_id and known_notification_method(method)
         return finish_method_next(method, method_started_ms)
+    if has_id and pending_analysis_request_enqueue(root, method, body, documents, document_storage, document_heads, worker_runtime, pending_requests):
+        return finish_method_next(method, method_started_ms)
     # A frontend contract failure is a recoverable server-side analysis
     # failure. Do not disguise it as an empty semantic answer; each
     # analysis-backed request gets exactly one JSON-RPC InternalError.
@@ -4235,23 +4746,27 @@ def process_next_message[@docs, @storage, @line_starts, @heads, @profile, @roots
             state.lifecycle <- LspLifecycleState.Initialized if state.lifecycle == LspLifecycleState.Running
         "shutdown":
             id_raw: darray[u8] = extract_id(root)
+            pending_analysis_requests_cancel_all(pending_requests, LSP_ERROR_REQUEST_CANCELLED, "RequestCancelled")
             # The response must be delivered before the client sends exit.
             # Requests after this transition are rejected by the central
             # lifecycle gate, including a second shutdown request.
             send_result(id_raw, "null")
+            # No analysis result is useful once shutdown has been accepted.
+            analysis_worker_abort_runtime(worker_runtime)
             state.lifecycle <- LspLifecycleState.ShutdownRequested
         "exit":
             exit_status: mutable i64 = 1
+            pending_analysis_requests_cancel_all(pending_requests, LSP_ERROR_REQUEST_CANCELLED, "RequestCancelled")
             exit_status <- 0 if state.lifecycle == LspLifecycleState.ShutdownRequested
             state.lifecycle <- LspLifecycleState.Exited
             return finish_method_stop(method, method_started_ms, exit_status)
         "textDocument/didOpen" | "textDocument/didChange":
-            check_and_publish(root, documents, document_storage, document_heads, document_line_starts, state.pos_utf8, state.symbols_hier, allowed_kinds, state.diag_related)
+            check_and_publish(root, documents, document_storage, document_heads, document_line_starts, state.pos_utf8, state.symbols_hier, allowed_kinds, state.diag_related, worker_runtime, pending_requests)
             enforce_derived_cache_budget(documents)
             storage_reclaim(documents, document_storage)
             line_index_reclaim_if_needed(documents, document_line_starts)
         "textDocument/didClose":
-            handle_did_close(root, documents, document_storage, document_heads)
+            handle_did_close(root, documents, document_storage, document_heads, worker_runtime, pending_requests)
             storage_reclaim(documents, document_storage)
             line_index_reclaim_if_needed(documents, document_line_starts)
         "workspace/didChangeConfiguration":
@@ -4347,7 +4862,7 @@ def process_next_message[@docs, @storage, @line_starts, @heads, @profile, @roots
             highlight_id: darray[u8] = extract_id(root)
             highlight_body: mutable darray[u8] = []
             provider_started_ms: i64 = lsp_timing_start() can Console
-            highlight_outcome: ProviderOutcome = handle_document_highlight(root, request_document_snapshot(root, documents, document_storage, document_heads), document_storage, highlight_body)
+            highlight_outcome: ProviderOutcome = handle_document_highlight(root, request_document_snapshot(root, documents, document_storage, document_heads), document_storage, document_line_starts, highlight_body, state.pos_utf8)
             lsp_timing_record(lsp_timing_provider_ms, provider_started_ms) can Console
             emit_provider_outcome(root, highlight_id, highlight_outcome, highlight_body, document_storage, 0, 0, documents, document_heads, state.pos_utf8, ProviderRangeKind.Standard)
         "textDocument/documentSymbol":
@@ -4375,7 +4890,7 @@ def process_next_message[@docs, @storage, @line_starts, @heads, @profile, @roots
             emit_provider_outcome(root, selection_id, selection_outcome, selection_body, document_storage, 0, 0, documents, document_heads, state.pos_utf8, ProviderRangeKind.SelectionRanges)
         "$/elisa/stats":
             id_raw: darray[u8] = extract_id(root)
-            send_stats(id_raw, documents, document_storage, document_heads, document_line_starts, max_header_bytes, max_header_lines, max_body_bytes) if has_id
+            send_stats(id_raw, documents, document_storage, document_heads, document_line_starts, worker_runtime, pending_requests, max_header_bytes, max_header_lines, max_body_bytes) if has_id
         "$/elisa/status":
             id_raw: darray[u8] = extract_id(root)
             send_status(id_raw, max_header_bytes, max_header_lines, max_body_bytes, state.pos_utf8) if has_id
@@ -4396,10 +4911,7 @@ def process_next_message[@docs, @storage, @line_starts, @heads, @profile, @roots
                                     pass
                 send_workspace(id_raw, roots, doc_uri)
         "$/cancelRequest":
-            # Dispatch is synchronous, so no request can be in flight when
-            # this notification is read. Ignore it instead of retaining a
-            # stale ID that could cancel a later request with the same ID.
-            pass
+            pending_analysis_request_cancel(root, pending_requests)
         _:
             # P01: unknown requests get MethodNotFound; unknown notifications
             # are ignored without a response object.
@@ -4429,7 +4941,10 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
     # messages, so pipelined frames and split UTF-8 sequences frame exactly.
     inbuf: mutable darray[u8] = []
     inpos: mutable usize = 0
+    frame_decoder: mutable LspFrameDecoder = LspFrameDecoder{phase: LspFramePhase.Header, active: false, header_line: [], body: [], header_bytes: 0, header_lines: 0, content_length: -1, body_remaining: 0, content_type_seen: false, content_encoding_seen: false}
     method_scratch: mutable darray[u8] = []
+    worker_runtime: mutable LspAnalysisWorkerRuntime = LspAnalysisWorkerRuntime{packet: [], slot: 0, source_len: 0, job_id: 0, generation: 0, version: 0, uri_hash: 0, source_hash: 0, active: false, eof_seen: false, utf8: false, symbols_hier: false, related: false}
+    pending_requests: mutable LspPendingAnalysisQueue = LspPendingAnalysisQueue{requests: [], storage: [], body_bytes: 0}
     max_header_bytes: i64 = elisa_lsp_max_header_bytes() can Console
     max_header_lines: i64 = elisa_lsp_max_header_lines() can Console
     max_body_bytes: i64 = elisa_lsp_max_body_bytes() can Console
@@ -4466,10 +4981,29 @@ def main() -> int can[Console, Memory.Allocate, Console.Format, Abort.Panic]:
             pending_signal: mutable int = elisa_lsp_pending_termination_signal() can Console
             return transport_finish(128 + pending_signal.i64()) if pending_signal != 0
             return transport_finish(1) if lsp_transport_output_failed
-            step: LspMessageStep = process_next_message(documents, document_storage, document_line_starts, document_heads, state, semtok_profile, allowed_kinds, allowed_completion_kinds, roots, inbuf, inpos, method_scratch, max_header_bytes, max_header_lines, max_body_bytes, malformed_notification_logs)
+            if state.lifecycle != LspLifecycleState.ShutdownRequested and state.lifecycle != LspLifecycleState.Exited:
+                analysis_worker_start_next_pending(documents, document_storage, document_line_starts, state.pos_utf8, state.symbols_hier, allowed_kinds, state.diag_related, worker_runtime, pending_requests)
+            step: LspMessageStep = process_next_message(documents, document_storage, document_line_starts, document_heads, state, semtok_profile, allowed_kinds, allowed_completion_kinds, roots, inbuf, inpos, frame_decoder, method_scratch, worker_runtime, pending_requests, max_header_bytes, max_header_lines, max_body_bytes, malformed_notification_logs)
             match step:
                 LspMessageStep.Next:
                     pass
+                LspMessageStep.WaitInput:
+                    wait_started_ms: i64 = lsp_timing_start() can Console
+                    events: int = elisa_lsp_analysis_worker_wait_event(-1) can Console
+                    pending_signal: int = elisa_lsp_pending_termination_signal() can Console
+                    lsp_timing_add(lsp_timing_transport_ms, wait_started_ms) can Console
+                    return transport_finish(128 + pending_signal.i64()) if pending_signal != 0
+                    return transport_finish(1) if events < 0
+                    if (events & 1) != 0:
+                        fill_started_ms: i64 = lsp_timing_start() can Console
+                        _ = transport_fill(inbuf, inpos)
+                        lsp_timing_add(lsp_timing_transport_ms, fill_started_ms) can Console
+                        return transport_finish(1) if lsp_transport_input_failed
+                    elif (events & 2) != 0 or (events & 8) != 0 or (events & 16) != 0:
+                        # When input and worker readiness coincide, dispatch the
+                        # client frame first so a newer edit can invalidate a
+                        # completed but obsolete snapshot before it is published.
+                        analysis_worker_process_events(events, worker_runtime, documents, document_storage, document_line_starts, pending_requests)
                 LspMessageStep.Stop(exit_code):
                     return transport_finish(exit_code)
     return transport_finish(0)

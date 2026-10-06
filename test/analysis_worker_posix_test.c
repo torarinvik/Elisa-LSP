@@ -347,6 +347,277 @@ static int test_repeated_worker_cycles(void) {
     return 1;
 }
 
+static int test_wait_event_multiplexes_input_and_worker(void) {
+    int input_pipe[2] = {-1, -1};
+    int saved_stdin = -1;
+    int okay = 0;
+    if (pipe(input_pipe) != 0) goto cleanup;
+    saved_stdin = dup(STDIN_FILENO);
+    if (saved_stdin < 0 || dup2(input_pipe[0], STDIN_FILENO) < 0) goto cleanup;
+    close(input_pipe[0]);
+    input_pipe[0] = -1;
+    if (write(input_pipe[1], "I", 1) != 1) goto cleanup;
+
+    int started = elisa_lsp_analysis_worker_begin(2000);
+    if (started == 1) {
+        static const char worker_byte[] = "W";
+        ssize_t written = elisa_lsp_analysis_worker_write(worker_byte, 1);
+        elisa_lsp_analysis_worker_child_exit(written == 1 ? 0 : 31);
+    }
+    if (started != 0) goto cleanup;
+
+    struct pollfd worker_descriptor = {
+        .fd = worker_read_fd,
+        .events = POLLIN | POLLHUP | POLLERR,
+        .revents = 0
+    };
+    if (poll(&worker_descriptor, 1, 2000) <= 0) goto cleanup;
+    int events = elisa_lsp_analysis_worker_wait_event(0);
+    if ((events & (ELISA_LSP_EVENT_INPUT | ELISA_LSP_EVENT_WORKER)) !=
+        (ELISA_LSP_EVENT_INPUT | ELISA_LSP_EVENT_WORKER)) goto cleanup;
+
+    char input_byte = 0;
+    char worker_byte = 0;
+    char extra = 0;
+    if (read(STDIN_FILENO, &input_byte, 1) != 1 || input_byte != 'I') goto cleanup;
+    if (elisa_lsp_analysis_worker_read(&worker_byte, 1) != 1 || worker_byte != 'W') goto cleanup;
+    if (elisa_lsp_analysis_worker_read(&extra, 1) != 0) goto cleanup;
+    if (elisa_lsp_analysis_worker_finish() != 0) goto cleanup;
+    okay = 1;
+
+cleanup:
+    if (worker_active) elisa_lsp_analysis_worker_abort();
+    if (saved_stdin >= 0) {
+        if (dup2(saved_stdin, STDIN_FILENO) < 0) okay = 0;
+        close(saved_stdin);
+    }
+    if (input_pipe[0] >= 0) close(input_pipe[0]);
+    if (input_pipe[1] >= 0) close(input_pipe[1]);
+    return check(okay,
+                 "parent event wait reports client input and worker readiness together");
+}
+
+static int test_wait_event_reports_independent_readiness(void) {
+    int input_pipe[2] = {-1, -1};
+    int saved_stdin = -1;
+    int okay = 0;
+    if (pipe(input_pipe) != 0) goto cleanup;
+    saved_stdin = dup(STDIN_FILENO);
+    if (saved_stdin < 0 || dup2(input_pipe[0], STDIN_FILENO) < 0) goto cleanup;
+    close(input_pipe[0]);
+    input_pipe[0] = -1;
+
+    if (write(input_pipe[1], "I", 1) != 1) goto cleanup;
+    int input_events = elisa_lsp_analysis_worker_wait_event(0);
+    if (input_events != ELISA_LSP_EVENT_INPUT) goto cleanup;
+    char input_byte = 0;
+    if (read(STDIN_FILENO, &input_byte, 1) != 1 || input_byte != 'I') goto cleanup;
+
+    int started = elisa_lsp_analysis_worker_begin(2000);
+    if (started == 1) {
+        static const char worker_byte[] = "W";
+        ssize_t written = elisa_lsp_analysis_worker_write(worker_byte, 1);
+        elisa_lsp_analysis_worker_child_exit(written == 1 ? 0 : 32);
+    }
+    if (started != 0) goto cleanup;
+    int worker_events = elisa_lsp_analysis_worker_wait_event(2000);
+    if (worker_events != ELISA_LSP_EVENT_WORKER) goto cleanup;
+
+    char worker_byte = 0;
+    char extra = 0;
+    if (elisa_lsp_analysis_worker_read(&worker_byte, 1) != 1 || worker_byte != 'W') goto cleanup;
+    if (elisa_lsp_analysis_worker_read(&extra, 1) != 0) goto cleanup;
+    if (elisa_lsp_analysis_worker_finish() != 0) goto cleanup;
+    okay = 1;
+
+cleanup:
+    if (worker_active) elisa_lsp_analysis_worker_abort();
+    if (saved_stdin >= 0) {
+        if (dup2(saved_stdin, STDIN_FILENO) < 0) okay = 0;
+        close(saved_stdin);
+    }
+    if (input_pipe[0] >= 0) close(input_pipe[0]);
+    if (input_pipe[1] >= 0) close(input_pipe[1]);
+    return check(okay,
+                 "parent event wait reports input-only and worker-only readiness");
+}
+
+static int test_wait_event_reports_worker_deadline(void) {
+    int input_pipe[2] = {-1, -1};
+    int saved_stdin = -1;
+    int okay = 0;
+    if (pipe(input_pipe) != 0) goto cleanup;
+    saved_stdin = dup(STDIN_FILENO);
+    if (saved_stdin < 0 || dup2(input_pipe[0], STDIN_FILENO) < 0) goto cleanup;
+    close(input_pipe[0]);
+    input_pipe[0] = -1;
+
+    int started = elisa_lsp_analysis_worker_begin(150);
+    if (started == 1) {
+        for (;;) pause();
+    }
+    if (started != 0) goto cleanup;
+    int idle_events = elisa_lsp_analysis_worker_wait_event(20);
+    if (idle_events != 0 || !worker_active) goto cleanup;
+    int events = elisa_lsp_analysis_worker_wait_event(-1);
+    if (events != ELISA_LSP_EVENT_WORKER_DEADLINE) {
+        fprintf(stderr, "worker deadline wait returned events=%d errno=%d\n", events, errno);
+        goto cleanup;
+    }
+    elisa_lsp_analysis_worker_abort();
+    okay = 1;
+
+cleanup:
+    if (worker_active) elisa_lsp_analysis_worker_abort();
+    if (saved_stdin >= 0) {
+        if (dup2(saved_stdin, STDIN_FILENO) < 0) okay = 0;
+        close(saved_stdin);
+    }
+    if (input_pipe[0] >= 0) close(input_pipe[0]);
+    if (input_pipe[1] >= 0) close(input_pipe[1]);
+    return check(okay,
+                 "parent event wait reports an expired active-worker deadline");
+}
+
+static int test_incremental_read_and_nonblocking_reap(void) {
+    static const unsigned char message[] = "incremental-worker-packet";
+    unsigned char received[sizeof(message)] = {0};
+    size_t received_count = 0;
+    int input_pipe[2] = {-1, -1};
+    int saved_stdin = -1;
+    if (pipe(input_pipe) != 0) return check(0, "create idle stdin for incremental worker test");
+    saved_stdin = dup(STDIN_FILENO);
+    if (saved_stdin < 0 || dup2(input_pipe[0], STDIN_FILENO) < 0) {
+        if (saved_stdin >= 0) close(saved_stdin);
+        close(input_pipe[0]);
+        close(input_pipe[1]);
+        return check(0, "install idle stdin for incremental worker test");
+    }
+    close(input_pipe[0]);
+    input_pipe[0] = -1;
+    int started = elisa_lsp_analysis_worker_begin(3000);
+    if (started == 1) {
+        struct timespec delay = {.tv_sec = 0, .tv_nsec = 100000000L};
+        while (nanosleep(&delay, &delay) != 0 && errno == EINTR) {}
+        if (elisa_lsp_analysis_worker_write(message, sizeof(message)) < 0) {
+            elisa_lsp_analysis_worker_child_exit(74);
+        }
+        elisa_lsp_analysis_worker_child_exit(0);
+    }
+    if (!check(started == 0, "start an incremental analysis worker")) goto cleanup;
+    unsigned char byte = 0;
+    ssize_t early = elisa_lsp_analysis_worker_read_available(&byte, 1);
+    if (!check(early == -2 && worker_active,
+               "incremental read returns immediately when no packet bytes are ready")) {
+        goto cleanup;
+    }
+
+    int saw_eof = 0;
+    while (!saw_eof) {
+        int events = elisa_lsp_analysis_worker_wait_event(1000);
+        if (events < 0 || (events & ELISA_LSP_EVENT_WORKER) == 0) {
+            check(0, "incremental packet wait reports worker readiness");
+            goto cleanup;
+        }
+        unsigned char chunk[5];
+        ssize_t count = elisa_lsp_analysis_worker_read_available(chunk, sizeof(chunk));
+        if (count == -2) continue;
+        if (count < 0) {
+            check(0, "incremental packet read remains healthy");
+            goto cleanup;
+        }
+        if (count == 0) {
+            saw_eof = 1;
+            break;
+        }
+        if ((size_t)count > sizeof(received) - received_count) {
+            check(0, "incremental packet remains within its receive buffer");
+            goto cleanup;
+        }
+        memcpy(received + received_count, chunk, (size_t)count);
+        received_count += (size_t)count;
+    }
+
+    int finish = 0;
+    while (finish == 0) {
+        finish = elisa_lsp_analysis_worker_try_finish();
+        if (finish == 0) {
+            int events = elisa_lsp_analysis_worker_wait_event(1000);
+            if (events < 0 || (events & ELISA_LSP_EVENT_WORKER_EOF) == 0) {
+                check(0, "EOF wait stays responsive while the child exits");
+                goto cleanup;
+            }
+        }
+    }
+    int okay = check(finish == 1 && !worker_active &&
+                     received_count == sizeof(message) &&
+                     memcmp(received, message, sizeof(message)) == 0,
+                     "incremental packet bytes are preserved and child reaping never blocks");
+    if (saved_stdin >= 0) {
+        if (dup2(saved_stdin, STDIN_FILENO) < 0) okay = 0;
+        close(saved_stdin);
+    }
+    close(input_pipe[1]);
+    return okay;
+
+cleanup:
+    if (worker_active) elisa_lsp_analysis_worker_abort();
+    if (saved_stdin >= 0) {
+        (void)dup2(saved_stdin, STDIN_FILENO);
+        close(saved_stdin);
+    }
+    if (input_pipe[0] >= 0) close(input_pipe[0]);
+    if (input_pipe[1] >= 0) close(input_pipe[1]);
+    return 0;
+}
+
+static int test_incremental_reap_rejects_abnormal_exit(void) {
+    int input_pipe[2] = {-1, -1};
+    int saved_stdin = -1;
+    int okay = 0;
+    if (pipe(input_pipe) != 0) goto cleanup;
+    saved_stdin = dup(STDIN_FILENO);
+    if (saved_stdin < 0 || dup2(input_pipe[0], STDIN_FILENO) < 0) goto cleanup;
+    close(input_pipe[0]);
+    input_pipe[0] = -1;
+
+    int started = elisa_lsp_analysis_worker_begin(3000);
+    if (started == 1) elisa_lsp_analysis_worker_child_exit(74);
+    if (started != 0) goto cleanup;
+
+    int saw_eof = 0;
+    while (!saw_eof) {
+        int events = elisa_lsp_analysis_worker_wait_event(1000);
+        if (events < 0 || (events & ELISA_LSP_EVENT_WORKER) == 0) goto cleanup;
+        unsigned char byte = 0;
+        ssize_t count = elisa_lsp_analysis_worker_read_available(&byte, 1);
+        if (count == -2) continue;
+        if (count < 0) goto cleanup;
+        saw_eof = count == 0;
+    }
+
+    int finish = 0;
+    while (finish == 0) {
+        finish = elisa_lsp_analysis_worker_try_finish();
+        if (finish == 0) {
+            int events = elisa_lsp_analysis_worker_wait_event(1000);
+            if (events < 0 || (events & ELISA_LSP_EVENT_WORKER_EOF) == 0) goto cleanup;
+        }
+    }
+    okay = finish == -1 && errno == ECHILD && !worker_active;
+
+cleanup:
+    if (worker_active) elisa_lsp_analysis_worker_abort();
+    if (saved_stdin >= 0) {
+        if (dup2(saved_stdin, STDIN_FILENO) < 0) okay = 0;
+        close(saved_stdin);
+    }
+    if (input_pipe[0] >= 0) close(input_pipe[0]);
+    if (input_pipe[1] >= 0) close(input_pipe[1]);
+    return check(okay,
+                 "incremental child reap rejects nonzero worker exit status");
+}
+
 int main(void) {
     if (!check_timeout_configuration()) return 1;
     if (!test_large_stream_success()) return 1;
@@ -355,6 +626,11 @@ int main(void) {
     if (!test_pending_termination_kills_and_reaps()) return 1;
     if (!test_active_worker_guard_and_abort()) return 1;
     if (!test_repeated_worker_cycles()) return 1;
-    puts("POSIX analysis worker OK: isolation, streamed output, exit validation, deadline, termination, abort, and reuse");
+    if (!test_wait_event_multiplexes_input_and_worker()) return 1;
+    if (!test_wait_event_reports_independent_readiness()) return 1;
+    if (!test_wait_event_reports_worker_deadline()) return 1;
+    if (!test_incremental_read_and_nonblocking_reap()) return 1;
+    if (!test_incremental_reap_rejects_abnormal_exit()) return 1;
+    puts("POSIX analysis worker OK: isolation, streamed output, incremental reads, nonblocking reap, independent and simultaneous event readiness, deadline, exit validation, termination, abort, and reuse");
     return 0;
 }

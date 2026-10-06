@@ -201,24 +201,46 @@ with LspSession(srv, startup_timeout=30, request_timeout=30, teardown_timeout=30
         assert response.get("error", {}).get("code") == -32603, (method, response)
         assert response["error"].get("message") == "InternalError", (method, response)
 
+    failed_stats = client.request("$/elisa/stats", {})["result"]
+    assert failed_stats["snapshots"] == {
+        "open": 1,
+        "pending": 0,
+        "ready": 0,
+        "failed": 1,
+    }, failed_stats
+
     # Source-only requests remain available, and a later valid snapshot recovers.
     folding = client.request("textDocument/foldingRange", td)
     assert "result" in folding and "error" not in folding, folding
     selection = client.request("textDocument/selectionRange", {**td, "positions": [position]})
     assert "result" in selection and "error" not in selection, selection
     failed_hover_id = "failed-analysis-loop-hover"
+    failed_capture_line = failed_source.splitlines()[4]
+    failed_capture_open = failed_capture_line.index("|")
+    failed_capture_close = failed_capture_line.index("|", failed_capture_open + 1)
     failed_hover = client.request(
         "textDocument/hover",
-        {**td, "position": {"line": 4, "character": 0}},
+        {**td, "position": {"line": 4, "character": failed_capture_open + 1}},
         req_id=failed_hover_id,
     )
     assert "result" in failed_hover and "error" not in failed_hover, failed_hover
     assert failed_hover["result"]["contents"]["value"].startswith("**Loop header**"), failed_hover
+    assert failed_hover["result"]["range"] == {
+        "start": {"line": 4, "character": failed_capture_open},
+        "end": {"line": 4, "character": failed_capture_close + 1},
+    }, failed_hover
     assert [message for message in client.all_messages if message.get("id") == failed_hover_id] == [failed_hover]
     open_doc(client, "def recovered() -> i64:\n    return 7\n", 2)
     for method, params in requests:
         response = client.request(method, params)
         assert "result" in response and "error" not in response, (method, response)
+    recovered_stats = client.request("$/elisa/stats", {})["result"]
+    assert recovered_stats["snapshots"] == {
+        "open": 1,
+        "pending": 0,
+        "ready": 1,
+        "failed": 0,
+    }, recovered_stats
     symbols = client.request("textDocument/documentSymbol", td)
     assert [item["name"] for item in symbols["result"]] == ["recovered"], symbols
 
@@ -375,7 +397,7 @@ with LspSession(srv, startup_timeout=30, request_timeout=30, teardown_timeout=30
     recovered_symbols = client.request("textDocument/documentSymbol", td)
     assert [item["name"] for item in recovered_symbols.get("result", [])] == ["add", "caller"], recovered_symbols
     recovered_hover = client.request("textDocument/hover", hover_params)
-    assert recovered_hover.get("result", {}).get("contents", {}).get("value") == "def add -> i64", recovered_hover
+    assert recovered_hover.get("result", {}).get("contents", {}).get("value") == "```elisa\ndef add(value: i64) -> i64:\n```", recovered_hover
     recovered_folding = client.request("textDocument/foldingRange", td)
     assert isinstance(recovered_folding.get("result"), list), recovered_folding
     recovered_selection = client.request(

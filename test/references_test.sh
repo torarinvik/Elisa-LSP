@@ -16,6 +16,7 @@ from lsp_client import LspSession, frame_bytes
 
 srv = sys.argv[1]
 uri = "file:///references.elisa"
+stress_uri = "file:///references-stress.elisa"
 source = (
     "def target() -> i64:\n"
     "    return 1\n"
@@ -44,6 +45,11 @@ source = (
     "    return value\n"
 )
 lines = source.splitlines()
+stress_count = 1800
+stress_source = "def shared() -> i64:\n    return 1\n" + "".join(
+    f"def caller_{index}() -> i64:\n    return shared()\n"
+    for index in range(stress_count)
+)
 
 
 def char_column(line_no, needle, encoding, inside=0, occurrence=0):
@@ -197,6 +203,45 @@ def run(encoding):
             "partialResultToken": 8,
         })
         assert extended.get("result") == expected_all, extended
+
+        # A popular symbol exercises the response path that formerly scanned
+        # every accumulated span for duplicates and insertion-sorted results.
+        client.notify("textDocument/didOpen", {
+            "textDocument": {
+                "uri": stress_uri,
+                "languageId": "Elisa",
+                "version": 1,
+                "text": stress_source,
+            }
+        })
+        stress_result = client.request("textDocument/references", {
+            "textDocument": {"uri": stress_uri},
+            "position": {"line": 0, "character": 5},
+            "context": {"includeDeclaration": True},
+        })
+        stress_locations = stress_result.get("result")
+        assert isinstance(stress_locations, list), stress_result
+        assert len(stress_locations) == stress_count + 1, (len(stress_locations), stress_count + 1)
+        assert stress_locations[0] == {
+            "uri": stress_uri,
+            "range": {
+                "start": {"line": 0, "character": 4},
+                "end": {"line": 0, "character": 10},
+            },
+        }, stress_locations[:1]
+        previous_position = (-1, -1)
+        for item in stress_locations:
+            assert item.get("uri") == stress_uri, item
+            start = item.get("range", {}).get("start", {})
+            position = (start.get("line", -1), start.get("character", -1))
+            assert position > previous_position, (previous_position, position)
+            previous_position = position
+        stress_without_declaration = client.request("textDocument/references", {
+            "textDocument": {"uri": stress_uri},
+            "position": {"line": 0, "character": 5},
+            "context": {"includeDeclaration": False},
+        })
+        assert len(stress_without_declaration.get("result", [])) == stress_count, stress_without_declaration
 
         invalid_raw(client, 800, '{"textDocument":{"uri":"file:///references.elisa"},"position":{"line":0,"character":4},"context":{}}')
         invalid_raw(client, 801, '{"textDocument":{"uri":"file:///references.elisa"},"position":{"line":0,"character":4},"context":{"includeDeclaration":"true"}}')

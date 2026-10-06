@@ -44,13 +44,45 @@ def reference_targets_equal(a: ReferenceTarget, b: ReferenceTarget) -> bool:
     return reference_range_equal(a.span, b.span)
 
 
-def reference_span_append_unique(spans: mutable darray[ReferenceSpan]&, candidate: ReferenceSpan) -> void can[Memory.Allocate, Abort.Panic]:
-    duplicate: mutable bool = false
-    j: mutable usize = 0
-    while j < spans.count:
-        duplicate <- true if reference_range_equal(spans[j], candidate)
-        j <- j + 1
-    spans.push(candidate) if not duplicate
+def reference_span_sift_down(spans: mutable darray[ReferenceSpan]&, root: usize, end: usize) -> void:
+    parent: mutable usize = root
+    while parent < end / 2:
+        child: mutable usize = parent * 2 + 1
+        if child + 1 < end and reference_span_before(spans[child], spans[child + 1]):
+            child <- child + 1
+        if not reference_span_before(spans[parent], spans[child]):
+            return
+        swap: ReferenceSpan = spans[parent]
+        spans[parent] <- spans[child]
+        spans[child] <- swap
+        parent <- child
+
+
+# Heap-sort the resolved locations in place, then remove equal adjacent spans
+# with one compaction pass. This keeps large same-symbol reference results
+# O(n log n) instead of pairwise duplicate checks plus insertion sorting.
+def reference_span_sort_unique(spans: mutable darray[ReferenceSpan]&) -> void:
+    count: usize = spans.count
+    start: mutable usize = count / 2
+    while start > 0:
+        start <- start - 1
+        reference_span_sift_down(spans, start, count)
+    end: mutable usize = count
+    while end > 1:
+        last: usize = end - 1
+        swap: ReferenceSpan = spans[0]
+        spans[0] <- spans[last]
+        spans[last] <- swap
+        end <- last
+        reference_span_sift_down(spans, 0, end)
+    kept: mutable usize = 0
+    i: mutable usize = 0
+    while i < count:
+        if kept == 0 or not reference_range_equal(spans[kept - 1], spans[i]):
+            spans[kept] <- spans[i]
+            kept <- kept + 1
+        i <- i + 1
+    spans.truncate(kept)
 
 
 # Select a retained resolver target under the cursor. Source ranges are
@@ -151,7 +183,7 @@ def reference_any_collect(blob: sview, target: ReferenceTarget, include_declarat
                                 is_declaration: bool = not binding_declaration_seen
                                 binding_declaration_seen <- true
                                 if include_declaration or not is_declaration:
-                                    reference_span_append_unique(spans, candidate)
+                                    spans.push(candidate)
                 elif not target.is_binding and i > rec_start and sview_at(blob, rec_start) == 100:
                     source_sl: mutable sview = sview("", 0, 0)
                     source_sc: mutable sview = sview("", 0, 0)
@@ -167,19 +199,12 @@ def reference_any_collect(blob: sview, target: ReferenceTarget, include_declarat
                             candidate: ReferenceSpan = ReferenceSpan{start_line: hover_parse_i64(source_sl), start_char: hover_parse_i64(source_sc), end_line: hover_parse_i64(source_el), end_char: hover_parse_i64(source_ec)}
                             is_declaration: bool = reference_range_equal(candidate, target.span)
                             if include_declaration or not is_declaration:
-                                reference_span_append_unique(spans, candidate)
+                                spans.push(candidate)
                 rec_start <- i + 1
             i <- i + 1
-        # Deterministic source order, including the self-edge when requested.
-        i <- 1
-        while i < spans.count:
-            key: ReferenceSpan = spans[i]
-            j: mutable usize = i
-            while j > 0 and reference_span_before(key, spans[j - 1]):
-                spans[j] <- spans[j - 1]
-                j <- j - 1
-            spans[j] <- key
-            i <- i + 1
+        # Deterministic source order and duplicate compaction, including the
+        # self-edge when requested.
+        reference_span_sort_unique(spans)
         return spans
 
 

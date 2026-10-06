@@ -25,6 +25,14 @@
 extern int elisa_lsp_pending_termination_signal(void);
 
 enum { WORKER_POLL_SLICE_MS = 25, WORKER_PIPE_FD = 3 };
+enum {
+    ELISA_LSP_EVENT_INPUT = 1,
+    ELISA_LSP_EVENT_WORKER = 2,
+    ELISA_LSP_EVENT_TERMINATION = 4,
+    ELISA_LSP_EVENT_WORKER_DEADLINE = 8,
+    /* read_available() returned EOF; wait_event() now watches child exit. */
+    ELISA_LSP_EVENT_WORKER_EOF = 16
+};
 
 static int worker_active = 0;
 static int worker_is_child = 0;
@@ -32,9 +40,12 @@ static pid_t worker_pid = -1;
 static int worker_read_fd = -1;
 static int worker_write_fd = -1;
 static int worker_eof_seen = 0;
+static int worker_reaped = 0;
+static int worker_status = 0;
 static struct timespec worker_deadline;
 
 void elisa_lsp_analysis_worker_abort(void);
+static int termination_is_pending(void);
 
 static int make_deadline(struct timespec *deadline, int64_t timeout_ms) {
     if (clock_gettime(CLOCK_MONOTONIC, deadline) != 0) return -1;
@@ -66,7 +77,8 @@ static int deadline_remaining(const struct timespec *deadline,
     return 1;
 }
 
-static int poll_timeout_for(const struct timespec *deadline, int *timeout_ms) {
+static int timeout_until_deadline(const struct timespec *deadline,
+                                  int *timeout_ms) {
     struct timespec remaining;
     int result = deadline_remaining(deadline, &remaining);
     if (result <= 0) return result;
@@ -74,8 +86,17 @@ static int poll_timeout_for(const struct timespec *deadline, int *timeout_ms) {
     int64_t rounded_ms = (int64_t)remaining.tv_sec * 1000 +
                          ((int64_t)remaining.tv_nsec + 999999) / 1000000;
     if (rounded_ms < 1) rounded_ms = 1;
-    if (rounded_ms > WORKER_POLL_SLICE_MS) rounded_ms = WORKER_POLL_SLICE_MS;
+    if (rounded_ms > INT_MAX) rounded_ms = INT_MAX;
     *timeout_ms = (int)rounded_ms;
+    return 1;
+}
+
+static int poll_timeout_for(const struct timespec *deadline, int *timeout_ms) {
+    int result = timeout_until_deadline(deadline, timeout_ms);
+    if (result <= 0) return result;
+    if (*timeout_ms > WORKER_POLL_SLICE_MS) {
+        *timeout_ms = WORKER_POLL_SLICE_MS;
+    }
     return 1;
 }
 
@@ -86,6 +107,8 @@ static void reset_worker_state(void) {
     worker_read_fd = -1;
     worker_write_fd = -1;
     worker_eof_seen = 0;
+    worker_reaped = 0;
+    worker_status = 0;
     worker_deadline.tv_sec = 0;
     worker_deadline.tv_nsec = 0;
 }
@@ -334,6 +357,8 @@ int elisa_lsp_analysis_worker_begin(int64_t timeout_ms) {
         worker_read_fd = -1;
         worker_write_fd = WORKER_PIPE_FD;
         worker_eof_seen = 0;
+        worker_reaped = 0;
+        worker_status = 0;
         worker_deadline = deadline;
         return 1;
     }
@@ -354,9 +379,122 @@ int elisa_lsp_analysis_worker_begin(int64_t timeout_ms) {
     worker_read_fd = pipe_fds[0];
     worker_write_fd = -1;
     worker_eof_seen = 0;
+    worker_reaped = 0;
+    worker_status = 0;
     worker_deadline = deadline;
     pipe_fds[0] = -1;
     return 0;
+}
+
+/*
+ * Wait for either a client frame to become readable or the active worker to
+ * make progress. This is the parent-side event primitive for Q01: callers may
+ * service input without blocking on the worker pipe, and worker deadlines and
+ * termination signals remain observable while the input stream is idle.
+ * A worker-ready event means its pipe has bytes, EOF, or an error; packet
+ * framing and child exit validation remain the caller's responsibility.
+ */
+int elisa_lsp_analysis_worker_wait_event(int timeout_ms) {
+    if (timeout_ms < -1 || timeout_ms > 300000) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (worker_is_child) {
+        errno = ECHILD;
+        return -1;
+    }
+    struct timespec wait_deadline;
+    int wait_deadline_active = timeout_ms >= 0;
+    if (wait_deadline_active && make_deadline(&wait_deadline, timeout_ms) != 0) {
+        return -1;
+    }
+    if (termination_is_pending()) return ELISA_LSP_EVENT_TERMINATION;
+
+    for (;;) {
+        int poll_timeout = -1;
+        if (wait_deadline_active) {
+            int caller_timeout = 0;
+            int caller_time_left = timeout_until_deadline(&wait_deadline,
+                                                         &caller_timeout);
+            if (caller_time_left < 0) return -1;
+            poll_timeout = caller_time_left == 0 ? 0 : caller_timeout;
+        }
+        if (worker_active) {
+            struct timespec remaining;
+            int deadline_state = deadline_remaining(&worker_deadline, &remaining);
+            if (deadline_state == 0) return ELISA_LSP_EVENT_WORKER_DEADLINE;
+            if (deadline_state < 0) return -1;
+
+            int deadline_slice = 0;
+            int slice_state = poll_timeout_for(&worker_deadline, &deadline_slice);
+            if (slice_state == 0) return ELISA_LSP_EVENT_WORKER_DEADLINE;
+            if (slice_state < 0) return -1;
+            if (poll_timeout < 0 || deadline_slice < poll_timeout) {
+                poll_timeout = deadline_slice;
+            }
+        }
+
+        struct pollfd descriptors[2];
+        nfds_t count = 0;
+        descriptors[count].fd = STDIN_FILENO;
+        descriptors[count].events = POLLIN | POLLHUP | POLLERR;
+        descriptors[count].revents = 0;
+        ++count;
+        if (worker_active && !worker_eof_seen) {
+            if (worker_read_fd < 0 || worker_pid <= 0) {
+                errno = EINVAL;
+                return -1;
+            }
+            descriptors[count].fd = worker_read_fd;
+            descriptors[count].events = POLLIN | POLLHUP | POLLERR;
+            descriptors[count].revents = 0;
+            ++count;
+        }
+
+        int ready = poll(descriptors, count, poll_timeout);
+        if (termination_is_pending()) return ELISA_LSP_EVENT_TERMINATION;
+        if (ready < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (ready == 0) {
+            if (worker_active) {
+                struct timespec remaining;
+                int deadline_state = deadline_remaining(&worker_deadline, &remaining);
+                if (deadline_state == 0) return ELISA_LSP_EVENT_WORKER_DEADLINE;
+                if (deadline_state < 0) return -1;
+            }
+            if (wait_deadline_active) {
+                int caller_timeout = 0;
+                int caller_time_left = timeout_until_deadline(&wait_deadline,
+                                                             &caller_timeout);
+                if (caller_time_left < 0) return -1;
+                if (caller_time_left == 0) return 0;
+            }
+            if (worker_active && worker_eof_seen) return ELISA_LSP_EVENT_WORKER_EOF;
+            if (worker_active) continue;
+            return 0;
+        }
+
+        int events = 0;
+        if (descriptors[0].revents & POLLNVAL) {
+            errno = EBADF;
+            return -1;
+        }
+        if (descriptors[0].revents & (POLLIN | POLLHUP | POLLERR)) {
+            events |= ELISA_LSP_EVENT_INPUT;
+        }
+        if (worker_active && !worker_eof_seen) {
+            if (descriptors[1].revents & POLLNVAL) {
+                errno = EBADF;
+                return -1;
+            }
+            if (descriptors[1].revents & (POLLIN | POLLHUP | POLLERR)) {
+                events |= ELISA_LSP_EVENT_WORKER;
+            }
+        }
+        if (events != 0) return events;
+    }
 }
 
 ssize_t elisa_lsp_analysis_worker_write(const void *buffer, size_t count) {
@@ -461,6 +599,113 @@ ssize_t elisa_lsp_analysis_worker_read(void *buffer, size_t count) {
     }
 }
 
+/* Consume currently available pipe bytes without waiting for the child.
+ * Returns a positive byte count, 0 on EOF, -2 when the pipe is not readable,
+ * and -1 after aborting the worker on a deadline, signal, or I/O failure. */
+ssize_t elisa_lsp_analysis_worker_read_available(void *buffer, size_t count) {
+    if (!worker_active || worker_is_child || worker_pid <= 0 ||
+        worker_read_fd < 0 || (buffer == NULL && count != 0) ||
+        count > (size_t)SSIZE_MAX) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (count == 0) return 0;
+    if (worker_eof_seen) return 0;
+    if (termination_is_pending()) return fail_and_abort(EINTR);
+    int timeout_ms = 0;
+    int time_left = poll_timeout_for(&worker_deadline, &timeout_ms);
+    if (time_left == 0) return fail_and_abort(ETIMEDOUT);
+    if (time_left < 0) {
+        int saved_errno = errno;
+        return fail_and_abort(saved_errno);
+    }
+
+    struct pollfd descriptor;
+    descriptor.fd = worker_read_fd;
+    descriptor.events = POLLIN | POLLHUP | POLLERR;
+    descriptor.revents = 0;
+    int ready = poll(&descriptor, 1, 0);
+    if (ready < 0) {
+        if (errno == EINTR) return -2;
+        int saved_errno = errno;
+        return fail_and_abort(saved_errno);
+    }
+    if (ready == 0) return -2;
+    if ((descriptor.revents & POLLNVAL) != 0) return fail_and_abort(EBADF);
+    if ((descriptor.revents & (POLLIN | POLLHUP | POLLERR)) == 0) return -2;
+
+    ssize_t received = read(worker_read_fd, buffer, count);
+    if (received > 0) {
+        if (termination_is_pending()) return fail_and_abort(EINTR);
+        return received;
+    }
+    if (received == 0) {
+        worker_eof_seen = 1;
+        return 0;
+    }
+    if (errno == EINTR) return -2;
+    if (errno == EAGAIN || errno == EWOULDBLOCK) return -2;
+    int saved_errno = errno;
+    return fail_and_abort(saved_errno);
+}
+
+/* Reap only after the parent has drained the packet through EOF.  A zero
+ * result means that the child is still finishing; this call never waits. */
+int elisa_lsp_analysis_worker_try_finish(void) {
+    if (!worker_active || worker_is_child || worker_pid <= 0 ||
+        worker_read_fd < 0 || !worker_eof_seen) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (termination_is_pending()) {
+        elisa_lsp_analysis_worker_abort();
+        errno = EINTR;
+        return -1;
+    }
+    int timeout_ms = 0;
+    int time_left = poll_timeout_for(&worker_deadline, &timeout_ms);
+    if (time_left == 0) {
+        elisa_lsp_analysis_worker_abort();
+        errno = ETIMEDOUT;
+        return -1;
+    }
+    if (time_left < 0) {
+        int saved_errno = errno;
+        elisa_lsp_analysis_worker_abort();
+        errno = saved_errno;
+        return -1;
+    }
+
+    if (!worker_reaped) {
+        int child_status = 0;
+        pid_t waited = waitpid(worker_pid, &child_status, WNOHANG);
+        if (waited == 0 || (waited < 0 && errno == EINTR)) return 0;
+        if (waited < 0) {
+            int saved_errno = errno;
+            elisa_lsp_analysis_worker_abort();
+            errno = saved_errno;
+            return -1;
+        }
+        worker_reaped = 1;
+        worker_status = child_status;
+    }
+    int final_status = worker_status;
+    worker_pid = -1;
+    int close_result = close(worker_read_fd);
+    int close_errno = errno;
+    worker_read_fd = -1;
+    reset_worker_state();
+    if (close_result != 0) {
+        errno = close_errno;
+        return -1;
+    }
+    if (!WIFEXITED(final_status) || WEXITSTATUS(final_status) != 0) {
+        errno = ECHILD;
+        return -1;
+    }
+    return 1;
+}
+
 void elisa_lsp_analysis_worker_abort(void) {
     if (!worker_active) return;
     if (worker_is_child) {
@@ -471,7 +716,7 @@ void elisa_lsp_analysis_worker_abort(void) {
 
     pid_t child = worker_pid;
     worker_pid = -1;
-    kill_and_reap(child);
+    if (!worker_reaped) kill_and_reap(child);
     close_fd_once(&worker_read_fd);
     reset_worker_state();
 }

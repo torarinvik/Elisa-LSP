@@ -368,6 +368,54 @@ def semtok_negotiate_profile(root: Json::Value) -> SemTokProfile can[Memory.Allo
         return semtok_profile_with_modifiers(semtok_default_profile(), root)
 
 
+# Detect whether an identifier-shaped `fn(` token begins actual lambda syntax.
+# `fn` is also a legal value name, so the following body marker is significant.
+def semtok_lambda_intro(tokens: darray[Lexer::Token], index: usize, src: u8&) -> bool:
+    # `fn` is also a legal identifier. Treat it as the lambda introducer only
+    # when the balanced parameter list is followed by a lambda body marker.
+    # Optional return types are skipped with delimiter depth so nested function
+    # types and generic annotations do not look like the body boundary.
+    return false if index >= tokens.count or tokens[index].kind != Lexer::TokenKind.Ident
+    return false if index + 1 >= tokens.count or tokens[index + 1].kind != Lexer::TokenKind.LParen
+    return false if tokens[index].length != 2 or src[tokens[index].start.usize()] != 102 or src[tokens[index].start.usize() + 1] != 110
+    depth: mutable i64 = 0
+    close_index: mutable usize = 0
+    found_close: mutable bool = false
+    i: mutable usize = index + 1
+    while i < tokens.count:
+        kind: Lexer::TokenKind = tokens[i].kind
+        if kind == Lexer::TokenKind.LParen:
+            depth <- depth + 1
+        elif kind == Lexer::TokenKind.RParen:
+            depth <- depth - 1
+            if depth == 0:
+                close_index <- i + 1
+                found_close <- true
+                break
+        elif depth == 1 and (kind == Lexer::TokenKind.Newline or kind == Lexer::TokenKind.Eof):
+            return false
+        i <- i + 1
+    return false if not found_close or close_index >= tokens.count
+    after_parameters: Lexer::TokenKind = tokens[close_index].kind
+    return true if after_parameters == Lexer::TokenKind.FatArrow or after_parameters == Lexer::TokenKind.Colon
+    return false if after_parameters != Lexer::TokenKind.Arrow
+    delimiter_depth: mutable i64 = 0
+    tail_kind: mutable Lexer::TokenKind = Lexer::TokenKind.Eof
+    i <- close_index + 1
+    while i < tokens.count:
+        tail_kind <- tokens[i].kind
+        if delimiter_depth == 0 and (tail_kind == Lexer::TokenKind.FatArrow or tail_kind == Lexer::TokenKind.Colon):
+            return true
+        if delimiter_depth == 0 and (tail_kind == Lexer::TokenKind.Newline or tail_kind == Lexer::TokenKind.Eof):
+            return false
+        if tail_kind == Lexer::TokenKind.LParen or tail_kind == Lexer::TokenKind.LBracket or tail_kind == Lexer::TokenKind.LBrace:
+            delimiter_depth <- delimiter_depth + 1
+        elif tail_kind == Lexer::TokenKind.RParen or tail_kind == Lexer::TokenKind.RBracket or tail_kind == Lexer::TokenKind.RBrace:
+            delimiter_depth <- delimiter_depth - 1 if delimiter_depth > 0
+        i <- i + 1
+    return false
+
+
 # Classify a contextual identifier by its text ([L] approximation: text match
 # without scope info — a local named `can` will tint violet; acceptable for
 # the lexical layer, corrected later by the [S] pass).
@@ -405,9 +453,8 @@ def semtok_ident_class(text: sview) -> i64 can[Memory.Allocate, Abort.Panic]:
 # [S] layer: map a name to the token type implied by its top-level declaration
 # (Struct/Enum/Alias→type.user, Func/Extern→fn.use, Const→global, Module→module,
 # Law→decl). -1 = no match. Declaration lookup goes through the frontend adapter.
-def symbol_ttype(table: Semantic::SymbolTable&, name_heads: dict[u64, i64]&, sym_next: darray[i64]&, name: sview) -> i64:
-    idx: i64 = symbol_index_of_indexed(table, name_heads, sym_next, name)
-    return -1 if idx < 0
+def symbol_ttype_index(table: Semantic::SymbolTable&, idx: i64) -> i64:
+    return -1 if idx < 0 or idx.usize() >= symbol_count(table)
     k: i64 = symbol_category(table, idx.usize())
     return ST_FN_USE if k == SYMBOL_KIND_FUNCTION or k == SYMBOL_KIND_EXTERN
     return ST_TYPE_USER if k == SYMBOL_KIND_STRUCT or k == SYMBOL_KIND_ENUM or k == SYMBOL_KIND_ALIAS
@@ -415,6 +462,11 @@ def symbol_ttype(table: Semantic::SymbolTable&, name_heads: dict[u64, i64]&, sym
     return ST_META_MODULE if k == SYMBOL_KIND_MODULE or k == SYMBOL_KIND_IMPORT
     return ST_DECL_SKELETON if k == SYMBOL_KIND_LAW
     return -1
+
+
+def symbol_ttype(table: Semantic::SymbolTable&, name_heads: dict[u64, i64]&, sym_next: darray[i64]&, name: sview) -> i64:
+    idx: i64 = symbol_index_of_indexed(table, name_heads, sym_next, name)
+    return symbol_ttype_index(table, idx)
 
 
 # Resolve a param/local occurrence through the adapter's exact source-span index.
@@ -428,10 +480,54 @@ def occurrence_ttype(table: Semantic::SymbolTable&, occurrence_positions: darray
     return -1
 
 
+def semtok_expression_can_end(kind: Lexer::TokenKind) -> bool:
+    match kind:
+        Lexer::TokenKind.Ident | Lexer::TokenKind.IntLit | Lexer::TokenKind.HexLit | Lexer::TokenKind.FloatLit | Lexer::TokenKind.StringLit | Lexer::TokenKind.CharLit | Lexer::TokenKind.FString:
+            return true
+        Lexer::TokenKind.True | Lexer::TokenKind.False | Lexer::TokenKind.Null | Lexer::TokenKind.Zeroed | Lexer::TokenKind.RParen | Lexer::TokenKind.RBracket | Lexer::TokenKind.RBrace:
+            return true
+        _:
+            return false
+
+
+def semtok_expression_can_start(kind: Lexer::TokenKind) -> bool:
+    match kind:
+        Lexer::TokenKind.Ident | Lexer::TokenKind.IntLit | Lexer::TokenKind.HexLit | Lexer::TokenKind.FloatLit | Lexer::TokenKind.StringLit | Lexer::TokenKind.CharLit | Lexer::TokenKind.FString:
+            return true
+        Lexer::TokenKind.True | Lexer::TokenKind.False | Lexer::TokenKind.Null | Lexer::TokenKind.Zeroed | Lexer::TokenKind.New | Lexer::TokenKind.LParen | Lexer::TokenKind.LBrace:
+            return true
+        Lexer::TokenKind.Sizeof | Lexer::TokenKind.Alignof | Lexer::TokenKind.Offsetof | Lexer::TokenKind.Panic | Lexer::TokenKind.Raise | Lexer::TokenKind.Not | Lexer::TokenKind.Bang | Lexer::TokenKind.Tilde | Lexer::TokenKind.Minus | Lexer::TokenKind.Plus | Lexer::TokenKind.Ampersand:
+            return true
+        _:
+            return false
+
+
+# `&` is address-of in prefix position, a reference-type suffix when no value
+# follows, and infix bitwise-and when the compiler's value-start rule sees a
+# right operand. Consecutive ampersands are examined as one run, just like the
+# parser's postfix_amp_run. The array-suffix case depends on parser type context
+# that is not retained in tokens, so decline to classify that ambiguous shape.
+def semtok_ampersand_ttype(tokens: darray[Lexer::Token], index: usize, src: u8&) -> i64:
+    return -1 if index >= tokens.count or tokens[index].kind != Lexer::TokenKind.Ampersand
+    return ST_MEM_QUALIFIER if index == 0 or not semtok_expression_can_end(tokens[index - 1].kind)
+    run_end: mutable usize = index + 1
+    while run_end < tokens.count and tokens[run_end].kind == Lexer::TokenKind.Ampersand:
+        run_end <- run_end + 1
+    next_kind: mutable Lexer::TokenKind = Lexer::TokenKind.Eof
+    next_text: mutable sview = sview("", 0, 0)
+    if run_end < tokens.count:
+        next_kind <- tokens[run_end].kind
+        next_text <- Lexer::text_or_empty(tokens[run_end], src) if next_kind == Lexer::TokenKind.Ident
+    return -1 if next_kind == Lexer::TokenKind.LBracket
+    return ST_MEM_QUALIFIER if next_text == "can" or next_text == "where"
+    return ST_OP_BITWISE if semtok_expression_can_start(next_kind)
+    return ST_MEM_QUALIFIER
+
+
 # Classify one token; -1 = no token emitted (IDE default styling). `prev`/`next`
 # are the neighboring token kinds; `table` is the real symbol table so bare
 # references take their declared kind ([S] layer) rather than a lexical guess.
-def semtok_classify(tok: Lexer::Token, src: u8&, src_len: usize, prev: Lexer::TokenKind, next: Lexer::TokenKind, in_effect: bool, table: Semantic::SymbolTable&, occurrence_positions: darray[Ast::Pos], allow_fstring_scope_fallback: bool, qualified_owner: sview, qualified_owner_start: u32, shorthand_member: bool, name_heads: dict[u64, i64]&, sym_next: darray[i64]&, position_heads: dict[i64, i64]&, ref_next: darray[i64]&, enum_name_heads: dict[u64, i64]&, enum_name_next: darray[i64]&, enum_owner_heads: dict[u64, i64]&, enum_owner_next: darray[i64]&) -> i64 can[Memory.Allocate, Abort.Panic]:
+def semtok_classify(tok: Lexer::Token, src: u8&, src_len: usize, prev: Lexer::TokenKind, next: Lexer::TokenKind, ampersand_ttype: i64, lambda_form: bool, in_effect: bool, table: Semantic::SymbolTable&, occurrence_positions: darray[Ast::Pos], allow_fstring_scope_fallback: bool, qualified_owner: sview, qualified_owner_start: u32, shorthand_member: bool, name_heads: dict[u64, i64]&, sym_next: darray[i64]&, position_heads: dict[i64, i64]&, ref_next: darray[i64]&, resolved_reference_heads: dict[i64, i64]&, resolved_reference_next: darray[i64]&, enum_name_heads: dict[u64, i64]&, enum_name_next: darray[i64]&, enum_owner_heads: dict[u64, i64]&, enum_owner_next: darray[i64]&) -> i64 can[Memory.Allocate, Abort.Panic]:
     can Memory.Allocate, Abort.Panic:
         kind: Lexer::TokenKind = tok.kind
         match kind:
@@ -452,7 +548,21 @@ def semtok_classify(tok: Lexer::Token, src: u8&, src_len: usize, prev: Lexer::To
                 if prev == Lexer::TokenKind.Dot and enum_variant_for_owner_indexed(table, enum_owner_heads, enum_owner_next, qualified_owner, text):
                     owner_occurrence: i64 = occurrence_kind_indexed(table, occurrence_positions, position_heads, ref_next, qualified_owner_start, qualified_owner)
                     ST_ENUM_VARIANT return if owner_occurrence == OCC_UNKNOWN
-                ST_ENUM_VARIANT return if shorthand_member and enum_variant_anywhere_indexed(table, enum_name_heads, enum_name_next, text)
+                if shorthand_member:
+                    # Leading-dot cases have no owner token. Resolve their
+                    # spelling only when registry metadata names one owner in
+                    # one module and no ordinary declaration collides. Exact
+                    # bindings/resolver edges still win; ambiguous cases stay
+                    # uncolored until the frontend supplies variant targets.
+                    shorthand_occ: i64 = occurrence_ttype(table, occurrence_positions, position_heads, ref_next, tok, text, allow_fstring_scope_fallback, src, src_len)
+                    ST_BIND_PARAM return if shorthand_occ == 1
+                    ST_BIND_LOCAL return if shorthand_occ == 2
+                    shorthand_target: i64 = definition_reference_target_index_at(table, resolved_reference_heads, resolved_reference_next, tok.start, tok.length, text)
+                    shorthand_ttype: i64 = symbol_ttype_index(table, shorthand_target)
+                    shorthand_ttype return if shorthand_ttype >= 0
+                    shorthand_resolution: i64 = enum_variant_name_resolution_indexed(table, enum_name_heads, enum_name_next, name_heads, sym_next, text)
+                    ST_ENUM_VARIANT return if shorthand_resolution == 1
+                    return -1 if shorthand_resolution == 2
                 # Member access is always a field or method — decided before the
                 # symbol table, so a `.field` sharing a top-level name isn't mistaken
                 # for that declaration.
@@ -472,7 +582,26 @@ def semtok_classify(tok: Lexer::Token, src: u8&, src_len: usize, prev: Lexer::To
                 occ: i64 = occurrence_ttype(table, occurrence_positions, position_heads, ref_next, tok, text, allow_fstring_scope_fallback, src, src_len)
                 ST_BIND_PARAM return if occ == 1
                 ST_BIND_LOCAL return if occ == 2
+                # Exact compiler resolver edges beat every spelling-based rule,
+                # including contextual keywords such as a function named `get`.
+                resolved_target: i64 = definition_reference_target_index_at(table, resolved_reference_heads, resolved_reference_next, tok.start, tok.length, text)
+                resolved_ttype: i64 = symbol_ttype_index(table, resolved_target)
+                resolved_ttype return if resolved_ttype >= 0
                 by_text: i64 = semtok_ident_class(text)
+                if next == Lexer::TokenKind.LParen:
+                    # `fn(x) => ...` and `fn(x): ...` are lambda syntax even
+                    # though the lexer keeps `fn` as Ident so ordinary `fn(x)`
+                    # calls remain legal.
+                    return by_text if by_text == ST_FN_LAMBDA and lambda_form
+                    # Keep a same-named real declaration or registered variant
+                    # ahead of the unresolved-call fallback. The exact resolver
+                    # edge above remains authoritative when it exists.
+                    by_symbol_call: i64 = symbol_ttype(table, name_heads, sym_next, text)
+                    by_symbol_call return if by_symbol_call >= 0
+                    ST_ENUM_VARIANT return if enum_variant_anywhere_indexed(table, enum_name_heads, enum_name_next, text)
+                    # An unresolved call is still an expression-call shape, even
+                    # when its contextual spelling also names a syntax category.
+                    return ST_FN_USE
                 # Known keyword/type/effect text wins next, so e.g. `Unsafe` keeps
                 # its red-shifted effect color even inside an effect list.
                 by_text return if by_text >= 0
@@ -487,8 +616,6 @@ def semtok_classify(tok: Lexer::Token, src: u8&, src_len: usize, prev: Lexer::To
                 # Bare variants (including bare match arms) are registry-resolved,
                 # not guessed from case.
                 ST_ENUM_VARIANT return if enum_variant_anywhere_indexed(table, enum_name_heads, enum_name_next, text)
-                # Unknown name in call position — best-effort function use.
-                ST_FN_USE return if next == Lexer::TokenKind.LParen
                 # PascalCase → a user-type reference (Point, Self, …). Lexical guess
                 # for names with no top-level declaration in this file.
                 first: u8 = src[tok.start.usize()]
@@ -525,8 +652,10 @@ def semtok_classify(tok: Lexer::Token, src: u8&, src_len: usize, prev: Lexer::To
             Lexer::TokenKind.Region | Lexer::TokenKind.New:
                 return ST_MEM_REGION
             # Borrow sigil `&` lives in the memory family alongside heap/stack/tail.
-            Lexer::TokenKind.Heap | Lexer::TokenKind.Stack | Lexer::TokenKind.Tail | Lexer::TokenKind.Ampersand:
+            Lexer::TokenKind.Heap | Lexer::TokenKind.Stack | Lexer::TokenKind.Tail:
                 return ST_MEM_QUALIFIER
+            Lexer::TokenKind.Ampersand:
+                return ampersand_ttype
             # Mutation: `<-`, `mutable`, and the compound assignments (they write).
             Lexer::TokenKind.Mutable | Lexer::TokenKind.LArrow | Lexer::TokenKind.PlusEq | Lexer::TokenKind.MinusEq | Lexer::TokenKind.StarEq | Lexer::TokenKind.SlashEq | Lexer::TokenKind.PercentEq | Lexer::TokenKind.CaretEq | Lexer::TokenKind.PipeEq | Lexer::TokenKind.AmpEq | Lexer::TokenKind.LShiftEq | Lexer::TokenKind.RShiftEq | Lexer::TokenKind.QAssign:
                 return ST_OP_MUTATION
@@ -625,11 +754,11 @@ def semtok_declaration_modifiers(tokens: darray[Lexer::Token], index: usize, src
 # current frontend's occurrence log, so guessing it from syntax would produce
 # false positives. A resolved local/parameter shadows a same-spelled const and
 # suppresses the modifier.
-def semtok_readonly_modifier(table: Semantic::SymbolTable&, tok: Lexer::Token, src: u8&, occurrence_kind: i64) -> i64 can[Memory.Allocate, Abort.Panic]:
+def semtok_readonly_modifier(table: Semantic::SymbolTable&, immutable_const_heads: dict[u64, i64]&, immutable_const_next: darray[i64]&, immutable_const_mask: u64, tok: Lexer::Token, src: u8&, occurrence_kind: i64) -> i64 can[Memory.Allocate, Abort.Panic]:
     can Memory.Allocate, Abort.Panic:
         return 0 if tok.kind != Lexer::TokenKind.Ident or occurrence_kind != OCC_UNKNOWN
         name: sview = Lexer::text_or_empty(tok, src)
-        return ST_MOD_READONLY if immutable_const_named(table, name)
+        return ST_MOD_READONLY if immutable_const_named_indexed(table, immutable_const_heads, immutable_const_next, immutable_const_mask, name)
         return 0
 
 
@@ -657,12 +786,16 @@ def semtok_modification_modifier(tokens: darray[Lexer::Token], index: usize, src
 # `{d.name}` colours its identifiers, operators, and nested literals. Mirrors the
 # parser's scan (parser_expr.elisa `fstring_expr`) so the highlighted spans match
 # what actually parses. Single-line; columns are byte-based (as elsewhere here).
-def semtok_fstring_spans(entries: mutable darray[SemTok]&, tok: Lexer::Token, src: u8&, src_len: usize, table: Semantic::SymbolTable&, occurrence_positions: darray[Ast::Pos], name_heads: dict[u64, i64]&, sym_next: darray[i64]&, position_heads: dict[i64, i64]&, ref_next: darray[i64]&, enum_name_heads: dict[u64, i64]&, enum_name_next: darray[i64]&, enum_owner_heads: dict[u64, i64]&, enum_owner_next: darray[i64]&) -> void can[Memory.Allocate, Abort.Panic]:
+def semtok_fstring_spans_at(entries: mutable darray[SemTok]&, tok: Lexer::Token, src: u8&, src_len: usize, table: Semantic::SymbolTable&, occurrence_positions: darray[Ast::Pos], name_heads: dict[u64, i64]&, sym_next: darray[i64]&, position_heads: dict[i64, i64]&, ref_next: darray[i64]&, resolved_reference_heads: dict[i64, i64]&, resolved_reference_next: darray[i64]&, enum_name_heads: dict[u64, i64]&, enum_name_next: darray[i64]&, enum_owner_heads: dict[u64, i64]&, enum_owner_next: darray[i64]&, line: i64, base_col: i64, depth: i64) -> void can[Memory.Allocate, Abort.Panic]:
     can Memory.Allocate, Abort.Panic:
-        line: i64 = tok.line.i64() - 1
-        base_col: i64 = tok.column.i64() - 1     # 0-based column of the `f`
         lo: usize = tok.start.usize()            # first interior byte (after `f"`)
         hi: usize = lo + tok.length.usize()      # closing-quote byte offset
+        # Malformed or adversarial input must not make semantic-token expansion
+        # recurse without bound. At the limit, retain one valid string span.
+        if depth >= 16:
+            fallback_len: i64 = semtok_display_length(tok, src, src_len)
+            entries.push(SemTok{line: line, col: base_col, length: fallback_len, ttype: ST_LIT_STRING}) if fallback_len > 0
+            return
         seg_start: mutable i64 = base_col        # current string run starts at the `f`
         i: mutable usize = lo
         while i < hi:
@@ -683,15 +816,15 @@ def semtok_fstring_spans(entries: mutable darray[SemTok]&, tok: Lexer::Token, sr
                 entries.push(SemTok{line: line, col: seg_start, length: open_col - seg_start, ttype: ST_LIT_STRING}) if open_col > seg_start
                 # Find the matching `}` (string-aware, mirrors the lexer/parser scan).
                 j: mutable usize = i + 1
-                depth: mutable usize = 1
-                while j < hi and depth > 0:
+                brace_depth: mutable usize = 1
+                while j < hi and brace_depth > 0:
                     cj: char = src[j].char()
                     match cj:
                         '{':
-                            depth <- depth + 1
+                            brace_depth <- brace_depth + 1
                         '}':
-                            depth <- depth - 1
-                            break if depth == 0
+                            brace_depth <- brace_depth - 1
+                            break if brace_depth == 0
                         '"':
                             j <- j + 1
                             while j < hi and src[j].char() != '"':
@@ -732,12 +865,20 @@ def semtok_fstring_spans(entries: mutable darray[SemTok]&, tok: Lexer::Token, sr
                                 qualified_owner_start <- subtoks[s - 2].start
                             else:
                                 shorthand_member <- true
-                        stt: i64 = semtok_classify(st, src, src_len, sp, sn, false, table, occurrence_positions, true, qualified_owner, qualified_owner_start, shorthand_member, name_heads, sym_next, position_heads, ref_next, enum_name_heads, enum_name_next, enum_owner_heads, enum_owner_next)
-                        sln: i64 = semtok_display_length(st, src, src_len)
-                        if stt >= 0 and sln > 0:
-                            display_start: usize = semtok_display_start(st)
-                            sub_col: i64 = base_col + 2 + (display_start - lo).i64()
-                            entries.push(SemTok{line: line, col: sub_col, length: sln, ttype: stt})
+                        if st.kind == Lexer::TokenKind.FString:
+                            # A nested f-string token starts at its raw interior,
+                            # two bytes after its `f"` prefix. Re-enter the same
+                            # expander with the prefix column so its literal and
+                            # interpolation spans remain absolute and non-overlapping.
+                            nested_col: i64 = base_col + (st.start.usize() - lo).i64()
+                            semtok_fstring_spans_at(entries, st, src, src_len, table, occurrence_positions, name_heads, sym_next, position_heads, ref_next, resolved_reference_heads, resolved_reference_next, enum_name_heads, enum_name_next, enum_owner_heads, enum_owner_next, line, nested_col, depth + 1)
+                        else:
+                            stt: i64 = semtok_classify(st, src, src_len, sp, sn, semtok_ampersand_ttype(subtoks, s, src), semtok_lambda_intro(subtoks, s, src), false, table, occurrence_positions, true, qualified_owner, qualified_owner_start, shorthand_member, name_heads, sym_next, position_heads, ref_next, resolved_reference_heads, resolved_reference_next, enum_name_heads, enum_name_next, enum_owner_heads, enum_owner_next)
+                            sln: i64 = semtok_display_length(st, src, src_len)
+                            if stt >= 0 and sln > 0:
+                                display_start: usize = semtok_display_start(st)
+                                sub_col: i64 = base_col + 2 + (display_start - lo).i64()
+                                entries.push(SemTok{line: line, col: sub_col, length: sln, ttype: stt})
                         s <- s + 1
                 if j < hi:
                     # Closing `}` punctuation; the next string run follows it.
@@ -757,9 +898,17 @@ def semtok_fstring_spans(entries: mutable darray[SemTok]&, tok: Lexer::Token, sr
         entries.push(SemTok{line: line, col: seg_start, length: end_col - seg_start, ttype: ST_LIT_STRING}) if end_col > seg_start
 
 
+# Top-level entry derives coordinates from the parser's main token stream.
+# Recursive calls use the containing interpolation's line and absolute byte
+# column because span-lexer token line/column tracking intentionally stays stale.
+def semtok_fstring_spans(entries: mutable darray[SemTok]&, tok: Lexer::Token, src: u8&, src_len: usize, table: Semantic::SymbolTable&, occurrence_positions: darray[Ast::Pos], name_heads: dict[u64, i64]&, sym_next: darray[i64]&, position_heads: dict[i64, i64]&, ref_next: darray[i64]&, resolved_reference_heads: dict[i64, i64]&, resolved_reference_next: darray[i64]&, enum_name_heads: dict[u64, i64]&, enum_name_next: darray[i64]&, enum_owner_heads: dict[u64, i64]&, enum_owner_next: darray[i64]&) -> void can[Memory.Allocate, Abort.Panic]:
+    can Memory.Allocate, Abort.Panic:
+        semtok_fstring_spans_at(entries, tok, src, src_len, table, occurrence_positions, name_heads, sym_next, position_heads, ref_next, resolved_reference_heads, resolved_reference_next, enum_name_heads, enum_name_next, enum_owner_heads, enum_owner_next, tok.line.i64() - 1, tok.column.i64() - 1, 0)
+
+
 # Classify the main token stream into absolute-position entries, tracking the
 # `can[…]` / `trusted …` effect-list context so effect names colour correctly.
-def semtok_main_entries(src: u8&, src_len: usize, tokens: darray[Lexer::Token], table: Semantic::SymbolTable&, occurrence_positions: darray[Ast::Pos], name_heads: dict[u64, i64]&, sym_next: darray[i64]&, position_heads: dict[i64, i64]&, ref_next: darray[i64]&, enum_name_heads: dict[u64, i64]&, enum_name_next: darray[i64]&, enum_owner_heads: dict[u64, i64]&, enum_owner_next: darray[i64]&) -> darray[SemTok]:
+def semtok_main_entries(src: u8&, src_len: usize, tokens: darray[Lexer::Token], table: Semantic::SymbolTable&, occurrence_positions: darray[Ast::Pos], name_heads: dict[u64, i64]&, sym_next: darray[i64]&, position_heads: dict[i64, i64]&, ref_next: darray[i64]&, resolved_reference_heads: dict[i64, i64]&, resolved_reference_next: darray[i64]&, enum_name_heads: dict[u64, i64]&, enum_name_next: darray[i64]&, enum_owner_heads: dict[u64, i64]&, enum_owner_next: darray[i64]&, immutable_const_heads: dict[u64, i64]&, immutable_const_next: darray[i64]&, immutable_const_mask: u64) -> darray[SemTok]:
     can Memory.Allocate, Abort.Panic:
         entries: mutable darray[SemTok] = []
         # Effect-list context: bracketed (closes on the matching `]`) or block
@@ -780,7 +929,7 @@ def semtok_main_entries(src: u8&, src_len: usize, tokens: darray[Lexer::Token], 
             if tok.kind == Lexer::TokenKind.FString:
                 # F-strings expand into multiple spans (literal chunks + coloured
                 # `{EXPR}` interpolations) rather than one whole-token span.
-                semtok_fstring_spans(entries, tok, src, src_len, table, occurrence_positions, name_heads, sym_next, position_heads, ref_next, enum_name_heads, enum_name_next, enum_owner_heads, enum_owner_next)
+                semtok_fstring_spans(entries, tok, src, src_len, table, occurrence_positions, name_heads, sym_next, position_heads, ref_next, resolved_reference_heads, resolved_reference_next, enum_name_heads, enum_name_next, enum_owner_heads, enum_owner_next)
             else:
                 qualified_owner: mutable sview = sview("", 0, 0)
                 qualified_owner_start: mutable u32 = 0
@@ -791,12 +940,12 @@ def semtok_main_entries(src: u8&, src_len: usize, tokens: darray[Lexer::Token], 
                         qualified_owner_start <- tokens[i - 2].start
                     else:
                         shorthand_member <- true
-                ttype: i64 = semtok_classify(tok, src, src_len, prev_kind, next_kind, in_effect, table, occurrence_positions, false, qualified_owner, qualified_owner_start, shorthand_member, name_heads, sym_next, position_heads, ref_next, enum_name_heads, enum_name_next, enum_owner_heads, enum_owner_next)
+                ttype: i64 = semtok_classify(tok, src, src_len, prev_kind, next_kind, semtok_ampersand_ttype(tokens, i, src), semtok_lambda_intro(tokens, i, src), in_effect, table, occurrence_positions, false, qualified_owner, qualified_owner_start, shorthand_member, name_heads, sym_next, position_heads, ref_next, resolved_reference_heads, resolved_reference_next, enum_name_heads, enum_name_next, enum_owner_heads, enum_owner_next)
                 emit_len: i64 = semtok_display_length(tok, src, src_len)
                 occurrence_kind: mutable i64 = OCC_UNKNOWN
                 if tok.kind == Lexer::TokenKind.Ident:
                     occurrence_kind <- occurrence_ttype(table, occurrence_positions, position_heads, ref_next, tok, Lexer::text_or_empty(tok, src), false, src, src_len)
-                modifiers: i64 = semtok_declaration_modifiers(tokens, i, src) | semtok_readonly_modifier(table, tok, src, occurrence_kind) | semtok_modification_modifier(tokens, i, src)
+                modifiers: i64 = semtok_declaration_modifiers(tokens, i, src) | semtok_readonly_modifier(table, immutable_const_heads, immutable_const_next, immutable_const_mask, tok, src, occurrence_kind) | semtok_modification_modifier(tokens, i, src)
                 entries.push(SemTok{line: tok.line.i64() - 1, col: tok.column.i64() - 1, length: emit_len, ttype: ttype, modifiers: modifiers}) if ttype >= 0 and emit_len > 0
             # Advance the effect-list state machine for the NEXT token.
             k: Lexer::TokenKind = tok.kind
@@ -892,18 +1041,24 @@ def semtok_data_body_with_table(src: u8&, src_len: usize, tokens: darray[Lexer::
         # O(1) average instead of a full scan per identifier.
         name_heads: mutable dict[u64, i64] = {}
         sym_next: mutable darray[i64] = []
+        resolved_reference_heads: mutable dict[i64, i64] = {}
+        resolved_reference_next: mutable darray[i64] = []
         position_heads: mutable dict[i64, i64] = {}
         ref_next: mutable darray[i64] = []
         enum_name_heads: mutable dict[u64, i64] = {}
         enum_name_next: mutable darray[i64] = []
         enum_owner_heads: mutable dict[u64, i64] = {}
         enum_owner_next: mutable darray[i64] = []
+        immutable_const_heads: mutable dict[u64, i64] = {}
+        immutable_const_next: mutable darray[i64] = []
+        immutable_const_mask: mutable u64 = 0
         lsp_adapter_symbol_index_build_calls <- lsp_adapter_symbol_index_build_calls + 1
-        symbol_index_build(table, name_heads, sym_next)
+        symbol_index_build(table, name_heads, sym_next, resolved_reference_heads, resolved_reference_next)
         lsp_adapter_occurrence_index_build_calls <- lsp_adapter_occurrence_index_build_calls + 1
         occurrence_index_build(table, occurrence_positions, position_heads, ref_next)
         enum_variant_index_build(table, enum_name_heads, enum_name_next, enum_owner_heads, enum_owner_next)
-        entries: darray[SemTok] = semtok_normalize(semtok_main_entries(src, src_len, tokens, table, occurrence_positions, name_heads, sym_next, position_heads, ref_next, enum_name_heads, enum_name_next, enum_owner_heads, enum_owner_next), src, src_len, line_starts, span_start, span_count)
+        immutable_const_index_build(table, immutable_const_heads, immutable_const_next, immutable_const_mask)
+        entries: darray[SemTok] = semtok_normalize(semtok_main_entries(src, src_len, tokens, table, occurrence_positions, name_heads, sym_next, position_heads, ref_next, resolved_reference_heads, resolved_reference_next, enum_name_heads, enum_name_next, enum_owner_heads, enum_owner_next, immutable_const_heads, immutable_const_next, immutable_const_mask), src, src_len, line_starts, span_start, span_count)
         comment_entries: darray[SemTok] = semtok_normalize(semtok_comment_entries(comments), src, src_len, line_starts, span_start, span_count)
         body: mutable darray[u8] = []
         push_str(body, "{\"data\":[")

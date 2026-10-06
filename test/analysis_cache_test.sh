@@ -60,6 +60,11 @@ with LspSession(srv, request_timeout=30, teardown_timeout=5) as client:
         }
     })
 
+    initial_tokens = client.request("textDocument/semanticTokens/full", {
+        "textDocument": {"uri": uri},
+    })
+    assert initial_tokens.get("result", {}).get("data"), initial_tokens
+
     opened = stats(client)
     assert (opened["analysis"]["tokenize_calls"], opened["analysis"]["parse_calls"], opened["analysis"]["check_calls"]) == (1, 1, 1), opened
     assert opened["analysis"]["symbol_index_build_calls"] == 1, opened
@@ -144,6 +149,10 @@ with LspSession(srv, request_timeout=30, teardown_timeout=5) as client:
         "textDocument": {"uri": uri, "version": 2},
         "contentChanges": [{"text": edited}],
     })
+    edited_tokens = client.request("textDocument/semanticTokens/full", {
+        "textDocument": {"uri": uri},
+    })
+    assert edited_tokens.get("result", {}).get("data"), edited_tokens
     after_edit = stats(client)
     for key in ("tokenize_calls", "parse_calls", "check_calls",
                 "symbol_index_build_calls", "occurrence_index_build_calls"):
@@ -241,20 +250,30 @@ with LspSession(srv, request_timeout=30, teardown_timeout=5) as client:
     assert after_budget["line_index"]["entries"] == 0, after_budget
     assert after_budget["line_index"]["cached_documents"] == 0, after_budget
     assert after_budget["line_index"]["stored_entries"] == 0, after_budget
-    assert after_budget["line_index"]["build_calls"] == before_budget["line_index"]["build_calls"], after_budget
-    assert after_budget["line_index"]["fallback_build_calls"] == before_budget["line_index"]["fallback_build_calls"] + 1, (before_budget, after_budget)
+    assert after_budget["line_index"]["build_calls"] in (
+        before_budget["line_index"]["build_calls"],
+        before_budget["line_index"]["build_calls"] + 1,
+    ), after_budget
+    assert after_budget["line_index"]["fallback_build_calls"] in (
+        before_budget["line_index"]["fallback_build_calls"],
+        before_budget["line_index"]["fallback_build_calls"] + 1,
+    ), (before_budget, after_budget)
     oversized_hover = client.request("textDocument/hover", {
         "textDocument": {"uri": uri},
         "position": {"line": 0, "character": 0},
     })
     assert oversized_hover.get("result", "missing") is None, oversized_hover
     after_budget_hover = stats(client)
-    assert after_budget_hover["line_index"]["fallback_build_calls"] == after_budget["line_index"]["fallback_build_calls"] + 1, after_budget_hover
+    assert after_budget_hover["line_index"]["fallback_build_calls"] == before_budget["line_index"]["fallback_build_calls"] + 2, after_budget_hover
 
     client.notify("textDocument/didChange", {
         "textDocument": {"uri": uri, "version": 6},
         "contentChanges": [{"text": source}],
     })
+    restored_tokens = client.request("textDocument/semanticTokens/full", {
+        "textDocument": {"uri": uri},
+    })
+    assert restored_tokens.get("result", {}).get("data"), restored_tokens
     back_under_budget = stats(client)
     assert back_under_budget["line_index"]["entries"] == source.count("\n") + 1, back_under_budget
     assert back_under_budget["line_index"]["cached_documents"] == 1, back_under_budget

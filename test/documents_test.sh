@@ -169,8 +169,27 @@ assert stats_before == stats_after, \
 def negative_version_case(client):
     negative_uri = "file:///negative-version.elisa"
     open_doc(client, negative_uri, BAD, -2)
+    client.wait_notification(
+        "textDocument/publishDiagnostics",
+        timeout=60,
+        predicate=lambda n: n.get("params", {}).get("uri") == negative_uri
+        and n["params"].get("version") == -2,
+    )
     change_doc(client, negative_uri, GOOD, -1)
+    client.wait_notification(
+        "textDocument/publishDiagnostics",
+        timeout=60,
+        predicate=lambda n: n.get("params", {}).get("uri") == negative_uri
+        and n["params"].get("version") == -1,
+    )
     close_doc(client, negative_uri)
+    client.wait_notification(
+        "textDocument/publishDiagnostics",
+        timeout=30,
+        predicate=lambda n: n.get("params", {}).get("uri") == negative_uri
+        and n["params"].get("version") == -1
+        and n["params"].get("diagnostics") == [],
+    )
 
 
 _, notifs = run_session(negative_version_case)

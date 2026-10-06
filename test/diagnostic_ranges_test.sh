@@ -33,6 +33,12 @@ with LspSession(srv, request_timeout=30, teardown_timeout=5) as client:
                 "text": text,
             }
         })
+    for uri in CASES:
+        client.wait_notification(
+            "textDocument/publishDiagnostics",
+            timeout=60,
+            predicate=lambda n, uri=uri: n.get("params", {}).get("uri") == uri,
+        )
     client.finish(timeout=30)
     notifs = [n for n in client.notifications
               if n.get("method") == "textDocument/publishDiagnostics"]

@@ -96,7 +96,7 @@ stats = responses[2].get("result", {})
 assert stats.keys() == {
     "storage_bytes", "storage_capacity", "live_bytes", "dead_storage_bytes", "documents",
     "documents_capacity", "open", "open_uri_bytes", "open_source_bytes",
-    "derived_cache_bytes", "max_document_cache_bytes", "snapshots",
+    "derived_cache_bytes", "max_document_cache_bytes", "snapshots", "analysis_worker",
     "open_document_limit", "open_uri_bytes_limit", "configuration",
     "index_keys", "index_used", "index_capacity", "line_index", "analysis", "budgets", "timings"
 }, f"private stats dispatch missing or malformed: {responses[2]}"
@@ -152,9 +152,9 @@ assert stats["budgets"]["documents"] == {
     "open_source_bytes": 0,
     "open_source_bytes_limit": stats["budgets"]["documents"]["open_source_bytes_limit"],
 }, stats
-assert stats["budgets"]["analysis"]["mode"] == "synchronous", stats
+assert stats["budgets"]["analysis"]["mode"] == "one_shot_worker", stats
 assert stats["budgets"]["analysis"]["queued"] == 0, stats
-assert stats["budgets"]["analysis"]["queue_capacity"] == 0, stats
+assert stats["budgets"]["analysis"]["queue_capacity"] == stats["open_document_limit"], stats
 assert stats["budgets"]["analysis"]["in_flight"] == 0, stats
 assert stats["budgets"]["analysis"]["timeout_ms"] > 0, stats
 assert stats["budgets"]["analysis"]["worker_packet_limit_bytes"] > 0, stats

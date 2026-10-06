@@ -17,6 +17,7 @@ from lsp_client import LspSession
 srv = sys.argv[1]
 ST_BIND_PARAM, ST_BIND_LOCAL, ST_BIND_FIELD = 16, 17, 18
 ST_TYPE_USER, ST_DECL_SKELETON = 6, 30
+ST_FN_DEF, ST_FN_USE = 13, 14
 URI = "file:///prec.elisa"
 
 
@@ -80,5 +81,31 @@ toks = classify(doc)
 member = [(ln, tt) for (ln, _c, txt, tt) in toks if txt == "at" and ln == 4]
 assert member and member[0][1] == ST_BIND_FIELD, f"`.at` member must be bind.field: {toks}"
 
-print("precedence OK: bindings beat keyword spelling; shadowing; members stay fields")
+# 4. A resolved contextual-keyword-named function is classified by the exact
+# compiler reference edge, including when its absolute span comes from an
+# f-string sublexer. Spelling alone would incorrectly color `get` as a keyword.
+doc = ('def get(value: i64) -> i64:\n'
+       '    return value\n'
+       'def caller() -> dstr:\n'
+       '    return f"value={get(1)}"\n')
+toks = classify(doc)
+get_tokens = [(ln, tt) for (ln, _c, txt, tt) in toks if txt == "get"]
+assert get_tokens == [(0, ST_FN_DEF), (3, ST_FN_USE)], (
+    f"exact resolved `get` declaration/use must beat keyword spelling in normal and interpolated syntax: {get_tokens}"
+)
+
+# `fn` is also a legal function name. Exact resolution must beat the lexical
+# lambda category when this is a call; semtoken_families_test separately checks
+# that actual `fn(...) => ...` lambda syntax keeps the lambda category.
+doc = ('def fn(value: i64) -> i64:\n'
+       '    return value\n'
+       'def caller() -> i64:\n'
+       '    return fn(1)\n')
+toks = classify(doc)
+fn_tokens = [(ln, tt) for (ln, _c, txt, tt) in toks if txt == "fn"]
+assert fn_tokens == [(0, ST_FN_DEF), (3, ST_FN_USE)], (
+    f"exact resolved `fn` declaration/use must remain distinct from lambda syntax: {fn_tokens}"
+)
+
+print("precedence OK: exact function targets, contextual spelling, lambda syntax, bindings, shadowing, members and interpolation")
 PY

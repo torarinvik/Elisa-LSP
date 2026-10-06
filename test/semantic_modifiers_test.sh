@@ -21,13 +21,28 @@ modifier_bits = schema["modifiers"]["canonical_bits"]
 assert modifier_names == ["declaration", "definition", "readonly", "modification"]
 assert modifier_bits == {"declaration": 1, "definition": 2, "readonly": 4, "modification": 8}
 
+def adapter_hash(value: str) -> int:
+    result = 14695981039346656037
+    for byte in value.encode("utf-8"):
+        result = ((result ^ byte) * 1099511628211) & ((1 << 64) - 1)
+    return result
+
+# One immutable name creates a 16-bucket adapter index. Deliberately choose a
+# const name that shares the `ext` bucket so exact-byte collision checks are
+# exercised for both a positive and a negative lookup.
+ext_bucket = adapter_hash("ext") & 15
+readonly_name = next(
+    f"CONST_{i}" for i in range(1000)
+    if adapter_hash(f"CONST_{i}") & 15 == ext_bucket
+)
+
 source = (
-    "const LIMIT: i64 = 3\n"
+    f"const {readonly_name}: i64 = 3\n"
     "extern ext(value: i64) -> i64\n"
     "def modify(input: i64) -> i64:\n"
     "    local: i64 = input\n"
     "    local <- local + 1\n"
-    "    return LIMIT + local\n"
+    f"    return {readonly_name} + local\n"
 )
 uri = "file:///semantic-modifiers.elisa"
 
@@ -89,15 +104,15 @@ lines = source.splitlines()
 
 # Function definitions and extern declarations are distinguished. A concrete
 # const definition is also readonly, and a direct `<-` target is a modification.
-assert token_at(full_tokens, 0, 6, "LIMIT")[4] == 2 | 4
+assert token_at(full_tokens, 0, 6, readonly_name)[4] == 2 | 4
 assert token_at(full_tokens, 1, 7, "ext")[4] == 1
 assert token_at(full_tokens, 2, 4, "modify")[4] == 2
 assert token_at(full_tokens, 4, 4, "local")[4] == 8
-assert token_at(full_tokens, 5, 11, "LIMIT")[4] == 4
+assert token_at(full_tokens, 5, 11, readonly_name)[4] == 4
 # The local declaration and read are not guessed readonly because the compiler
 # occurrence channel does not retain local mutability metadata.
 assert token_at(full_tokens, 3, 4, "local")[4] == 0
-assert token_at(full_tokens, 5, 19, "local")[4] == 0
+assert token_at(full_tokens, 5, 14 + len(readonly_name), "local")[4] == 0
 assert all(modifiers in (0, 1, 2, 4, 6, 8) for *_, modifiers in full_tokens)
 assert range_tokens == [token for token in full_tokens if token[0] == 4]
 
@@ -118,5 +133,5 @@ with LspSession(srv, request_timeout=30, teardown_timeout=5) as client:
     assert all(token[4] == 0 for token in plain_tokens), plain_tokens
     assert client.finish(timeout=30) == 0
 
-print("semantic modifiers OK: negotiated legend, declaration/definition/readonly/modification bits, and full/range remapping verified")
+print("semantic modifiers OK: negotiated legend, collision-safe readonly lookup, declaration/definition/modification bits, and full/range remapping verified")
 PY

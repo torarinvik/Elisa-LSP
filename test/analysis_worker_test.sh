@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# A04: isolated process failures cannot kill or poison the live LSP session.
-# The crash/hang/malformed-result seam exists only in this temporary test copy.
+# A04/Q01: isolated process failures cannot poison the live session, and slow
+# analysis must leave the parent event loop free to accept newer messages.
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 ELISAC_BIN="${ELISAC:-$HOME/.elisac/elisac-stage0}"
@@ -63,6 +63,7 @@ source = source.replace(
     "    if (inject_test_mode && strcmp(analysis_test_mode, \"hover-payload\") == 0) payload_mode = 3;\n"
     "    if (inject_test_mode && strcmp(analysis_test_mode, \"signature-payload\") == 0) payload_mode = 4;\n"
     "    if (inject_test_mode && strcmp(analysis_test_mode, \"diagnostics-payload\") == 0) payload_mode = 5;\n"
+    "    if (inject_test_mode && strcmp(analysis_test_mode, \"hover-type-payload\") == 0) payload_mode = 6;\n"
     + needle,
     1,
 )
@@ -74,6 +75,7 @@ source = source.replace(
     + "        analysis_payload_mode_for_child = payload_mode;\n"
     + "        if (inject_test_mode && strcmp(analysis_test_mode, \"crash\") == 0) _exit(86);\n"
     + "        if (inject_test_mode && strcmp(analysis_test_mode, \"hang\") == 0) { for (;;) pause(); }\n"
+    + "        if (inject_test_mode && strcmp(analysis_test_mode, \"slow\") == 0) { struct timespec delay = {1, 0}; while (nanosleep(&delay, &delay) != 0 && errno == EINTR) {} }\n"
     + "        if (inject_test_mode && strcmp(analysis_test_mode, \"malformed\") == 0) { const char bad[] = \"bad\\n\"; (void)write(WORKER_PIPE_FD, bad, sizeof(bad) - 1); _exit(0); }\n",
     1,
 )
@@ -171,6 +173,21 @@ mutator = '''        test_payload_mode: int = elisa_lsp_analysis_payload_corrupt
             signature_index[0] <- 120
         elif test_payload_mode == 5 and diagnostics.count > 0:
             diagnostics[0] <- 120
+        elif test_payload_mode == 6:
+            type_cursor: mutable usize = 0
+            while type_cursor + 2 < hover.count:
+                if hover[type_cursor] == 30 and hover[type_cursor + 1] == 116:
+                    type_separator_count: mutable usize = 0
+                    type_field_cursor: mutable usize = type_cursor + 2
+                    while type_field_cursor < hover.count and hover[type_field_cursor] != 30:
+                        if hover[type_field_cursor] == 31:
+                            type_separator_count <- type_separator_count + 1
+                            if type_separator_count == 5 and type_field_cursor + 1 < hover.count:
+                                hover[type_field_cursor + 1] <- 122
+                                break
+                        type_field_cursor <- type_field_cursor + 1
+                    break
+                type_cursor <- type_cursor + 1
 '''
 source = source.replace(needle, mutator + needle, 1)
 path.write_text(source, encoding="utf-8")
@@ -190,11 +207,11 @@ from lsp_client import LspSession
 server = sys.argv[1]
 uri = "file:///isolated-analysis.elisa"
 td = {"textDocument": {"uri": uri}}
-valid = "def recovered() -> i64:\n    return 7\nenum Mode:\n    Ready\n"
+valid = "def recovered(value: i64) -> i64:\n    return value\nenum Mode:\n    Ready\n"
 bad_mode_key = "ELISA_LSP_ANALYSIS_TEST_MODE"
 timeout_key = "ELISA_LSP_ANALYSIS_TIMEOUT_MS"
 
-for mode in ("crash", "hang", "malformed", "negative-counter", "semantic-payload", "symbols-payload", "hover-payload", "signature-payload", "diagnostics-payload"):
+for mode in ("crash", "hang", "malformed", "negative-counter", "semantic-payload", "symbols-payload", "hover-payload", "hover-type-payload", "signature-payload", "diagnostics-payload"):
     previous_mode = os.environ.get(bad_mode_key)
     previous_timeout = os.environ.get(timeout_key)
     os.environ[bad_mode_key] = mode
@@ -271,6 +288,165 @@ for mode in ("crash", "hang", "malformed", "negative-counter", "semantic-payload
         else:
             os.environ[timeout_key] = previous_timeout
 
+# A slow child must not hold up unrelated requests or consume intermediate
+# edits. Pipeline the cancel notification and replacement snapshot while the
+# first child is still sleeping; only the latest version may publish.
+slow_uri = "file:///responsive-analysis.elisa"
+os.environ[bad_mode_key] = "slow"
+os.environ[timeout_key] = "30000"
+with LspSession(server, startup_timeout=30, request_timeout=3, teardown_timeout=30) as client:
+    initialized = client.initialize({"capabilities": {}})
+    assert "result" in initialized, initialized
+    started = time.monotonic()
+    client.send_many([
+        {
+            "jsonrpc": "2.0", "method": "textDocument/didOpen",
+            "params": {"textDocument": {"uri": slow_uri, "languageId": "Elisa", "version": 1, "text": valid}},
+        },
+        {"jsonrpc": "2.0", "id": "123", "method": "textDocument/semanticTokens/full", "params": {"textDocument": {"uri": slow_uri}}},
+        {"jsonrpc": "2.0", "id": 123, "method": "textDocument/semanticTokens/full", "params": {"textDocument": {"uri": slow_uri}}},
+        {"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": 123}},
+    ], timeout=2)
+    canceled = client.wait_response(123, timeout=0.8)
+    assert canceled.get("error", {}).get("code") == -32800, canceled
+    client.send_many([
+        {"jsonrpc": "2.0", "id": 900, "method": "$/elisa/status"},
+        {"jsonrpc": "2.0", "id": 901, "method": "$/elisa/stats"},
+        {
+            "jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {"textDocument": {"uri": slow_uri, "version": 2}, "contentChanges": [{"text": valid}]},
+        },
+    ], timeout=2)
+    status = client.wait_response(900, timeout=0.8)
+    assert status.get("result", {}).get("server", {}).get("status") == "running", status
+    assert time.monotonic() - started < 0.8, "slow analysis blocked an unrelated request"
+    queue_stats = client.wait_response(901, timeout=0.8).get("result", {})
+    assert queue_stats.get("analysis_worker", {}).get("active") is True, queue_stats
+    assert queue_stats.get("analysis_worker", {}).get("pending_requests") == 1, queue_stats
+    assert queue_stats.get("analysis_worker", {}).get("pending_request_storage_bytes", 0) > 0, queue_stats
+    assert queue_stats.get("analysis_worker", {}).get("pending_request_storage_bytes", 0) <= 13 * 1024 * 1024, queue_stats
+    assert queue_stats.get("budgets", {}).get("analysis", {}).get("mode") == "one_shot_worker", queue_stats
+    assert queue_stats.get("budgets", {}).get("analysis", {}).get("in_flight") == 1, queue_stats
+    latest = client.wait_notification(
+        "textDocument/publishDiagnostics",
+        predicate=lambda message: (
+            message.get("params", {}).get("uri") == slow_uri
+            and message.get("params", {}).get("version") == 2
+        ),
+        timeout=8,
+    )
+    assert latest["params"].get("diagnostics") == [], latest
+    assert not any(
+        message.get("method") == "textDocument/publishDiagnostics"
+        and message.get("params", {}).get("uri") == slow_uri
+        and message.get("params", {}).get("version") == 1
+        for message in client.notifications
+    ), client.notifications
+    tokens = client.wait_response("123", timeout=8)
+    assert tokens.get("result", {}).get("data"), tokens
+    client.finish(timeout=30)
+
+# A queued cursor request outranks older open snapshots that have no waiter.
+# Keep the first worker slow, enqueue two ordinary opens behind it, then ask
+# for hover on the newest document. Its diagnostics and response must complete
+# before the older unrequested snapshot is analyzed.
+priority_active_uri = "file:///priority-active.elisa"
+priority_background_uri = "file:///priority-background.elisa"
+priority_cursor_uri = "file:///priority-cursor.elisa"
+os.environ[bad_mode_key] = "slow"
+with LspSession(server, startup_timeout=30, request_timeout=8, teardown_timeout=30) as client:
+    initialized = client.initialize({"capabilities": {}})
+    assert "result" in initialized, initialized
+    client.notify("textDocument/didOpen", {
+        "textDocument": {"uri": priority_active_uri, "languageId": "Elisa", "version": 1, "text": valid},
+    })
+    active_stats = client.request("$/elisa/stats", {})["result"]
+    assert active_stats.get("analysis_worker", {}).get("active") is True, active_stats
+    client.send_many([
+        {
+            "jsonrpc": "2.0", "method": "textDocument/didOpen",
+            "params": {"textDocument": {"uri": priority_background_uri, "languageId": "Elisa", "version": 1, "text": valid}},
+        },
+        {
+            "jsonrpc": "2.0", "method": "textDocument/didOpen",
+            "params": {"textDocument": {"uri": priority_cursor_uri, "languageId": "Elisa", "version": 1, "text": valid}},
+        },
+        {
+            "jsonrpc": "2.0", "id": "cursor-priority", "method": "textDocument/hover",
+            "params": {"textDocument": {"uri": priority_cursor_uri}, "position": {"line": 0, "character": 5}},
+        },
+    ])
+    prioritized_hover = client.wait_response("cursor-priority", timeout=8)
+    hover_value = prioritized_hover.get("result", {}).get("contents", {}).get("value")
+    assert hover_value == "```elisa\ndef recovered(value: i64) -> i64:\n```", prioritized_hover
+    assert any(
+        message.get("method") == "textDocument/publishDiagnostics"
+        and message.get("params", {}).get("uri") == priority_cursor_uri
+        for message in client.notifications
+    ), client.notifications
+    assert not any(
+        message.get("method") == "textDocument/publishDiagnostics"
+        and message.get("params", {}).get("uri") == priority_background_uri
+        for message in client.notifications
+    ), client.notifications
+    client.wait_notification(
+        "textDocument/publishDiagnostics",
+        predicate=lambda message: message.get("params", {}).get("uri") == priority_background_uri,
+        timeout=8,
+    )
+    client.finish(timeout=30)
+
+# Queue-wait timing covers the time an analysis-backed request remains
+# deferred, including the isolated child's frontend work.
+timed_uri = "file:///queued-analysis-timing.elisa"
+os.environ[bad_mode_key] = "slow"
+previous_timings = os.environ.get("ELISA_LSP_TIMINGS")
+os.environ["ELISA_LSP_TIMINGS"] = "1"
+with LspSession(server, startup_timeout=30, request_timeout=4, teardown_timeout=30) as client:
+    initialized = client.initialize({"capabilities": {}})
+    assert "result" in initialized, initialized
+    client.send_many([
+        {
+            "jsonrpc": "2.0", "method": "textDocument/didOpen",
+            "params": {"textDocument": {"uri": timed_uri, "languageId": "Elisa", "version": 1, "text": valid}},
+        },
+        {
+            "jsonrpc": "2.0", "id": "queued-timing", "method": "textDocument/semanticTokens/full",
+            "params": {"textDocument": {"uri": timed_uri}},
+        },
+    ], timeout=2)
+    client.wait_notification(
+        "textDocument/publishDiagnostics",
+        predicate=lambda message: message.get("params", {}).get("uri") == timed_uri,
+        timeout=8,
+    )
+    queued_tokens = client.wait_response("queued-timing", timeout=8)
+    assert queued_tokens.get("result", {}).get("data"), queued_tokens
+    queued_stats = client.request("$/elisa/stats", {})["result"]
+    assert queued_stats.get("timings", {}).get("queue_wait_ms", 0) >= 500, queued_stats
+    client.finish(timeout=30)
+if previous_timings is None:
+    os.environ.pop("ELISA_LSP_TIMINGS", None)
+else:
+    os.environ["ELISA_LSP_TIMINGS"] = previous_timings
+
+# Shutdown is also dispatched while a child is running and aborts it before
+# the ordinary exit notification arrives.
+shutdown_uri = "file:///responsive-shutdown.elisa"
+os.environ[bad_mode_key] = "slow"
+with LspSession(server, startup_timeout=30, request_timeout=3, teardown_timeout=3) as client:
+    initialized = client.initialize({"capabilities": {}})
+    assert "result" in initialized, initialized
+    client.notify("textDocument/didOpen", {
+        "textDocument": {"uri": shutdown_uri, "languageId": "Elisa", "version": 1, "text": valid},
+    })
+    started = time.monotonic()
+    shutdown = client.shutdown(timeout=0.8)
+    assert shutdown.get("result") is None, shutdown
+    assert time.monotonic() - started < 0.8, "shutdown waited for slow analysis"
+    client.notify("exit")
+    assert client.close(expect_exit=0, timeout=3) == 0
+
 # More than fifteen signatures make serialized symbol rows reach three digits.
 # This also verifies that the parent validates the signature stream using the
 # same REC-relative field offsets as the signature provider.
@@ -303,5 +479,5 @@ with LspSession(server, startup_timeout=30, request_timeout=30, teardown_timeout
     assert len(symbols.get("result", [])) == 16, symbols
     client.finish(timeout=30)
 
-print("analysis worker isolation OK: process faults, malformed packet/counter/payloads, source-only access, three-digit signature records, and same-process recovery")
+print("analysis worker isolation/responsiveness OK: process faults, malformed packet/counter/payloads, latest-version coalescing, cancel dispatch, prompt shutdown, and same-process recovery")
 PY

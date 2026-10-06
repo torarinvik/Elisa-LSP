@@ -54,7 +54,7 @@ def check_document(client, i, expected_name=None):
         "position": {"line": 0, "character": 5},
     }, timeout=30)
     assert "result" in hover and hover["result"], (uri, hover)
-    assert hover["result"]["contents"]["value"] == f"def {expected_name} -> void", hover
+    assert hover["result"]["contents"]["value"] == f"```elisa\ndef {expected_name}() -> void:\n```", hover
 
     selection = client.request("textDocument/selectionRange", {
         "textDocument": {"uri": uri},

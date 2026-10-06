@@ -46,6 +46,25 @@ def run_info_session() -> None:
             assert status["compiler"]["source"] == "Elisa compiler frontend", status
             assert isinstance(status["compiler"]["contract_version"], int), status
             assert status["compiler"]["provenance"] == "build/manifest.json", status
+            assert status["searchCoverage"] == {
+                "references": {
+                    "scope": "sameDocument",
+                    "completeness": "partial",
+                    "crossDocument": False,
+                    "supportedIdentities": [
+                        "uniqueTopLevelFunctions",
+                        "parameters",
+                        "locals",
+                    ],
+                    "emptyResultProvesProjectAbsence": False,
+                },
+                "documentHighlight": {
+                    "scope": "sameDocument",
+                    "completeness": "partial",
+                    "crossDocument": False,
+                },
+                "workspaceIndex": "unavailable",
+            }, status
             assert status["configuration"]["position_encoding"] == "utf-16", status
             assert status["logging"]["level"] == "debug", status
             assert status["logging"]["max_bytes"] == 4096, status

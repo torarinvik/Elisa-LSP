@@ -101,7 +101,7 @@
       "implemented": true,
       "test": "test/general_hover_test.sh",
       "module": "src/features/hover.elisa:general_hover_body",
-      "note": "general hover from a retained analysis summary (declarations + param/local bindings) with loop-header fallback; A03 summary in flat storage"
+      "note": "general hover from retained analysis data for declarations, exact parameter/local bindings with explicit source-annotated types keyed by BindingId, uniquely owned compiler-registered enum variants, and exact source signatures for uniquely retained top-level functions; binding annotations are source-validated and bounded to 2,048 bytes each and 65,536 bytes per document; signatures preserve generic parameters, typed/defaulted parameters, return annotations, and declared effects, are bounded to 2,048 source bytes per header and 262,144 per document, and use safe dynamic Markdown fences; exact token ranges and Markdown/plaintext output are supported, while inferred types, repeated/ambiguous variant spellings, cross-category collisions, overloaded declarations, documentation, and compiler-backed loop-header parsing remain unresolved"
     },
     "textDocument/publishDiagnostics": {
       "implemented": true,
@@ -129,25 +129,25 @@
       "implemented": true,
       "test": "test/definition_test.sh",
       "module": "src/features/definition.elisa:handle_definition",
-      "note": "returns exact same-file locations for unqualified references resolved to one unique top-level function and for parameter/local BindingIds; nested shadowing follows identity; ambiguous top-level and unresolved references return null"
+      "note": "returns exact same-file locations for unqualified references resolved to one unique top-level function and for parameter/local BindingIds, including a nested f-string parameter use; nested shadowing follows identity; ambiguous top-level and unresolved references return null"
     },
     "textDocument/references": {
       "implemented": true,
       "test": "test/references_test.sh",
       "module": "src/features/references.elisa:handle_references",
-      "note": "exact same-document locations for unique-function resolver edges and parameter/local BindingIds; includeDeclaration honored for logged declarations; unsupported, ambiguous, closed, or out-of-token queries return []"
+      "note": "exact same-document locations for unique-function resolver edges and parameter/local BindingIds, including a nested f-string parameter use; includeDeclaration honored for logged declarations; unsupported, ambiguous, closed, or out-of-token queries return []"
     },
     "textDocument/documentHighlight": {
       "implemented": true,
       "test": "test/document_highlight_test.sh",
       "module": "src/features/document_highlight.elisa:handle_document_highlight",
-      "note": "same-document Text/Read highlights for unique resolved function edges and exact parameter/local BindingIds; binding highlights omit kind until reads and writes are distinguished; unsupported, ambiguous, closed, and out-of-token queries return []"
+      "note": "same-document Text/Read highlights for unique resolved function edges and exact parameter/local BindingIds; binding declarations are Text, direct `<-` assignment targets are Write, and other uses are Read; unsupported, ambiguous, closed, and out-of-token queries return []"
     },
     "textDocument/completion": {
       "implemented": true,
       "test": "test/completion_test.sh",
       "module": "src/features/completion.elisa:handle_completion",
-      "note": "bounded same-file function/type/constant candidates plus exact-owner parameters and declaration-backed locals at function-body root indentation from the retained analysis cache; exact full-token text edits, prefix ranking, conservative string/comment/member declines, and honest isIncomplete=true; nested-scope locals, imports, members, and workspace candidates remain unsupported"
+      "note": "bounded same-file function/type/constant candidates plus exact-owner parameters and declaration-backed locals in the function body and nested indentation blocks from the retained analysis cache; local visibility ends at an intervening outdent; exact full-token text edits, prefix ranking, conservative string/comment/member declines, and honest isIncomplete=true; imports, members, workspace candidates, and parser-provided scope ranges remain unsupported"
     },
     "completionItem/resolve": {
       "implemented": true,
@@ -165,7 +165,7 @@
       "implemented": true,
       "test": "test/rename_test.sh",
       "module": "src/features/rename.elisa:handle_rename",
-      "note": "advertised only when workspace.workspaceEdit.documentChanges is true; same-document parameter/local BindingIds only; exact compiler occurrence ranges become non-overlapping versioned documentChanges; new names must lex as Ident, include a parser-context disambiguator, and be absent anywhere in the source; no scratch re-analysis or cross-file rename"
+      "note": "advertised only when workspace.workspaceEdit.documentChanges is true; same-document parameter/local BindingIds only, including nested f-string parameter use; exact compiler occurrence ranges become non-overlapping versioned documentChanges under UTF-8 and UTF-16; new names must lex as Ident, include a parser-context disambiguator, and be absent anywhere in the source; no scratch re-analysis or cross-file rename"
     },
     "textDocument/prepareRename": {
       "implemented": true,
@@ -197,7 +197,7 @@
       "implemented": true,
       "test": "test/observability_test.sh",
       "module": "src/main.elisa:send_status",
-      "note": "private safe self-description returning JSON-RPC/LSP compatibility, frontend contract and embedded compiler status, effective limits, and bounded logging configuration without reading workspace files or source text; not advertised as a standard LSP capability"
+      "note": "private safe self-description returning JSON-RPC/LSP compatibility, frontend contract and embedded compiler status, effective limits, bounded logging configuration, and explicit partial same-document references/highlight coverage (an empty references result does not prove project-wide absence); workspace index is unavailable; no workspace files or source text are read; not advertised as a standard LSP capability"
     },
     "window/workDoneProgress/create": {
       "implemented": false,
@@ -279,21 +279,21 @@
     "completionProvider": {
       "resolveProvider": true,
       "client_capabilities": "CompletionItemKind.valueSet, CompletionItem.snippetSupport, CompletionItem.insertReplaceSupport, CompletionItem.commitCharactersSupport, and CompletionItem.labelDetailsSupport are validated at initialize; optional item fields and InsertReplaceEdit are emitted only for capable clients",
-      "scope": "same-file declarations, unique enum variants, and conservative exact-owner parameters/root locals from the retained semantic cache; results are explicitly incomplete",
+      "scope": "same-file declarations, unique enum variants, and conservative exact-owner parameters/locals from the retained semantic cache; locals are limited to the active function and inferred indentation block; results are explicitly incomplete",
       "commit_characters": "the opening parenthesis is attached only to plain function-name insertions when the token is not already followed by an opening parenthesis; it is omitted for snippets and unsupported clients",
       "label_details": "CompletionItem.labelDetails.detail contains parameter names for one uniquely retained function signature only; it is omitted for unsupported clients, non-functions, ambiguous signatures, or missing metadata",
       "resolve": "CompletionItem/resolve adds `detail` in the form name(parameter, ...) only for unique retained same-file function signatures. Completion items carry canonical URI, document version, and open-document generation in data; resolve requires the exact current ready snapshot. Missing, malformed, unknown, stale-version, or stale-generation data returns the submitted item unchanged, and all other client-owned fields are preserved. Resolve data is omitted for non-functions, missing signature metadata, or URIs longer than 2,048 bytes.",
-      "unsupported": "imported names, members, nested-block locals, workspace candidates, snippets for overloads or signatures outside the retained unique-function index, documentation and return-type resolution, and multiline-string/f-string cursor context",
+      "unsupported": "imported names, members, workspace candidates, parser-provided scope ranges, snippets for overloads or signatures outside the retained unique-function index, documentation and return-type resolution, and multiline-string/f-string cursor context",
       "test": "test/completion_test.sh"
     },
     "definitionProvider": {
-      "scope": "unique top-level functions from exact compiler-resolved spans plus exact parameter/local BindingIds",
+      "scope": "unique top-level functions from exact compiler-resolved spans plus exact parameter/local BindingIds, including nested f-string parameter use",
       "link_support": "LocationLink[] is returned only when textDocument.definition.linkSupport is true; originSelectionRange and exact target token ranges use the negotiated encoding, and targetRange is the target token span until the resolver exposes enclosing declaration spans; other clients receive Location",
       "unsupported": "overloaded or module-scoped top-level names, unsupported symbol categories, and unresolved identifiers return null",
       "test": "test/definition_test.sh"
     },
     "referencesProvider": {
-      "scope": "same-document locations for unique-function resolver edges and exact parameter/local BindingIds",
+      "scope": "same-document locations for unique-function resolver edges and exact parameter/local BindingIds, including nested f-string parameter use",
       "includeDeclaration": "logged declarations are included only when ReferenceContext.includeDeclaration is true",
       "unsupported": "cross-file search, overloads, module members, and unresolved identifiers return an empty array",
       "test": "test/references_test.sh"
@@ -301,7 +301,7 @@
     "renameProvider": {
       "prepareProvider": true,
       "client_requirement": "workspace.workspaceEdit.documentChanges must be true",
-      "scope": "same-document parameters and locals selected through exact retained BindingIds",
+      "scope": "same-document parameters and locals selected through exact retained BindingIds, including nested f-string parameter use",
       "edits": "versioned, non-overlapping TextDocumentEdit ranges in the negotiated UTF-8 or UTF-16 encoding",
       "collisionPolicy": "a different new spelling must not occur anywhere in the source snapshot; comments and strings can therefore cause conservative rejection",
       "unsupported": "plain lowercase words, top-level symbols, cross-file references, lexical-scope graph comparison, scratch re-analysis, and parser-context-sensitive names are declined",

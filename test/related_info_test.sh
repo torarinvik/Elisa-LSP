@@ -31,6 +31,11 @@ def diags(caps, uri=URI, text=DOC):
                 "text": text,
             }
         })
+        client.wait_notification(
+            "textDocument/publishDiagnostics",
+            timeout=60,
+            predicate=lambda n: n.get("params", {}).get("uri") == uri,
+        )
         client.finish(timeout=30)
         found = [n["params"]["diagnostics"] for n in client.notifications
                  if n.get("method") == "textDocument/publishDiagnostics"

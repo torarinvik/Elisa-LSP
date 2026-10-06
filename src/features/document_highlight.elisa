@@ -3,11 +3,29 @@
 #
 # The frontend currently records declaration/reference edges for unique,
 # unqualified top-level functions and exact occurrence rows for parameters and
-# locals. Function declarations are Text and calls are Read. Binding highlights
-# omit kind because occurrence rows do not yet distinguish reads from writes.
+# locals. Function declarations are Text and calls are Read. For bindings, the
+# first source-ordered exact range is the logged declaration; direct `name <-`
+# assignment targets are Write and other non-declaration uses are Read. This
+# deliberately does not guess at indirect or other assignment forms.
 # Other symbol kinds return no highlights rather than being inferred by spelling.
 
-def document_highlight_result_body(spans: darray[ReferenceSpan], target: ReferenceSpan, binding_target: bool) -> darray[u8]:
+def document_highlight_is_direct_write(src: u8&, src_len: usize, line_starts: darray[usize]&, span_start: usize, span_count: usize, span: ReferenceSpan, utf8: bool) -> bool:
+    return false if span.start_line < 0 or span.end_line != span.start_line
+    line: i64 = span.start_line
+    line_len: i64 = Positions::line_byte_length_span_indexed(src, src_len, line_starts, span_start, span_count, line)
+    byte_start: i64 = Positions::char_to_byte_col_span_indexed(src, src_len, line_starts, span_start, span_count, line, span.start_char, utf8)
+    byte_end: i64 = Positions::char_to_byte_col_span_indexed(src, src_len, line_starts, span_start, span_count, line, span.end_char, utf8)
+    return false if byte_start < 0 or byte_end <= byte_start or byte_end > line_len
+    line_start: usize = Positions::line_start_offset_span_indexed(line_starts, span_start, span_count, src_len, line)
+    cursor: mutable usize = line_start + byte_end.usize()
+    line_end: usize = line_start + line_len.usize()
+    while cursor < line_end and (src[cursor] == 32 or src[cursor] == 9):
+        cursor <- cursor + 1
+    return false if cursor + 1 >= line_end
+    return src[cursor] == 60 and src[cursor + 1] == 45 and (cursor + 2 >= line_end or src[cursor + 2] != 61)
+
+
+def document_highlight_result_body(spans: darray[ReferenceSpan], target: ReferenceSpan, binding_target: bool, src: u8&, src_len: usize, line_starts: darray[usize]&, span_start: usize, span_count: usize, utf8: bool) -> darray[u8]:
     can Memory.Allocate, Abort.Panic:
         body: mutable darray[u8] = []
         body.push(91)
@@ -24,7 +42,11 @@ def document_highlight_result_body(spans: darray[ReferenceSpan], target: Referen
             body.push_str(",\"character\":")
             body.push_int(span.end_char)
             body.push_str("}}")
-            if not binding_target:
+            if binding_target:
+                kind: i64 = 1 if spans.count > 0 and reference_range_equal(span, spans[0]) else (3 if document_highlight_is_direct_write(src, src_len, line_starts, span_start, span_count, span, utf8) else 2)
+                body.push_str(",\"kind\":")
+                body.push_int(kind)
+            else:
                 body.push_str(",\"kind\":")
                 body.push_int(1 if reference_range_equal(span, target) else 2)
             body.push(125)
@@ -33,7 +55,7 @@ def document_highlight_result_body(spans: darray[ReferenceSpan], target: Referen
         return body
 
 
-def handle_document_highlight(root: Json::Value, snapshot: DocumentSnapshotView, document_storage: darray[u8]&, result_body: mutable darray[u8]&) -> ProviderOutcome can[Memory.Allocate, Abort.Panic]:
+def handle_document_highlight(root: Json::Value, snapshot: DocumentSnapshotView, document_storage: darray[u8]&, line_starts: darray[usize]&, result_body: mutable darray[u8]&, utf8: bool) -> ProviderOutcome can[Memory.Allocate, Abort.Panic]:
     if not snapshot.valid or snapshot.lifecycle.analysis_state != DocumentAnalysisState.Ready or snapshot.caches.hover_len == 0:
         return ProviderOutcome.NoMatchEmptyArray
     document: DocumentSnapshotView = snapshot
@@ -44,12 +66,22 @@ def handle_document_highlight(root: Json::Value, snapshot: DocumentSnapshotView,
     if highlight_len > document_storage.count - highlight_start:
         return ProviderOutcome.InvalidRetainedCache
     blob: sview = bytes_view_range_ref(document_storage, highlight_start, highlight_len)
+    return ProviderOutcome.InvalidRetainedCache if document.source.text_len == 0 or document.source.text_start > document_storage.count or document.source.text_len > document_storage.count - document.source.text_start
+    source_start: usize = document.source.text_start
+    src: u8& = &document_storage[source_start]
+    src_len: usize = document.source.text_len - 1
     target: mutable ReferenceTarget = ReferenceTarget{is_binding: false, owner: 0, serial: 0, name: sview("", 0, 0), span: ReferenceSpan{start_line: 0, start_char: 0, end_line: 0, end_char: 0}}
     if not reference_any_target_at(blob, request_hover_line(root), request_hover_char(root), target):
         return ProviderOutcome.NoMatchEmptyArray
     spans: darray[ReferenceSpan] = reference_any_collect(blob, target, true)
     return ProviderOutcome.NoMatchEmptyArray if spans.count == 0
-    body: darray[u8] = document_highlight_result_body(spans, target.span, target.is_binding)
+    index_valid: bool = document.caches.line_index_count > 0 and document.caches.line_index_start <= line_starts.count and document.caches.line_index_count <= line_starts.count - document.caches.line_index_start
+    body: mutable darray[u8] = []
+    if index_valid:
+        body <- document_highlight_result_body(spans, target.span, target.is_binding, src, src_len, line_starts, document.caches.line_index_start, document.caches.line_index_count, utf8)
+    else:
+        fallback_starts: darray[usize] = Positions::build_line_starts(src, src_len)
+        body <- document_highlight_result_body(spans, target.span, target.is_binding, src, src_len, fallback_starts, 0, fallback_starts.count, utf8)
     # `body` is local to this handler's auto region. Copy scalar bytes into the
     # caller-owned response buffer instead of storing its container descriptor.
     result_body.extend([byte for byte in body])

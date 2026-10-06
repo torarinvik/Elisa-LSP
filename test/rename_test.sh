@@ -18,6 +18,8 @@ source = (
     "    local_value: i64 = π\n"
     "    return local_value\n"
     "# blocked_name appears only in a comment\n"
+    "def nested(β: i64) -> dstr:\n"
+    "    return f\"outer {f\"inner {β}\"}\"\n"
 )
 lines = source.splitlines()
 
@@ -105,6 +107,11 @@ def check(encoding):
             "range": range_for(1, "local_value", encoding),
             "placeholder": "local_value",
         }, local_prepare
+        nested_parameter_prepare = prepare(4, "β")
+        assert nested_parameter_prepare.get("result") == {
+            "range": range_for(4, "β", encoding),
+            "placeholder": "β",
+        }, nested_parameter_prepare
 
         # The exact binding follows both its declaration and all uses. The
         # returned edit is versioned and applying it changes only that binding.
@@ -132,6 +139,21 @@ def check(encoding):
             range_for(1, "local_value", encoding), range_for(2, "local_value", encoding)
         ], local
         assert apply_edits(source, l_edit["edits"], encoding) == source.replace("local_value", "fresh_local")
+
+        # Nested interpolation occurrences retain the enclosing parameter's
+        # exact binding and produce physical ranges in the negotiated encoding.
+        nested_parameter = client.request("textDocument/rename", {
+            "textDocument": {"uri": uri},
+            "position": position(5, "β", encoding),
+            "newName": "fresh_β",
+        })
+        n_edit = nested_parameter.get("result", {}).get("documentChanges", [None])[0]
+        assert n_edit and n_edit["textDocument"] == {"uri": uri, "version": 7}, nested_parameter
+        assert [edit["range"] for edit in n_edit["edits"]] == [
+            range_for(4, "β", encoding), range_for(5, "β", encoding)
+        ], nested_parameter
+        assert all(edit["newText"] == "fresh_β" for edit in n_edit["edits"]), nested_parameter
+        assert apply_edits(source, n_edit["edits"], encoding) == source.replace("β", "fresh_β")
 
         # No candidate guessing: a file-scope function and an unresolved name
         # cannot be prepared/renamed as local BindingIds.

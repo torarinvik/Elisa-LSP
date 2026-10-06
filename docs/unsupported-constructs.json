@@ -1,17 +1,17 @@
 {
   "schema_version": 1,
   "inventory": "elisa-lsp-language-construct-support",
-  "verified_date": "2026-10-01",
+  "verified_date": "2026-10-06",
   "purpose": "Keep compiler-rejected language spellings separate from constructs that the compiler accepts but the LSP providers intentionally decline.",
   "compiler": {
     "frontend_root_env": "ELISA_COMPILER_ROOT",
-    "frontend_revision": "d8b5d305ec99a9d2238e035b871d9fd4e9835603",
-    "frontend_sources_sha256": "56868fba124d5f56905635d2529b3e70acbd22033a0a3ce5ff7225330cbb5393",
+    "frontend_revision": "d4b40e36770d89973de1b8df93f8e0bcd091ae6a",
+    "frontend_sources_sha256": "32e2a49805f25ad79de69118c741aa75ee6e0ad9856ea27af9b0a0818e927638",
     "backend_binary_env": "ELISAC",
     "backend_kind": "stage0",
-    "verification": "All 19 compiler-rejected probes passed on 2026-10-01 against the current local Elisa compiler checkout at HEAD d8b5d305ec99a9d2238e035b871d9fd4e9835603, with source fingerprint 56868fba124d5f56905635d2529b3e70acbd22033a0a3ce5ff7225330cbb5393. The checked origin/main reference is ce52ba2c5261ebced8f5dae9ca1e21f25db8f460; the pinned release uses the newer local source snapshot and supported Go stage0 binary at SHA-256 2fc31c130863b41ac07d250c4bfa25ee5c73f45f8faefb8e696b5bbf7176c408 with release flags -O2 -fno-builtin -Wl,-v. Linux evidence retains its separately recorded backend hash and has not been rerun against this frontend fingerprint.",
+    "verification": "Re-audited on 2026-10-06 against the clean compiler optimization-integration snapshot at HEAD d4b40e36770d89973de1b8df93f8e0bcd091ae6a (source fingerprint 32e2a49805f25ad79de69118c741aa75ee6e0ad9856ea27af9b0a0818e927638) using supported Go stage0 SHA-256 5f2c14780bb91b25feeef3e4dce685ba9199d264ab75f335b064741a138ea84e. All 19 compiler rejection probes pass on this tuple. The release uses -O2 -fno-builtin -Wl,-v. Stage1 has not been qualified for this compiler source fingerprint; earlier stage1 probes on older source snapshots declined before object emission. Linux evidence retains its separately recorded backend hash and has not been rerun against this frontend fingerprint.",
     "backend_sha256_by_target": {
-      "Darwin/arm64": "2fc31c130863b41ac07d250c4bfa25ee5c73f45f8faefb8e696b5bbf7176c408",
+      "Darwin/arm64": "5f2c14780bb91b25feeef3e4dce685ba9199d264ab75f335b064741a138ea84e",
       "Linux/aarch64": "b0692d4f01eb7eaeb32141f1a15572f6bae44624633258baf1eb40b46bddd7be"
     }
   },
@@ -243,7 +243,7 @@
       ],
       "probe": {
         "source": "def main() -> (i64, i64):\n    return (1, 2)\n",
-        "message_fragment": "expected :, got ,"
+        "message_fragment": "expected ), got ,"
       }
     },
     {

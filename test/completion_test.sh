@@ -266,18 +266,87 @@ with LspSession(srv, request_timeout=30, teardown_timeout=5) as client:
     # request and must not leak out of that indentation region.
     nested_source = (
         "def nested_main() -> i64:\n"
+        "    nested_outer: i64 = 1\n"
         "    if true:\n"
-        "        nested_value: i64 = 1\n"
+        "        nested_inner: i64 = 1\n"
+        "        return nes\n"
+        "    else:\n"
+        "        return nes\n"
         "    return nes\n"
     )
     nested_uri = "file:///completion-nested-local.elisa"
     client.notify("textDocument/didOpen", {
         "textDocument": {"uri": nested_uri, "languageId": "Elisa", "version": 1, "text": nested_source}
     })
-    nested_result = client.request("textDocument/completion", {
-        "textDocument": {"uri": nested_uri}, "position": {"line": 3, "character": 14}
+    nested_visible = client.request("textDocument/completion", {
+        "textDocument": {"uri": nested_uri}, "position": {"line": 4, "character": 18}
     })
-    assert [item["label"] for item in nested_result["result"]["items"]] == ["nested_main"], nested_result
+    assert [item["label"] for item in nested_visible["result"]["items"]] == [
+        "nested_inner", "nested_main", "nested_outer"
+    ], nested_visible
+    nested_local_item = next(item for item in nested_visible["result"]["items"] if item["label"] == "nested_inner")
+    assert nested_local_item["detail"] == "local variable", nested_visible
+
+    # An outdent into a sibling `else` block closes the first arm's local
+    # visibility even though both blocks belong to the same function.
+    nested_else = client.request("textDocument/completion", {
+        "textDocument": {"uri": nested_uri}, "position": {"line": 6, "character": 18}
+    })
+    assert [item["label"] for item in nested_else["result"]["items"]] == ["nested_main", "nested_outer"], nested_else
+
+    # A nested-block declaration also stays hidden after the containing block.
+    nested_result = client.request("textDocument/completion", {
+        "textDocument": {"uri": nested_uri}, "position": {"line": 7, "character": 14}
+    })
+    assert [item["label"] for item in nested_result["result"]["items"]] == ["nested_main", "nested_outer"], nested_result
+
+    # A nested local shadows the parameter only in its indentation block. In
+    # the sibling else arm the parameter is visible and replaces the global.
+    scope_shadow_source = (
+        "def render() -> i64:\n"
+        "    return 1\n"
+        "def nested_shadow(render: i64) -> i64:\n"
+        "    if true:\n"
+        "        render: i64 = 2\n"
+        "        return ren\n"
+        "    else:\n"
+        "        return ren\n"
+    )
+    scope_shadow_uri = "file:///completion-scope-shadow.elisa"
+    client.notify("textDocument/didOpen", {
+        "textDocument": {"uri": scope_shadow_uri, "languageId": "Elisa", "version": 1, "text": scope_shadow_source}
+    })
+    scope_local = client.request("textDocument/completion", {
+        "textDocument": {"uri": scope_shadow_uri}, "position": {"line": 5, "character": 18}
+    })
+    assert [item["label"] for item in scope_local["result"]["items"]] == ["render"], scope_local
+    assert scope_local["result"]["items"][0]["detail"] == "local variable", scope_local
+    scope_parameter = client.request("textDocument/completion", {
+        "textDocument": {"uri": scope_shadow_uri}, "position": {"line": 7, "character": 18}
+    })
+    assert [item["label"] for item in scope_parameter["result"]["items"]] == ["render"], scope_parameter
+    assert scope_parameter["result"]["items"][0]["detail"] == "parameter", scope_parameter
+
+    # A local with the same spelling in another function must not suppress a
+    # file-level function candidate at the caller's cursor.
+    unrelated_local_source = (
+        "def render() -> i64:\n"
+        "    return 1\n"
+        "def unrelated() -> i64:\n"
+        "    render: i64 = 2\n"
+        "    return 1\n"
+        "def caller() -> i64:\n"
+        "    return ren\n"
+    )
+    unrelated_local_uri = "file:///completion-unrelated-local.elisa"
+    client.notify("textDocument/didOpen", {
+        "textDocument": {"uri": unrelated_local_uri, "languageId": "Elisa", "version": 1, "text": unrelated_local_source}
+    })
+    unrelated_local = client.request("textDocument/completion", {
+        "textDocument": {"uri": unrelated_local_uri}, "position": {"line": 6, "character": 14}
+    })
+    assert [item["label"] for item in unrelated_local["result"]["items"]] == ["render"], unrelated_local
+    assert unrelated_local["result"]["items"][0]["detail"] == "function", unrelated_local
 
     # Clients that omit snippetSupport keep receiving plain insertion text.
     plain_function = client.request("textDocument/completion", {

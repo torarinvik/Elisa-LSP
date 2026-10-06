@@ -15,7 +15,7 @@ from lsp_client import LspSession
 srv = sys.argv[1]
 environment = {
     "ELISA_LSP_MAX_OPEN_DOCUMENTS": "2",
-    "ELISA_LSP_MAX_OPEN_URI_BYTES": "64",
+    "ELISA_LSP_MAX_OPEN_URI_BYTES": "128",
     "ELISA_LSP_MAX_OPEN_SOURCE_BYTES": "1",
 }
 previous = {key: os.environ.get(key) for key in environment}
@@ -67,18 +67,19 @@ try:
         assert "result" in initialized, initialized
 
         # Empty overlays prove the document and URI caps independently of the
-        # source-only cap. The two canonical URIs consume exactly 64 bytes.
+        # source-only cap. Each retained URI has both canonical and original
+        # spelling metadata, so two 32-byte URIs consume exactly 128 bytes.
         notify_open(client, uri_a)
         notify_open(client, uri_b)
         exact = stats(client)
-        assert (exact["documents"], exact["open"], exact["open_uri_bytes"]) == (2, 2, 64), exact
+        assert (exact["documents"], exact["open"], exact["open_uri_bytes"]) == (2, 2, 128), exact
         assert exact["open_source_bytes"] == 0, exact
-        assert exact["open_document_limit"] == 2 and exact["open_uri_bytes_limit"] == 64, exact
+        assert exact["open_document_limit"] == 2 and exact["open_uri_bytes_limit"] == 128, exact
 
         # A same-URI duplicate is a replacement lifetime, not a third open.
         notify_open(client, uri_a, version=2)
         duplicate = stats(client)
-        assert (duplicate["documents"], duplicate["open"], duplicate["open_uri_bytes"]) == (2, 2, 64), duplicate
+        assert (duplicate["documents"], duplicate["open"], duplicate["open_uri_bytes"]) == (2, 2, 128), duplicate
         assert duplicate["index_keys"] == 2, duplicate
 
         # The document-count rejection occurs before slot/index/storage changes.
@@ -87,10 +88,10 @@ try:
         assert stats(client) == before_count_reject
 
         # Freeing B creates room for one document, but the 33-byte URI would
-        # take the aggregate URI total over the exact 64-byte cap.
+        # take the aggregate URI total over the exact 128-byte cap.
         client.notify("textDocument/didClose", {"textDocument": {"uri": uri_b}})
         one_open = stats(client)
-        assert (one_open["open"], one_open["open_uri_bytes"]) == (1, 32), one_open
+        assert (one_open["open"], one_open["open_uri_bytes"]) == (1, 64), one_open
         before_uri_reject = stats(client)
         notify_open(client, uri_too_long)
         assert stats(client) == before_uri_reject
@@ -98,7 +99,7 @@ try:
         # Equality is accepted and the closed document slot is reused.
         notify_open(client, uri_c)
         at_uri_limit = stats(client)
-        assert (at_uri_limit["documents"], at_uri_limit["open"], at_uri_limit["open_uri_bytes"]) == (2, 2, 64), at_uri_limit
+        assert (at_uri_limit["documents"], at_uri_limit["open"], at_uri_limit["open_uri_bytes"]) == (2, 2, 128), at_uri_limit
         assert at_uri_limit["documents_capacity"] == duplicate["documents_capacity"], (duplicate, at_uri_limit)
 
         # Unique-URI churn must not grow the slot array or index past the
@@ -111,7 +112,7 @@ try:
             notify_open(client, churn_uri)
             client.notify("textDocument/didClose", {"textDocument": {"uri": churn_uri}})
         after_churn = stats(client)
-        assert after_churn["open"] == 2 and after_churn["open_uri_bytes"] == 64, after_churn
+        assert after_churn["open"] == 2 and after_churn["open_uri_bytes"] == 128, after_churn
         assert after_churn["documents"] == 2, after_churn
         assert after_churn["documents_capacity"] == stable_documents_capacity, after_churn
         assert after_churn["index_capacity"] == stable_index_capacity, after_churn

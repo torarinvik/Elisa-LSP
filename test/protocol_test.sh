@@ -10,8 +10,10 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 SRV="$ROOT/build/elisa-lsp"
 [[ -x "$SRV" ]] || { echo "build first: bash build.sh" >&2; exit 2; }
 
-python3 - "$SRV" <<'PY'
-import json, subprocess, sys
+python3 - "$SRV" "$ROOT" <<'PY'
+import json, os, subprocess, sys
+sys.path.insert(0, os.path.join(sys.argv[2], "test"))
+from lsp_client import LspSession
 srv = sys.argv[1]
 def frame(o):
     b = json.dumps(o, separators=(",", ":")).encode()
@@ -276,29 +278,48 @@ assert not any(msg.get("method") == "$/cancelRequest" for msg in id_msgs), \
 # Nested protocol fields are checked before handlers consume them. Escaped
 # keys compare by their decoded spelling, and malformed didOpen/didChange
 # notifications leave the document store and existing source unchanged.
-m = frame({"jsonrpc":"2.0","id":60,"method":"initialize","params":{"capabilities":{}}})
-m += fb(b'{"jsonrpc":"2.0","id":61,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///x.elisa","u\\u0072i":"file:///other.elisa"},"position":{"line":0,"character":0}}}')
-m += fb(b'{"jsonrpc":"2.0","id":62,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///x.elisa"},"position":{"line":0,"l\\u0069ne":1,"character":0}}}')
-m += frame({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///missing-language.elisa","version":1,"text":"def missing() -> i64:\n    return 1\n"}}})
-m += frame({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///empty-language.elisa","languageId":"","version":1,"text":"def empty() -> i64:\n    return 1\n"}}})
-m += frame({"jsonrpc":"2.0","id":63,"method":"$/elisa/stats","params":{}})
-doc = "def alpha() -> i64:\n    return 1\n"
-m += frame({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///nested-duplicate.elisa","languageId":"Elisa","version":1,"text":doc}}})
-m += fb(b'{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///nested-duplicate.elisa","version":2},"contentChanges":[{"text":"def beta() -> i64:\\n    return 2\\n","text":"def gamma() -> i64:\\n    return 3\\n"}]}}')
-m += frame({"jsonrpc":"2.0","id":64,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///nested-duplicate.elisa"},"position":{"line":0,"character":5}}})
-m += frame({"jsonrpc":"2.0","id":65,"method":"shutdown"})
-m += frame({"jsonrpc":"2.0","method":"exit"})
-p = run(m)
-assert p.returncode == 0, f"nested parameter validation exit={p.returncode}: {p.stderr!r}"
-nested_msgs = frames(p.stdout)
-nested_by_id = {x.get("id"): x for x in nested_msgs if "id" in x}
-assert nested_by_id[61].get("error", {}).get("code") == -32602, nested_msgs
-assert nested_by_id[62].get("error", {}).get("code") == -32602, nested_msgs
-assert nested_by_id[63].get("result", {}).get("documents") == 0 and nested_by_id[63]["result"].get("open") == 0, \
-    f"didOpen without required languageId or with an empty value must be ignored: {nested_msgs}"
-assert nested_by_id[64].get("result", {}).get("contents", {}).get("value") == "def alpha -> i64", \
-    f"duplicate contentChanges.text must not mutate the document: {nested_msgs}"
-assert "result" in nested_by_id[65], nested_msgs
+with LspSession(srv, request_timeout=30, teardown_timeout=10) as client:
+    initialized = client.initialize({"capabilities": {}})
+    assert "result" in initialized, initialized
+    duplicate_uri_body = (
+        b'{"jsonrpc":"2.0","id":61,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///x.elisa","u'
+        + bytes([92]) + b'u0072i":"file:///other.elisa"},"position":{"line":0,"character":0}}}'
+    )
+    duplicate_position_body = (
+        b'{"jsonrpc":"2.0","id":62,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///x.elisa"},"position":{"line":0,"l'
+        + bytes([92]) + b'u0069ne":1,"character":0}}}'
+    )
+    client.send(fb(duplicate_uri_body))
+    client.send(fb(duplicate_position_body))
+    assert client.wait_response(61).get("error", {}).get("code") == -32602
+    assert client.wait_response(62).get("error", {}).get("code") == -32602
+    client.notify("textDocument/didOpen", {
+        "textDocument": {"uri": "file:///missing-language.elisa", "version": 1, "text": "unused"},
+    })
+    client.notify("textDocument/didOpen", {
+        "textDocument": {"uri": "file:///empty-language.elisa", "languageId": "", "version": 1, "text": "unused"},
+    })
+    stats = client.request("$/elisa/stats", {}, req_id=63)
+    assert stats.get("result", {}).get("documents") == 0 and stats["result"].get("open") == 0, stats
+    doc = "\n".join(["def alpha() -> i64:", "    return 1", ""])
+    client.notify("textDocument/didOpen", {
+        "textDocument": {"uri": "file:///nested-duplicate.elisa", "languageId": "Elisa",
+                         "version": 1, "text": doc},
+    })
+    duplicate_change = (
+        b'{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///nested-duplicate.elisa","version":2},"contentChanges":[{"text":"ignored-a","text":"ignored-b"}]}}'
+    )
+    client.send(fb(duplicate_change))
+    hover = client.request("textDocument/hover", {
+        "textDocument": {"uri": "file:///nested-duplicate.elisa"},
+        "position": {"line": 0, "character": 5},
+    }, req_id=64)
+    expected_hover = chr(96) * 3 + "elisa" + chr(10) + "def alpha() -> i64:" + chr(10) + chr(96) * 3
+    assert hover.get("result", {}).get("contents", {}).get("value") == expected_hover, hover
+    shutdown = client.request("shutdown", req_id=65)
+    assert "result" in shutdown, shutdown
+    client.notify("exit")
+    assert client.close(expect_exit=0, timeout=10) == 0
 
 # Malformed known notifications are ignored without JSON-RPC replies and
 # reported through a bounded stderr counter. The log stays free of client data.

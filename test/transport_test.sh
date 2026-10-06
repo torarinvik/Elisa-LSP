@@ -12,8 +12,10 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 SRV="$ROOT/build/elisa-lsp"
 [[ -x "$SRV" ]] || { echo "build first: bash build.sh" >&2; exit 2; }
 
-python3 - "$SRV" <<'PY'
+python3 - "$SRV" "$ROOT" <<'PY'
 import json, os, subprocess, sys
+sys.path.insert(0, os.path.join(sys.argv[2], "test"))
+from lsp_client import LspSession
 srv = sys.argv[1]
 
 def body(o):
@@ -194,17 +196,17 @@ assert rc != 0, "oversized header must be rejected"
 
 # 7. Body larger than one transport chunk frames correctly (refill + read-ahead).
 big = 'def f0() -> void:\n    pass\n' + ("# " + "z"*80 + "\n")*400
-bigmsgs = [INIT,
-           {"jsonrpc":"2.0","method":"textDocument/didOpen",
-            "params":{"textDocument":{"uri":"file:///big.elisa","languageId":"Elisa","version":1,"text":big}}},
-           {"jsonrpc":"2.0","id":2,"method":"textDocument/semanticTokens/full",
-            "params":{"textDocument":{"uri":"file:///big.elisa"}}},
-           SHUT, EXIT]
-rc, out = run(b"".join(frame(m) for m in bigmsgs), timeout=60)
-assert rc == 0, f"large body exited {rc}"
-ms = frames(out)
-tok = [m for m in ms if m.get("id") == 2]
-assert tok and tok[0]["result"].get("data"), "large body must tokenize"
+with LspSession(srv, startup_timeout=30, request_timeout=60, teardown_timeout=30) as client:
+    initialized = client.initialize({"capabilities": {}}, timeout=30)
+    assert "result" in initialized, initialized
+    client.notify("textDocument/didOpen", {
+        "textDocument": {"uri": "file:///big.elisa", "languageId": "Elisa", "version": 1, "text": big},
+    }, timeout=60)
+    tok = client.request("textDocument/semanticTokens/full", {
+        "textDocument": {"uri": "file:///big.elisa"},
+    }, timeout=60)
+    assert tok.get("result", {}).get("data"), f"large body must tokenize: {tok}"
+    assert client.finish(timeout=30) == 0
 
 # A client that closes stdout must not kill the server with SIGPIPE. The
 # writer records EPIPE and the synchronous main loop exits with status 1.

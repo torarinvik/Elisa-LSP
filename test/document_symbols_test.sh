@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # F02: document symbols — flat SymbolInformation and hierarchical DocumentSymbol
-# shapes, source order, module containment, exact declaration-name selection,
+# shapes, source order, nested containment, exact declaration-name selection,
 # prelude exclusion, restricted symbolKind.valueSet, unknown/closed URIs, and
 # malformed-source safety.
 set -euo pipefail
@@ -126,6 +126,27 @@ value_lines = [s["location"]["range"]["start"]["line"] for s in dups_flat if s["
 assert value_lines == [1, 4], f"duplicate names must retain distinct locations: {value_lines}"
 assert all(source_lines[line].startswith("    struct Value:") for line in value_lines), \
        "each Value must point to its own declaration"
+
+# Deeply nested module declarations keep their source order and attach each
+# row to the nearest containing module. The compiler represents the inner
+# module as one qualified symbol (`Outer::Inner`) beneath its real `Outer`
+# row. A later sibling at the outer level must not be pulled into the inner
+# module's range.
+NESTED = ('module Outer:\n'
+          '    module Inner:\n'
+          '        def leaf() -> i64:\n'
+          '            return 1\n'
+          '    def sibling() -> i64:\n'
+          '        return 2\n')
+nested_hier, _ = symbols({"textDocument": {"documentSymbol": {"hierarchicalDocumentSymbolSupport": True}}},
+                        uri="file:///nested-outline.elisa", text=NESTED)
+assert [s["name"] for s in nested_hier] == ["Outer"], nested_hier
+outer_children = nested_hier[0]["children"]
+assert [s["name"] for s in outer_children] == ["Outer::Inner", "sibling"], outer_children
+assert [s["name"] for s in outer_children[0]["children"]] == ["leaf"], outer_children
+assert outer_children[0]["range"]["start"]["line"] == 1, outer_children[0]
+assert outer_children[0]["range"]["end"]["line"] == 3, outer_children[0]
+assert outer_children[1]["range"]["start"]["line"] == 4, outer_children[1]
 def walk(items):
     for sym in items:
         yield sym
@@ -164,5 +185,5 @@ assert unicode_selection == {
     "end": {"line": 0, "character": 6},
 }, unicode_selection
 
-print("symbols OK: flat/hier shapes, order, module containment, exact declaration selection, prelude excluded, valueSet clamp, recovery, duplicate names, Unicode UTF-8 selection ranges and valid ranges")
+print("symbols OK: flat/hier shapes, order, nested module/function containment, exact declaration selection, prelude excluded, valueSet clamp, recovery, duplicate names, Unicode UTF-8 selection ranges and valid ranges")
 PY
