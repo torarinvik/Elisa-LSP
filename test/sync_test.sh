@@ -272,6 +272,13 @@ def unaligned_edit_case(utf8, document_uri):
         initialized = client.initialize({"capabilities": caps})
         assert "result" in initialized, initialized
         open_doc(client, doc, document_uri)
+        # didOpen analysis runs in an isolated worker. Finish that snapshot
+        # before recording storage so cache publication cannot be mistaken
+        # for an invalid edit mutating the accepted source bytes.
+        analyzed = client.request("textDocument/semanticTokens/full", {
+            "textDocument": {"uri": document_uri}
+        })
+        assert "result" in analyzed, analyzed
         before = client.request("$/elisa/stats", {})["result"]
         for version, start, end in (
             (2, char_mid, char_after),  # split the start inside the emoji

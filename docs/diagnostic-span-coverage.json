@@ -1,21 +1,21 @@
 {
   "schema_version": 1,
-  "compiler_source_fingerprint": "32e2a49805f25ad79de69118c741aa75ee6e0ad9856ea27af9b0a0818e927638",
+  "compiler_source_fingerprint": "7338d4fedc8e35739a974a0c289159d0fa3cbc54a9657e827029d6b8ac734ffb",
   "inventory_method": "static_named_struct_literal_scan",
   "position_field_semantics": "An explicit pos field is not proof of a precise or valid runtime span. The LSP integration tests separately verify exact ranges and bounded fallback behavior.",
   "summary": {
-    "diagnostic_kind_count": 641,
-    "source_file_count": 865,
-    "construction_site_count": 1093,
-    "classified_construction_site_count": 1083,
-    "unclassified_construction_site_count": 10,
-    "kinds_with_constructors": 617,
-    "kinds_with_only_explicit_position_arguments": 212,
+    "diagnostic_kind_count": 642,
+    "source_file_count": 869,
+    "construction_site_count": 1106,
+    "classified_construction_site_count": 1095,
+    "unclassified_construction_site_count": 11,
+    "kinds_with_constructors": 618,
+    "kinds_with_only_explicit_position_arguments": 213,
     "kinds_with_default_position_sites": 405,
-    "explicit_position_site_count": 483,
-    "default_position_site_count": 610,
+    "explicit_position_site_count": 494,
+    "default_position_site_count": 612,
     "unclassified_explicit_position_site_count": 5,
-    "unclassified_default_position_site_count": 5,
+    "unclassified_default_position_site_count": 6,
     "unclassified_sites": [
       {
         "kind_expression": "cpu_kind",
@@ -24,18 +24,23 @@
       },
       {
         "kind_expression": "diagnostic_kind",
-        "site": "src/semantic/resolve_types_initializers.elisa:261",
+        "site": "src/semantic/resolve_types_initializers.elisa:274",
         "explicit_position_argument": true
       },
       {
         "kind_expression": "diagnostic_kind",
-        "site": "src/semantic/resolve_types_initializers.elisa:267",
+        "site": "src/semantic/resolve_types_initializers.elisa:280",
         "explicit_position_argument": true
       },
       {
         "kind_expression": "duplicate_kind",
         "site": "src/semantic/symbols_duplicates.elisa:320",
         "explicit_position_argument": true
+      },
+      {
+        "kind_expression": "dynamic/unknown",
+        "site": "src/semantic/check_typestate_flow.elisa:180",
+        "explicit_position_argument": false
       },
       {
         "kind_expression": "dynamic/unknown",
@@ -64,7 +69,7 @@
       },
       {
         "kind_expression": "kind",
-        "site": "src/semantic/check_local_view_return_escape.elisa:616",
+        "site": "src/semantic/check_local_view_return_escape.elisa:735",
         "explicit_position_argument": true
       }
     ],
@@ -197,7 +202,7 @@
       "default_position_sites": [
         "src/semantic/check_affine_collection.elisa:715",
         "src/semantic/check_affine_use_linear.elisa:567",
-        "src/semantic/check_firm_arg_type_mismatch.elisa:323"
+        "src/semantic/check_firm_arg_type_mismatch.elisa:376"
       ]
     },
     {
@@ -1049,7 +1054,7 @@
       "construction_sites": 3,
       "explicit_position_sites": 2,
       "default_position_sites": [
-        "src/semantic/check_destroyed_region.elisa:1563"
+        "src/semantic/check_destroyed_region.elisa:1686"
       ]
     },
     {
@@ -1057,7 +1062,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_types_initializers.elisa:545"
+        "src/semantic/resolve_types_initializers.elisa:565"
       ]
     },
     {
@@ -1207,7 +1212,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/symbols.elisa:371"
+        "src/semantic/symbols.elisa:374"
       ]
     },
     {
@@ -1281,7 +1286,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/symbols.elisa:424"
+        "src/semantic/symbols.elisa:427"
       ]
     },
     {
@@ -1473,11 +1478,11 @@
       "construction_sites": 5,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_expr.elisa:377",
-        "src/semantic/resolve_expr.elisa:379",
-        "src/semantic/resolve_expr.elisa:392",
-        "src/semantic/resolve_expr.elisa:395",
-        "src/semantic/resolve_expr.elisa:404"
+        "src/semantic/resolve_expr.elisa:388",
+        "src/semantic/resolve_expr.elisa:390",
+        "src/semantic/resolve_expr.elisa:403",
+        "src/semantic/resolve_expr.elisa:406",
+        "src/semantic/resolve_expr.elisa:415"
       ]
     },
     {
@@ -1723,8 +1728,8 @@
     },
     {
       "kind": "FirmArgTypeMismatch",
-      "construction_sites": 11,
-      "explicit_position_sites": 11,
+      "construction_sites": 12,
+      "explicit_position_sites": 12,
       "default_position_sites": []
     },
     {
@@ -1851,7 +1856,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/semantic_api.elisa:562"
+        "src/semantic/semantic_api.elisa:564"
       ]
     },
     {
@@ -2201,8 +2206,8 @@
     },
     {
       "kind": "IncompatibleComparison",
-      "construction_sites": 5,
-      "explicit_position_sites": 5,
+      "construction_sites": 6,
+      "explicit_position_sites": 6,
       "default_position_sites": []
     },
     {
@@ -2532,10 +2537,11 @@
     },
     {
       "kind": "LmutMutationNotReassignment",
-      "construction_sites": 2,
+      "construction_sites": 3,
       "explicit_position_sites": 1,
       "default_position_sites": [
-        "src/semantic/check_lmut_mutation_reassignment.elisa:77"
+        "src/semantic/check_lmut_mutation_reassignment.elisa:125",
+        "src/semantic/check_lmut_mutation_reassignment.elisa:135"
       ]
     },
     {
@@ -2797,8 +2803,8 @@
     },
     {
       "kind": "NamedArgError",
-      "construction_sites": 2,
-      "explicit_position_sites": 0,
+      "construction_sites": 5,
+      "explicit_position_sites": 3,
       "default_position_sites": [
         "src/semantic/check_named_call_args.elisa:53",
         "src/semantic/check_named_call_args.elisa:63"
@@ -2876,7 +2882,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/semantic_api.elisa:517"
+        "src/semantic/semantic_api.elisa:519"
       ]
     },
     {
@@ -2972,7 +2978,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_expr_walk.elisa:93"
+        "src/semantic/resolve_expr_walk.elisa:117"
       ]
     },
     {
@@ -3025,7 +3031,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/semantic_api.elisa:595"
+        "src/semantic/semantic_api.elisa:597"
       ]
     },
     {
@@ -3606,7 +3612,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_expr_walk.elisa:119"
+        "src/semantic/resolve_expr_walk.elisa:143"
       ]
     },
     {
@@ -3775,7 +3781,7 @@
       "construction_sites": 2,
       "explicit_position_sites": 1,
       "default_position_sites": [
-        "src/semantic/check_region_escape.elisa:450"
+        "src/semantic/check_region_escape.elisa:451"
       ]
     },
     {
@@ -3875,7 +3881,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/check_region_escape.elisa:451"
+        "src/semantic/check_region_escape.elisa:452"
       ]
     },
     {
@@ -4185,7 +4191,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/check_static_runtime_stmt.elisa:42"
+        "src/semantic/check_static_runtime_stmt.elisa:51"
       ]
     },
     {
@@ -4235,6 +4241,12 @@
       "default_position_sites": [
         "src/semantic/check_field_immutable_assign.elisa:148"
       ]
+    },
+    {
+      "kind": "StructCopyBaseTypeMismatch",
+      "construction_sites": 1,
+      "explicit_position_sites": 1,
+      "default_position_sites": []
     },
     {
       "kind": "StructFieldAnnotationUnsupported",
@@ -4356,7 +4368,7 @@
       "explicit_position_sites": 0,
       "default_position_sites": [
         "src/semantic/check_closure_capture.elisa:91",
-        "src/semantic/check_thread_shareability.elisa:69"
+        "src/semantic/check_thread_shareability.elisa:165"
       ]
     },
     {
@@ -4364,7 +4376,7 @@
       "construction_sites": 1,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/check_thread_shareability.elisa:50"
+        "src/semantic/check_thread_shareability.elisa:146"
       ]
     },
     {
@@ -4471,15 +4483,15 @@
       "explicit_position_sites": 21,
       "default_position_sites": [
         "src/semantic/check_void_value_use.elisa:49",
-        "src/semantic/resolve_types_initializers.elisa:467",
-        "src/semantic/resolve_types_initializers.elisa:501",
-        "src/semantic/resolve_types_initializers.elisa:503"
+        "src/semantic/resolve_types_initializers.elisa:482",
+        "src/semantic/resolve_types_initializers.elisa:521",
+        "src/semantic/resolve_types_initializers.elisa:523"
       ]
     },
     {
       "kind": "TypestateArgMismatch",
-      "construction_sites": 1,
-      "explicit_position_sites": 0,
+      "construction_sites": 2,
+      "explicit_position_sites": 1,
       "default_position_sites": [
         "src/semantic/check_typestate_flow.elisa:82"
       ]
@@ -4564,13 +4576,13 @@
     },
     {
       "kind": "UndefinedName",
-      "construction_sites": 7,
-      "explicit_position_sites": 3,
+      "construction_sites": 8,
+      "explicit_position_sites": 4,
       "default_position_sites": [
         "src/semantic/check_abstract_effects.elisa:366",
         "src/semantic/check_default_param_ref.elisa:13",
         "src/semantic/check_where_scope.elisa:114",
-        "src/semantic/resolve_expr_walk.elisa:438"
+        "src/semantic/resolve_expr_walk.elisa:471"
       ]
     },
     {
@@ -4717,16 +4729,16 @@
     },
     {
       "kind": "UnknownTypeName",
-      "construction_sites": 5,
-      "explicit_position_sites": 5,
+      "construction_sites": 6,
+      "explicit_position_sites": 6,
       "default_position_sites": []
     },
     {
       "kind": "UnknownVariant",
-      "construction_sites": 2,
-      "explicit_position_sites": 1,
+      "construction_sites": 4,
+      "explicit_position_sites": 3,
       "default_position_sites": [
-        "src/semantic/resolve_expr_walk.elisa:362"
+        "src/semantic/resolve_expr_walk.elisa:395"
       ]
     },
     {
@@ -4820,8 +4832,8 @@
       "construction_sites": 2,
       "explicit_position_sites": 0,
       "default_position_sites": [
-        "src/semantic/resolve_enums.elisa:473",
-        "src/semantic/resolve_expr_walk.elisa:340"
+        "src/semantic/resolve_enums.elisa:477",
+        "src/semantic/resolve_expr_walk.elisa:364"
       ]
     },
     {

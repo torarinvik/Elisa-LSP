@@ -5,13 +5,13 @@
   "purpose": "Keep compiler-rejected language spellings separate from constructs that the compiler accepts but the LSP providers intentionally decline.",
   "compiler": {
     "frontend_root_env": "ELISA_COMPILER_ROOT",
-    "frontend_revision": "d4b40e36770d89973de1b8df93f8e0bcd091ae6a",
-    "frontend_sources_sha256": "32e2a49805f25ad79de69118c741aa75ee6e0ad9856ea27af9b0a0818e927638",
+    "frontend_revision": "23a0e16a854cddec3016746a0cb9480db0c4db22",
+    "frontend_sources_sha256": "7338d4fedc8e35739a974a0c289159d0fa3cbc54a9657e827029d6b8ac734ffb",
     "backend_binary_env": "ELISAC",
     "backend_kind": "stage0",
-    "verification": "Re-audited on 2026-10-06 against the clean compiler optimization-integration snapshot at HEAD d4b40e36770d89973de1b8df93f8e0bcd091ae6a (source fingerprint 32e2a49805f25ad79de69118c741aa75ee6e0ad9856ea27af9b0a0818e927638) using supported Go stage0 SHA-256 5f2c14780bb91b25feeef3e4dce685ba9199d264ab75f335b064741a138ea84e. All 19 compiler rejection probes pass on this tuple. The release uses -O2 -fno-builtin -Wl,-v. Stage1 has not been qualified for this compiler source fingerprint; earlier stage1 probes on older source snapshots declined before object emission. Linux evidence retains its separately recorded backend hash and has not been rerun against this frontend fingerprint.",
+    "verification": "Re-audited on 2026-10-06 against clean Elisa-compiler origin/main at commit 23a0e16a854cddec3016746a0cb9480db0c4db22 (source fingerprint 7338d4fedc8e35739a974a0c289159d0fa3cbc54a9657e827029d6b8ac734ffb) using supported Go stage0 SHA-256 615cb2ff887a06147579048ee4319dd7d3def55af0c13f7eae208721e3025b74. All 19 compiler rejection probes pass on this tuple. The release uses -O2 -fno-builtin -Wl,-v. Stage1 has not been qualified for this compiler source fingerprint; earlier stage1 probes on older source snapshots declined before object emission. Linux evidence retains its separately recorded backend hash and has not been rerun against this frontend fingerprint.",
     "backend_sha256_by_target": {
-      "Darwin/arm64": "5f2c14780bb91b25feeef3e4dce685ba9199d264ab75f335b064741a138ea84e",
+      "Darwin/arm64": "615cb2ff887a06147579048ee4319dd7d3def55af0c13f7eae208721e3025b74",
       "Linux/aarch64": "b0692d4f01eb7eaeb32141f1a15572f6bae44624633258baf1eb40b46bddd7be"
     }
   },

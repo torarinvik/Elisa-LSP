@@ -24,17 +24,25 @@ the build rejects unknown profiles or invalid opt levels.
 
 ## Current compiler and stage1 optimizer candidate
 
-As of 2026-10-06, the LSP release is built against the clean compiler optimization-integration snapshot at commit
-d4b40e36770d89973de1b8df93f8e0bcd091ae6a (merge of claude/s1-gaps-20261005
-into claude/integration-20261004). This committed snapshot includes the
-compiler's recent owner-indexed lookup chains, memoized O(1) collection-stack
-lookup, and narrower enum/module visits. It replaces the previous LSP pin
-6b475d894331f0a81c3112167ef7fcf5c642a424 and was built from a clean detached
-worktree; uncommitted edits in the active compiler worktree are not included.
-The current remote origin/main is 72a752820ab581d46bb17b3fb7158ba3879a16e3,
-so this optimization integration is an active development commit, not a claim
-that those changes have landed on upstream main. Its compiler source fingerprint
-is 32e2a49805f25ad79de69118c741aa75ee6e0ad9856ea27af9b0a0818e927638.
+As of 2026-10-06, the LSP release uses the latest clean `Elisa-compiler`
+frontend on `origin/main`, commit
+`23a0e16a854cddec3016746a0cb9480db0c4db22`, with source fingerprint
+`7338d4fedc8e35739a974a0c289159d0fa3cbc54a9657e827029d6b8ac734ffb`. The
+supported Go stage0 backend is built from current Elisa-core `origin/main`,
+commit `4a68f508b90634b548f5e0728da4147853560248`, executable SHA-256
+`615cb2ff887a06147579048ee4319dd7d3def55af0c13f7eae208721e3025b74`. Its
+build metadata reports Go 1.27.1 and a clean source tree. The compiler binary
+and frontend source are pinned independently in `build/manifest.json`; release
+objects use `-O2 -fno-builtin -Wl,-v`.
+
+This current-main pair supersedes the earlier clean d4 optimization-integration
+snapshot (`d4b40e36770d89973de1b8df93f8e0bcd091ae6a`, fingerprint
+`32e2a49805f25ad79de69118c741aa75ee6e0ad9856ea27af9b0a0818e927638`). That
+snapshot added owner-indexed lookup chains, memoized O(1) collection-stack
+lookup, and narrower enum/module visits, and its measurements remain a useful
+historical comparison. The d4 values below are historical records; current
+compiler compatibility and release evidence must use the manifest-pinned
+23a0/4a68 tuple.
 
 The initial d4 refresh artifact was built at 2026-10-06T01:19:00Z with
 -O2 -fno-builtin -Wl,-v. The supported Go stage0 compiler source revision is
@@ -1590,9 +1598,12 @@ requested wait. The parent now waits on stdin and the active worker pipe
 together. It continues decoding client frames while a child computes, handles
 an edit by aborting the obsolete child and queuing only the latest snapshot,
 then validates and commits the result in the parent. A single foreground child
-and bounded per-document/request queues are in place; diagnostic debounce,
-explicit cursor priority, scheduler fairness under sustained input, and
-workspace background scheduling remain open Q01 work.
+and bounded per-document/request queues are in place. Queued cursor-provider
+requests promote their snapshot ahead of diagnostics-only work; the regression
+holds one worker active and verifies a later hover-requested snapshot completes
+before an older background diagnostic snapshot. Diagnostic debounce, scheduler
+fairness under sustained input, and workspace background scheduling remain open
+Q01 work.
 
 The process boundary has a directional same-workload measurement in
 `bench/analysis-worker-overhead-2026-10-06.json`. A temporary in-process

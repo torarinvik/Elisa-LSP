@@ -645,4 +645,5 @@ def diagnostic_code(kind: Semantic::DiagnosticKind) -> sview:
         Semantic::DiagnosticKind.AppendOnlyStore: "ELISA-AppendOnlyStore"
         Semantic::DiagnosticKind.GlobalStorageReturnEscape: "ELISA-GlobalStorageReturnEscape"
         Semantic::DiagnosticKind.FnValueEffectRow: "ELISA-FnValueEffectRow"
+        Semantic::DiagnosticKind.StructCopyBaseTypeMismatch: "ELISA-StructCopyBaseTypeMismatch"
         _: "ELISA-Unknown"
